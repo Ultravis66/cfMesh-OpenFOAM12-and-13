@@ -15,32 +15,27 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 ## Build instructions
 
-```bash
-source /opt/openfoam12/etc/bashrc
-git clone https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
-cd cfMesh/meshLibrary
-wmake libso
-cd ../executables/cartesianMesh && wmake
-cd ../executables/tetMesh && wmake
-cd ../executables/pMesh && wmake
-```
+    source /opt/openfoam12/etc/bashrc
+    git clone https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
+    cd cfMesh/meshLibrary
+    wmake libso
+    cd ../executables/cartesianMesh && wmake
+    cd ../executables/tetMesh && wmake
+    cd ../executables/pMesh && wmake
 
 ## API changes from original cfMesh
 
-These changes were required to port cfMesh from its original OpenFOAM-extend 
-target to OpenFOAM 12:
-
 - `Pstream::blocking/scheduled/nonBlocking` → `Pstream::commsTypes::blocking/scheduled/nonBlocking`
-- `eigenVector(T, scalar)` → `eigenVectors(T)` with direct component access `xx() xy() xz()` etc
+- `eigenVector(T, scalar)` → `eigenVectors(T)` with direct component access
 - `circumCentre()/circumRadius()` → `circumSphere().first()/.second()`
 - `isFile()` → `std::filesystem::exists()` — requires `#include <filesystem>` and `-std=c++17`
 - `rm/isDir/rmDir` — requires `#include "OSspecific.H"` in affected files
-- `edgeMesh` library removed from OpenFOAM 12 — include paths updated to use `meshTools`
-- `unallocLabelList` → `labelList` (FMSToVTK utility not yet ported)
+- `edgeMesh` library removed — include paths updated to use `meshTools`
+- `unallocLabelList` → `labelList` (FMSToVTK not yet ported)
 
 ## Known issues
 
-- `FMSToVTK` utility not yet compiled — `unallocLabelList` removal requires additional work
+- `FMSToVTK` utility not yet compiled
 - Tested on Ubuntu 22.04 WSL2 with OpenFOAM 12 only
 
 ## Original cfMesh
