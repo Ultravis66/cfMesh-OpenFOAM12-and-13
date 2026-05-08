@@ -28,6 +28,7 @@ Description
 
 #include "polyMeshGen.H"
 #include "meshSurfaceEngine.H"
+#include "OSspecific.H"
 #include "OFstream.H"
 #include "IOmanip.H"
 #include "fileName.H"

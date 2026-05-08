@@ -28,6 +28,7 @@ Description
 #include "polyMeshGen.H"
 #include "demandDrivenData.H"
 #include "OFstream.H"
+#include "OSspecific.H"
 
 namespace Foam
 {
@@ -128,23 +129,23 @@ void polyMeshGen::write() const
     //- remove old mesh before writting
     const fileName meshDir = runTime_.path()/runTime_.constant()/"polyMesh";
 
-    rm(meshDir/"points");
-    rm(meshDir/"faces");
-    rm(meshDir/"owner");
-    rm(meshDir/"neighbour");
-    rm(meshDir/"cells");
-    rm(meshDir/"boundary");
-    rm(meshDir/"pointZones");
-    rm(meshDir/"faceZones");
-    rm(meshDir/"cellZones");
-    rm(meshDir/"meshModifiers");
-    rm(meshDir/"parallelData");
-    rm(meshDir/"meshMetaDict");
+    Foam::rm(meshDir/"points");
+    Foam::rm(meshDir/"faces");
+    Foam::rm(meshDir/"owner");
+    Foam::rm(meshDir/"neighbour");
+    Foam::rm(meshDir/"cells");
+    Foam::rm(meshDir/"boundary");
+    Foam::rm(meshDir/"pointZones");
+    Foam::rm(meshDir/"faceZones");
+    Foam::rm(meshDir/"cellZones");
+    Foam::rm(meshDir/"meshModifiers");
+    Foam::rm(meshDir/"parallelData");
+    Foam::rm(meshDir/"meshMetaDict");
 
     // remove sets if they exist
-    if (isDir(meshDir/"sets"))
+    if (Foam::isDir(meshDir/"sets"))
     {
-        rmDir(meshDir/"sets");
+        Foam::rmDir(meshDir/"sets");
     }
 
     //- write the mesh

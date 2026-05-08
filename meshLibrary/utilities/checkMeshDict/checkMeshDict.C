@@ -1,3 +1,4 @@
+#include <filesystem>
 /*---------------------------------------------------------------------------*\
   =========                 |
   \\      /  F ield         | cfMesh: A library for mesh generation
@@ -384,7 +385,7 @@ void checkMeshDict::checkSurfaceRefinements() const
                 {
                     const fileName fName(dict.lookup("surfaceFile"));
 
-                    if( !isFile(fName) )
+                    if( !std::filesystem::exists(fName.c_str()) )
                         FatalErrorIn
                         (
                         "void checkMeshDict::checkSurfaceRefinements() const"
@@ -487,7 +488,7 @@ void checkMeshDict::checkEdgeMeshRefinements() const
                 {
                     const fileName fName(dict.lookup("edgeFile"));
 
-                    if( !isFile(fName) )
+                    if( !std::filesystem::exists(fName.c_str()) )
                         FatalErrorIn
                         (
                         "void checkMeshDict::checkEdgeMeshRefinements() const"
