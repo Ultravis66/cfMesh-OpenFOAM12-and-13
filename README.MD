@@ -34,7 +34,7 @@ cd ../executables/pMesh && wmake
 | `Pstream::blocking/scheduled/nonBlocking` | `Pstream::commsTypes::blocking/scheduled/nonBlocking` |
 | `eigenVector(T, scalar)` | `eigenVectors(T)` with direct component access |
 | `circumCentre()/circumRadius()` | `circumSphere().first()/.second()` |
-| `isFile()` | `std::filesystem::exists()` — requires `#include ` and `-std=c++17` |
+| `isFile()` | `std::filesystem::exists()` — requires `#include <filesystem>` and `-std=c++17` |
 | `rm/isDir/rmDir` | requires `#include "OSspecific.H"` in affected files |
 | `edgeMesh` library | include paths updated to use `meshTools` |
 | `unallocLabelList` | `labelList` (FMSToVTK not yet ported) |
