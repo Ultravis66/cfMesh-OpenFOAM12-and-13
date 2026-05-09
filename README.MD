@@ -42,8 +42,6 @@ cd ../executables/pMesh && wmake
 ---
 
 ## Known issues
-
-- `FMSToVTK` utility not yet compiled
 - Tested on Ubuntu 22.04 WSL2 with OpenFOAM 12 only
 
 ---
