@@ -14,15 +14,32 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 ---
 
+## Branches
+
+| Branch | OpenFOAM Version | Status |
+|--------|-----------------|--------|
+| `master` | OpenFOAM 12 | ✅ Working |
+| `openfoam13` | OpenFOAM 13 | ✅ Working |
+
 ## Build instructions
 
-```bash
-source /opt/openfoam12/etc/bashrc
-git clone https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
-cd cfMesh/meshLibrary && wmake libso
-cd ../executables/cartesianMesh && wmake
-cd ../executables/tetMesh && wmake
-cd ../executables/pMesh && wmake
+**OpenFOAM 12:**
+
+    source /opt/openfoam12/etc/bashrc
+    git clone -b master https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
+    cd cfMesh/meshLibrary && wmake libso
+    cd ../executables/cartesianMesh && wmake
+    cd ../executables/tetMesh && wmake
+    cd ../executables/pMesh && wmake
+
+**OpenFOAM 13:**
+
+    source /opt/openfoam13/etc/bashrc
+    git clone -b openfoam13 https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
+    cd cfMesh/meshLibrary && wmake libso
+    cd ../executables/cartesianMesh && wmake
+    cd ../executables/tetMesh && wmake
+    cd ../executables/pMesh && wmake
 ```
 
 ---
