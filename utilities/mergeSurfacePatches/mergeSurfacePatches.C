@@ -209,7 +209,7 @@ autoPtr<triSurf> mergeSurfacePatches
     label faceI = 0;
     forAll(patchAddr, patchI)
     {
-        const unallocLabelList& addr = patchAddr[patchI];
+        const labelList& addr = patchAddr[patchI];
         
         if(addr.size())
         {
