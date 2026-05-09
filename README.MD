@@ -1,4 +1,4 @@
-# cfMesh — OpenFOAM 12 & 13 Port
+# cfMesh OpenFOAM 12 & 13 Port
 
 A working port of cfMesh to OpenFOAM 12 (openfoam.org).
 Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
@@ -7,10 +7,10 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 ## What works
 
-- `cartesianMesh` — Cartesian hex-dominant mesher
-- `tetMesh` — Tetrahedral mesher
-- `pMesh` — Polyhedral mesher
-- `libmeshLibrary.so` — Core mesh library
+- `cartesianMesh`  Cartesian hex-dominant mesher
+- `tetMesh`  Tetrahedral mesher
+- `pMesh`  Polyhedral mesher
+- `libmeshLibrary.so`  Core mesh library
 
 ---
 
@@ -51,7 +51,7 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 | `Pstream::blocking/scheduled/nonBlocking` | `Pstream::commsTypes::blocking/scheduled/nonBlocking` |
 | `eigenVector(T, scalar)` | `eigenVectors(T)` with direct component access |
 | `circumCentre()/circumRadius()` | `circumSphere().first()/.second()` |
-| `isFile()` | `std::filesystem::exists()` — requires `#include <filesystem>` and `-std=c++17` |
+| `isFile()` | `std::filesystem::exists()` requires `#include <filesystem>` and `-std=c++17` |
 | `rm/isDir/rmDir` | requires `#include "OSspecific.H"` in affected files |
 | `edgeMesh` library | include paths updated to use `meshTools` |
 | `unallocLabelList` | `labelList` (fixed in FMSToVTK and mergeSurfacePatches) |
