@@ -66,3 +66,9 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 - Source: https://sourceforge.net/projects/cfmesh/
 - Authors: Franjo Juretic, Philippose Rajan, Ivor Clifford
+
+---
+
+## Disclaimer
+
+This is an unofficial community port and is not affiliated with Creative Fields or the OpenFOAM Foundation.
