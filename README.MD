@@ -22,7 +22,7 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 | `openfoam13` | OpenFOAM 13 | ✅ Working |
 
 ## Build instructions
-
+---
 **OpenFOAM 12:**
 
     source /opt/openfoam12/etc/bashrc
@@ -57,7 +57,7 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 ---
 
-## Known issues
+## Tested On
 - Tested on Ubuntu 22.04 WSL2 with OpenFOAM 12 and 13
 
 ---
