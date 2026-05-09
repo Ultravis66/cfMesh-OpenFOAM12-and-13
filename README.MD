@@ -1,6 +1,6 @@
 # cfMesh OpenFOAM 12 & 13 Port
 
-A working port of cfMesh to OpenFOAM 12 (openfoam.org).
+A working port of cfMesh to OpenFOAM 12 and 13 (openfoam.org).
 Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 
 ---
