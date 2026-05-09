@@ -59,7 +59,7 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 ---
 
 ## Known issues
-- Tested on Ubuntu 22.04 WSL2 with OpenFOAM 12 only
+- Tested on Ubuntu 22.04 WSL2 with OpenFOAM 12 and 13
 
 ---
 
