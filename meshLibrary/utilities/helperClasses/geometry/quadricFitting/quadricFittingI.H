@@ -52,7 +52,8 @@ void quadricFitting::calculateNormalVector()
 
     //- estimate the normal as the eigenvector associated
     //- to the smallest eigenvalue
-    normal_ = eigenVector(mat, ev[0]);
+    const tensor evMat = eigenVectors(mat);
+    normal_ = vector(evMat.xx(), evMat.yx(), evMat.zx());
 }
 
 void quadricFitting::calculateCoordinateSystem()
