@@ -26,7 +26,7 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 **OpenFOAM 12:**
 
     source /opt/openfoam12/etc/bashrc
-    git clone -b master https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
+    git clone -b master https://github.com/Ultravis66/cfMesh-OpenFOAM12-and-13.git cfMesh
     cd cfMesh/meshLibrary && wmake libso
     cd ../executables/cartesianMesh && wmake
     cd ../executables/tetMesh && wmake
@@ -35,12 +35,11 @@ Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
 **OpenFOAM 13:**
 
     source /opt/openfoam13/etc/bashrc
-    git clone -b openfoam13 https://github.com/Ultravis66/cfMesh-OpenFOAM12.git cfMesh
+    git clone -b openfoam13 https://github.com/Ultravis66/cfMesh-OpenFOAM12-and-13.git cfMesh
     cd cfMesh/meshLibrary && wmake libso
     cd ../executables/cartesianMesh && wmake
     cd ../executables/tetMesh && wmake
     cd ../executables/pMesh && wmake
-```
 
 ---
 
