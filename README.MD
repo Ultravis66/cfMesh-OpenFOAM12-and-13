@@ -37,7 +37,7 @@ cd ../executables/pMesh && wmake
 | `isFile()` | `std::filesystem::exists()` — requires `#include <filesystem>` and `-std=c++17` |
 | `rm/isDir/rmDir` | requires `#include "OSspecific.H"` in affected files |
 | `edgeMesh` library | include paths updated to use `meshTools` |
-| `unallocLabelList` | `labelList` (FMSToVTK not yet ported) |
+| `unallocLabelList` | `labelList` (fixed in FMSToVTK and mergeSurfacePatches) |
 
 ---
 
