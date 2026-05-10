@@ -252,7 +252,7 @@ scalar surfaceOptimizer::optimiseDivideAndConquer(const scalar tol)
         dy *= 0.5;
 
         //- calculate the tolerence
-        const scalar t = mag(funcAfter - funcBefore) / funcAfter;
+        const scalar t = (mag(funcAfter) < VSMALL) ? 0.0 : mag(funcAfter - funcBefore) / funcAfter; // OF12 port fix
 
         # ifdef DEBUGSmooth
         Info << "Point position " << pOpt << endl;
@@ -334,7 +334,7 @@ scalar surfaceOptimizer::optimiseSteepestDescent(const scalar tol)
         K = evaluateStabilisationFactor();
         funcAfter = evaluateFunc(K);
 
-        if( mag(funcAfter - funcBefore) / funcBefore < tol )
+        if( mag(funcBefore) < VSMALL || mag(funcAfter - funcBefore) / mag(funcBefore) < tol ) // OF12 port fix: guard zero division
             break;
 
         #ifdef DEBUGSmooth
@@ -382,6 +382,9 @@ surfaceOptimizer::~surfaceOptimizer()
 point surfaceOptimizer::optimizePoint(const scalar tol)
 {
     const scalar scale = mag(pMax_ - pMin_);
+    // OF12 port fix: return centre if patch is degenerate (zero scale -> FPE)
+    if( scale < VSMALL )
+        return pts_[trias_[0][0]];
     forAll(pts_, i)
         pts_[i] /= scale;
     pMin_ /= scale;

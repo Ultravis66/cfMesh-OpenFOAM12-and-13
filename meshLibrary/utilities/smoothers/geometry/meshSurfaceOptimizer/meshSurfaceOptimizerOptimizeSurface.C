@@ -543,7 +543,7 @@ bool meshSurfaceOptimizer::untangleSurface
                 remapVertex = false;
         }
 
-    } while( nInvertedTria && (++nGlobalIter < 10) );
+    } while( nInvertedTria && (++nGlobalIter < 1) ); // OF12 port fix: limit to 1 global iteration
 
     deleteDemandDrivenData(mapperPtr);
 

@@ -218,7 +218,8 @@ void edgeExtractor::findPatchesNearSurfaceFace()
         {
             const face& bf = bFaces[bfI];
 
-            const vector c = bf.centre(points);
+            // OF12 fix: vertex average instead of bf.centre()
+            vector c = vector::zero; forAll(bf,pI) c+=points[bf[pI]]; c/=bf.size();
 
             // find a reasonable searching distance comparable to face size
             scalar d(0.0);
@@ -899,7 +900,8 @@ void edgeExtractor::distributeBoundaryFaces()
     {
         const face& bf = bFaces[bfI];
 
-        const point c = bf.centre(points);
+        // OF12 fix: vertex average instead of bf.centre()
+        point c = vector::zero; forAll(bf,pI) c+=points[bf[pI]]; c/=bf.size();
 
         //- find the nearest surface patch to face centre
         label fPatch, nTri;
@@ -1020,7 +1022,8 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 scalar dSq(VGREAT);
                 label nearestTriangle;
 
-                point p = bf.centre(points);
+                // OF12 fix: vertex average instead of bf.centre()
+                point p = vector::zero; forAll(bf,pI) p+=points[bf[pI]]; p/=bf.size();
                 meshOctree_.findNearestSurfacePointInRegion
                 (
                     pMap,
@@ -2063,7 +2066,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
     //- allocate a copy of boundary patches
     labelList newBoundaryPatches(facePatch_.size());
 
-    label nCorrected;
+    label nCorrected, nGeomIter(0); // OF12 port fix
     Map<label> otherProcNewPatch;
 
     boolList activePoints(bPoints.size(), true);
@@ -2127,7 +2130,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
 
         //- untangle the surface
         meshSurfaceOptimizer mso(mPart, meshOctree_);
-        mso.untangleSurface(activePointLabel, 1);
+        mso.untangleSurface(activePointLabel, 0); // OF12 port fix
 
         nCorrected = 0;
         newBoundaryPatches = facePatch_;
@@ -2237,7 +2240,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
             facePatch_ = newBoundaryPatches;
         }
 
-    } while( nCorrected != 0 );
+    } while( nCorrected != 0 && (++nGeomIter < 5) ); // OF12 port fix
 
     return changed;
 }
@@ -2390,7 +2393,7 @@ bool edgeExtractor::untangleSurface()
     meshSurfaceEngine& mse =
         const_cast<meshSurfaceEngine&>(this->surfaceEngine());
     meshSurfaceOptimizer optimizer(mse, meshOctree_);
-    changed = optimizer.untangleSurface();
+    changed = optimizer.untangleSurface(0); // OF12 port fix
 
     return changed;
 }

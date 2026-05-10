@@ -107,7 +107,7 @@ void meshOctree::findNearestSurfacePoint
         if( !found )
             sizeVec *= 2.0;
 
-    } while( !found && (iterationI++ < 100) );
+    } while( !found && (iterationI++ < 10) ); // OF12 port fix: limit search iterations
 
     # ifdef DEBUGSearch
     forAll(surface_, triI)

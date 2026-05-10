@@ -27,6 +27,7 @@ Description
 
 #include "meshSurfaceEngine.H"
 #include "demandDrivenData.H"
+#include "polyMeshGenAddressing.H"
 #include "boolList.H"
 #include "helperFunctions.H"
 #include "VRWGraphSMPModifier.H"
@@ -781,8 +782,10 @@ void meshSurfaceEngine::calculateFaceNormals() const
     forAll(bFaces, bfI)
     {
         const face& bf = bFaces[bfI];
-
-        faceNormalsPtr_->operator[](bfI) = bf.normal(points);
+        // OF12 port fix: face::normal() in OF12 uses (b-a)^(c-a) which
+        // is opposite in sign to the old OF convention used when cfMesh
+        // was originally written. Negate to restore expected outward normal.
+        faceNormalsPtr_->operator[](bfI) = -bf.normal(points);
     }
 }
 
@@ -797,7 +800,18 @@ void meshSurfaceEngine::calculateFaceCentres() const
     # pragma omp parallel for if( bFaces.size() > 1000 )
     # endif
     forAll(bFaces, bfI)
-        faceCentresPtr_->operator[](bfI) = bFaces[bfI].centre(points);
+    {
+        const face& bf = bFaces[bfI];
+
+        // OF12 port fix: face::centre() uses areaAndCentre() which produces
+        // garbage results for some face vertex orderings in cfMesh's polyMesh
+        // (face centre outside the unit cube for a face with all vertices
+        // inside). Use simple vertex average instead which is always correct.
+        point c = vector::zero;
+        forAll(bf, pI)
+            c += points[bf[pI]];
+        faceCentresPtr_->operator[](bfI) = c / bf.size();
+    }
 }
 
 void meshSurfaceEngine::updatePointNormalsAtProcBoundaries() const

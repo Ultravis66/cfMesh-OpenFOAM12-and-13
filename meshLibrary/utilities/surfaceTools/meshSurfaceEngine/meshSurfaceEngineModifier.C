@@ -93,7 +93,14 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
         {
             const label bfI = pFaces(bpI, pfI);
 
-            faceCentres[bfI] = bFaces[bfI].centre(points);
+            // OF12 port fix: face::centre() returns garbage for cfMesh face ordering.
+            // Use simple vertex average instead.
+            {
+                point c = vector::zero;
+                const face& bf = bFaces[bfI];
+                forAll(bf, pI) c += points[bf[pI]];
+                faceCentres[bfI] = c / bf.size();
+            }
         }
     }
 
@@ -262,7 +269,14 @@ void meshSurfaceEngineModifier::updateGeometry
         forAll(updateFaces, bfI)
         {
             if( updateFaces[bfI] )
-                faceCentres[bfI] = bFaces[bfI].centre(points);
+                // OF12 port fix: face::centre() returns garbage for cfMesh face ordering.
+            // Use simple vertex average instead.
+            {
+                point c = vector::zero;
+                const face& bf = bFaces[bfI];
+                forAll(bf, pI) c += points[bf[pI]];
+                faceCentres[bfI] = c / bf.size();
+            }
         }
     }
 
