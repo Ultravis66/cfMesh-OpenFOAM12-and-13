@@ -1,9 +1,15 @@
 # cfMesh OpenFOAM 12 & 13 Port
 
-A working port of cfMesh to OpenFOAM 12 and 13 (openfoam.org).
-Original cfMesh by Franjo Juretic, Creative Fields. Licensed under GPL v3.
+A working port of cfMesh to OpenFOAM Foundation versions 12 and 13.
 
-Successfully tested on **NASA Rotor 37** turbomachinery passage geometry.
+Original cfMesh was developed by Franjo Juretic / Creative Fields and is licensed under GPL v3.
+
+This port has been successfully built and tested on:
+- OpenFOAM 12
+- OpenFOAM 13
+- Ubuntu 22.04 / WSL2
+- Unit cube validation case
+- NASA Rotor 37 two-passage turbomachinery sector geometry
 
 ---
 
