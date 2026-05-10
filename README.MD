@@ -14,9 +14,9 @@ This port has been successfully built and tested on:
 ---
 
 ## What works
-- `cartesianMesh` Cartesian hex-dominant mesher
-- `tetMesh` Tetrahedral mesher
-- `pMesh` Polyhedral mesher
+- `cartesianMesh` Cartesian hex-dominant mesher (tested)
+- `tetMesh` Tetrahedral mesher (not yet tested)
+- `pMesh` Polyhedral mesher (not yet tested)
 - `libmeshLibrary.so` Core mesh library
 
 ---
