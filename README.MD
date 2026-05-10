@@ -97,5 +97,4 @@ NASA Rotor 37 turbomachinery geometry:
 ## Disclaimer
 This is an unofficial community port and is not affiliated with Creative Fields
 or the OpenFOAM Foundation.
-READMEEOF
-echo "README written"
+"
