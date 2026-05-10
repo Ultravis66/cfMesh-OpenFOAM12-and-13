@@ -115,7 +115,11 @@ inline bool meshSurfaceOptimizer::transformIntoPlane
             vecX = sp - p;
             vecX /= d;
             vecY = pl.normal() ^ vecX;
-            vecY /= mag(vecY);
+            // OF12 port fix: skip degenerate frame where normal and vecX are parallel
+            const scalar magVY = mag(vecY);
+            if( magVY < SMALL )
+                continue;
+            vecY /= magVY;
             found = true;
             break;
         }
@@ -344,52 +348,75 @@ inline point meshSurfaceOptimizer::newPositionSurfaceOptimizer
     const pointFieldPMG& points = surfaceEngine_.points();
     const labelList& bPoints = surfaceEngine_.boundaryPoints();
 
+    // OF12 port fix: cache original position for fallback returns
+    const point& origP = points[bPoints[bpI]];
+
     if( vertexType_[bpI] & LOCKED )
-        return points[bPoints[bpI]];
+        return origP;
 
     # ifdef DEBUGSmooth
     Pout << "Smoothing boundary node " << bpI << endl;
     Pout << "Node label in the mesh is " << bPoints[bpI] << endl;
-    Pout << "Point coordinates " << points[bPoints[bpI]] << endl;
+    Pout << "Point coordinates " << origP << endl;
     # endif
 
     //- project vertices onto the plane
     const vector& pNormal = surfaceEngine_.pointNormals()[bpI];
     if( magSqr(pNormal) < VSMALL )
-        return points[bPoints[bpI]];
+        return origP;
 
-    const plane pl(points[bPoints[bpI]], pNormal);
+    const plane pl(origP, pNormal);
 
     DynList<point> pts;
     DynList<triFace> trias;
     vector vecX, vecY;
+
     bool success = this->transformIntoPlane(bpI, pl, vecX, vecY, pts, trias);
     if( !success )
-    {
-        //Warning << "Cannot transform to plane" << endl;
-        return points[bPoints[bpI]];
-    }
+        return origP;
+
+    // OF12 port fix: validate local coordinate frame vectors.
+    // When pl.normal() and the neighbour direction are nearly parallel,
+    // vecY = pl.normal() ^ vecX becomes near-zero. Dividing by its
+    // magnitude then produces a huge vector, causing the back-transform
+    //   newP = origP + vecX*x + vecY*y
+    // to blow the vertex far outside the domain and crash
+    // findLeafContainingVertex. Detect this and bail out early.
+    const scalar magVecX = mag(vecX);
+    const scalar magVecY = mag(vecY);
+    if( magVecX < SMALL || magVecY < SMALL )
+        return origP;
+
+    // Local patch scale for displacement bound check below
+    const scalar localScale = magVecX;
 
     surfaceOptimizer so(pts, trias);
     const point newPoint = so.optimizePoint(tol);
 
     const point newP
     (
-        points[bPoints[bpI]] +
+        origP +
         vecX * newPoint.x() +
         vecY * newPoint.y()
     );
 
+    // OF12 port fix: reject NaN/Inf
     if( help::isnan(newP) || help::isinf(newP) )
     {
         WarningIn
         (
             "inline point meshSurfaceOptimizer::newPositionSurfaceOptimizer"
             "(const label, const scalar) const"
-        ) << "Cannot move point " << bpI << endl;
-
-        return points[bPoints[bpI]];
+        ) << "NaN/Inf position for point " << bpI
+          << " - keeping original" << endl;
+        return origP;
     }
+
+    // OF12 port fix: reject unreasonably large displacements.
+    // Displacement > 10x local patch scale indicates a degenerate
+    // coordinate frame slipped through the checks above.
+    if( mag(newP - origP) > 10.0 * localScale )
+        return origP;
 
     return newP;
 }

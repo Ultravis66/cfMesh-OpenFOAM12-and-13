@@ -55,13 +55,9 @@ label meshOctree::findLeafContainingVertex
         Info << "Vertex " << p << " is not in the initial cube" << endl;
         # endif
 
-        FatalErrorIn
-        (
-            "label meshOctree::findLeafContainingVertex(const point&) const"
-        ) << "Point " << p << " is not inside the initial cube" << endl;
-
-        throw "Found invalid locations of points";
-
+        // OF12 port fix: return -1 instead of throwing when a point is
+        // outside the octree domain. The surface smoother can temporarily
+        // move vertices outside the domain; callers handle -1 gracefully.
         return -1;
     }
 
