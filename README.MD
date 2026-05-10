@@ -8,10 +8,10 @@ Successfully tested on **NASA Rotor 37** turbomachinery passage geometry.
 ---
 
 ## What works
-- `cartesianMesh` — Cartesian hex-dominant mesher
-- `tetMesh` — Tetrahedral mesher
-- `pMesh` — Polyhedral mesher
-- `libmeshLibrary.so` — Core mesh library
+- `cartesianMesh` Cartesian hex-dominant mesher
+- `tetMesh` Tetrahedral mesher
+- `pMesh` Polyhedral mesher
+- `libmeshLibrary.so` Core mesh library
 
 ---
 
