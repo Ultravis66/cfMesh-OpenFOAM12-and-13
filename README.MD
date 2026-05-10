@@ -1,4 +1,3 @@
-cat > ~/cfmesh-repo/README.MD << 'READMEEOF'
 # cfMesh OpenFOAM 12 & 13 Port
 
 A working port of cfMesh to OpenFOAM 12 and 13 (openfoam.org).
