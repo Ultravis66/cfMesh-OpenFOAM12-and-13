@@ -1,4 +1,4 @@
-cat > ~/cfmesh-repo/README.MD << 'EOF'
+cat > ~/cfmesh-repo/README.MD << 'READMEEOF'
 # cfMesh OpenFOAM 12 & 13 Port
 
 A working port of cfMesh to OpenFOAM 12 and 13 (openfoam.org).
@@ -9,10 +9,10 @@ Successfully tested on **NASA Rotor 37** turbomachinery passage geometry.
 ---
 
 ## What works
-- `cartesianMesh`  Cartesian hex-dominant mesher
-- `tetMesh`  Tetrahedral mesher
-- `pMesh`  Polyhedral mesher
-- `libmeshLibrary.so`  Core mesh library
+- `cartesianMesh` — Cartesian hex-dominant mesher
+- `tetMesh` — Tetrahedral mesher
+- `pMesh` — Polyhedral mesher
+- `libmeshLibrary.so` — Core mesh library
 
 ---
 
@@ -61,22 +61,24 @@ cd ../executables/pMesh && wmake
 
 ## Runtime fixes (this port goes beyond just compiling)
 
-Previous ports of cfMesh to modern OpenFOAM compile successfully but crash or
-hang at runtime. This port fixes the following runtime bugs:
+Previous ports of cfMesh to modern OpenFOAM compile but crash or hang at runtime.
+This port fixes the following runtime bugs discovered through debugging on a
+NASA Rotor 37 turbomachinery geometry:
 
-| Bug | File | Fix |
-|-----|------|-----|
-| `face::centre()` returns garbage for cfMesh face ordering → phantom 1946 inverted faces | `meshSurfaceEngineCalculateBoundaryNodesAndFaces.C`, `meshSurfaceEngineModifier.C`, `edgeExtractor.C` | Replace with simple vertex average |
-| Inversion check runs on unmapped octree mesh → infinite untangler loop | `cartesianMeshGenerator.C` | Map vertices onto surface BEFORE `preMapVertices()` |
-| `preMapVertices()` internal `untangleSurface` hangs on complex geometry | `cartesianMeshGenerator.C`, `meshSurfaceMapperPremapVertices.C` | Use `preMapVertices(0)` to skip internal untangle |
-| `findLeafContainingVertex` throws `char const*` → uncaught crash | `meshOctreeNeighbourSearches.C` | Replace throw with `return -1` |
-| `newPositionSurfaceOptimizer` produces out-of-domain vertex positions | `meshSurfaceOptimizerI.H` | Add displacement bound check and vecY near-zero guard |
-| `pointFieldPMG::setSize` over-allocates without zero-init → garbage points in output | `pointFieldPMGI.H` | Zero-initialize over-allocated region |
-| Octree points uninitialized for unreferenced nodes | `meshOctreeAddressingCreation.C` | Zero-initialize `octreePointsPtr_` |
-| `checkFacePatchesGeometry` unbounded `do-while` loop → infinite loop | `edgeExtractor.C` | Add iteration limit (`nGeomIter < 5`) |
-| `findNearestSurfacePoint` 100-iteration expansion → hang for out-of-STL vertices | `meshOctreeFindNearestSurfacePoint.C` | Reduce limit to 10 |
-| `optimizePoint` FPE from zero `funcBefore` division | `surfaceOptimizer.C` | Guard zero divisions |
-| `untangleSurface` global iteration limit too high for complex geometry | `meshSurfaceOptimizerOptimizeSurface.C` | Limit to 2 global iterations |
+| Bug | Fix |
+|-----|-----|
+| `face::centre()` returns garbage for cfMesh face ordering → phantom 1946 inverted faces | Replace with simple vertex average in `calculateFaceCentres()`, `meshSurfaceEngineModifier`, `edgeExtractor` |
+| Inversion check on unmapped octree mesh → infinite untangler loop | Map vertices onto surface BEFORE `preMapVertices()` in `mapMeshToSurface()` |
+| `preMapVertices()` internal `untangleSurface` hangs on complex geometry | Use `preMapVertices(0)` to skip internal untangle |
+| `findLeafContainingVertex` throws `char const*` → uncaught crash | Replace throw with `return -1` |
+| `newPositionSurfaceOptimizer` produces out-of-domain vertex positions | Add displacement bound and vecY near-zero guard |
+| `pointFieldPMG::setSize` uninitialized over-allocation → garbage points | Zero-initialize over-allocated region |
+| Octree points uninitialized for unreferenced nodes | Zero-initialize `octreePointsPtr_` |
+| `checkFacePatchesGeometry` unbounded loop → infinite loop | Add iteration limit (`nGeomIter < 5`) |
+| `findNearestSurfacePoint` 100-iteration hang for out-of-STL vertices | Reduce limit to 10 |
+| `optimizePoint` FPE from zero division | Guard zero divisions in `surfaceOptimizer` |
+| `untangleSurface` too many global iterations for complex geometry | Limit to 2 global iterations |
+| Point sanitizer | Zero out near-zero denormalized values before writing mesh |
 
 ---
 
@@ -96,4 +98,5 @@ hang at runtime. This port fixes the following runtime bugs:
 ## Disclaimer
 This is an unofficial community port and is not affiliated with Creative Fields
 or the OpenFOAM Foundation.
-EOF
+READMEEOF
+echo "README written"
