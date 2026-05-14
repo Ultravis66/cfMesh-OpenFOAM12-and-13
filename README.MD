@@ -1,5 +1,5 @@
 # cfMesh OpenFOAM 12 & 13 Port
-## WORK IN PROGRESS!
+## WORK IN PROGRESS! more patches to come in a few days.
 A working port of cfMesh to OpenFOAM Foundation versions 12 and 13.
 
 Original cfMesh was developed by Franjo Juretic / Creative Fields and is licensed under GPL v3.
