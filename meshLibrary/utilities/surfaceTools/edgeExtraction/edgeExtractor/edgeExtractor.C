@@ -218,8 +218,7 @@ void edgeExtractor::findPatchesNearSurfaceFace()
         {
             const face& bf = bFaces[bfI];
 
-            // OF12 fix: vertex average instead of bf.centre()
-            vector c = vector::zero; forAll(bf,pI) c+=points[bf[pI]]; c/=bf.size();
+            const vector c = bf.centre(points);
 
             // find a reasonable searching distance comparable to face size
             scalar d(0.0);
@@ -719,8 +718,7 @@ void edgeExtractor::moveVerticesTowardsDiscontinuities(const label nIterations)
             # endif
             forAll(bFaces, bfI)
             {
-                // OF12 fix: centre() garbage - use vertex average
-                const face& bff = bFaces[bfI]; vector centre = vector::zero; forAll(bff,pI) centre+=points[bff[pI]]; centre/=bff.size();
+                const vector centre = bFaces[bfI].centre(points);
 
                 point newP;
                 scalar distSq;
@@ -901,8 +899,7 @@ void edgeExtractor::distributeBoundaryFaces()
     {
         const face& bf = bFaces[bfI];
 
-        // OF12 fix: vertex average instead of bf.centre()
-        point c = vector::zero; forAll(bf,pI) c+=points[bf[pI]]; c/=bf.size();
+        const point c = bf.centre(points);
 
         //- find the nearest surface patch to face centre
         label fPatch, nTri;
@@ -1023,8 +1020,7 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 scalar dSq(VGREAT);
                 label nearestTriangle;
 
-                // OF12 fix: vertex average instead of bf.centre()
-                point p = vector::zero; forAll(bf,pI) p+=points[bf[pI]]; p/=bf.size();
+                point p = bf.centre(points);
                 meshOctree_.findNearestSurfacePointInRegion
                 (
                     pMap,
@@ -1039,8 +1035,7 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 //- calculate normal vectors
                 vector tn = surf[nearestTriangle].normal(sPoints);
                 tn /= (mag(tn) + VSMALL);
-                // OF12 fix: bf.normal() garbage - use triangle fan
-                vector fn = vector::zero; for(label pi=1;pi<bf.size()-1;++pi) fn+=(points[bf[pi]]-points[bf[0]])^(points[bf[pi+1]]-points[bf[0]]);
+                vector fn = bf.normal(points);
                 fn /= (mag(fn) + SMALL);
 
                 //- calculate alignment
@@ -2068,7 +2063,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
     //- allocate a copy of boundary patches
     labelList newBoundaryPatches(facePatch_.size());
 
-    label nCorrected, nGeomIter(0); // OF12 port fix
+    label nCorrected;
     Map<label> otherProcNewPatch;
 
     boolList activePoints(bPoints.size(), true);
@@ -2132,7 +2127,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
 
         //- untangle the surface
         meshSurfaceOptimizer mso(mPart, meshOctree_);
-        mso.untangleSurface(activePointLabel, 0); // OF12 port fix
+        mso.untangleSurface(activePointLabel, 1);
 
         nCorrected = 0;
         newBoundaryPatches = facePatch_;
@@ -2242,7 +2237,7 @@ bool edgeExtractor::checkFacePatchesGeometry()
             facePatch_ = newBoundaryPatches;
         }
 
-    } while( nCorrected != 0 && (++nGeomIter < 5) ); // OF12 port fix
+    } while( nCorrected != 0 );
 
     return changed;
 }
@@ -2395,7 +2390,7 @@ bool edgeExtractor::untangleSurface()
     meshSurfaceEngine& mse =
         const_cast<meshSurfaceEngine&>(this->surfaceEngine());
     meshSurfaceOptimizer optimizer(mse, meshOctree_);
-    changed = optimizer.untangleSurface(0); // OF12 port fix
+    changed = optimizer.untangleSurface();
 
     return changed;
 }

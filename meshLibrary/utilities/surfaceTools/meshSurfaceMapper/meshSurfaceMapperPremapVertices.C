@@ -299,7 +299,7 @@ void meshSurfaceMapper::preMapVertices(const label nIterations)
         //- update the surface geometry of the
         surfaceModifier.updateGeometry();
 
-        meshSurfaceOptimizer(surfaceEngine_, meshOctree_).untangleSurface(0); // OF12 port fix: 0 iterations
+        meshSurfaceOptimizer(surfaceEngine_, meshOctree_).untangleSurface();
 
         surfaceModifier.updateGeometry();
     }

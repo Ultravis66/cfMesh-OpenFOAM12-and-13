@@ -102,25 +102,16 @@ void cartesianMeshGenerator::mapMeshToSurface()
 {
     //- calculate mesh surface
     meshSurfaceEngine mse(mesh_);
+
+    //- pre-map mesh surface
     meshSurfaceMapper mapper(mse, *octreePtr_);
+    mapper.preMapVertices();
 
-    // OF12 port fix: map vertices onto surface BEFORE preMapVertices.
-    // preMapVertices checks face centres computed from raw octree positions
-    // (not yet on the STL surface), producing phantom inversions.
-    // Mapping first gives correct geometry for the inversion check.
+    //- map mesh surface on the geometry surface
     mapper.mapVerticesOntoSurface();
 
-    // OF12 port fix: preMapVertices(0) skips internal untangleSurface loop
-    // which hangs on complex curved geometries with unresolvable inversions.
-    mapper.preMapVertices(0);
-
-    //- re-project after smoothing
-    mapper.mapVerticesOntoSurface();
-
-    // OF12 port fix: untangleSurface limited to 1 global iteration
-    // to prevent infinite looping on complex curved geometries with
-    // a small number of unresolvable inverted faces.
-    meshSurfaceOptimizer(mse, *octreePtr_).untangleSurface(1);
+    //- untangle surface faces
+    meshSurfaceOptimizer(mse, *octreePtr_).untangleSurface();
 }
 
 void cartesianMeshGenerator::extractPatches()
@@ -141,16 +132,13 @@ void cartesianMeshGenerator::mapEdgesAndCorners()
 void cartesianMeshGenerator::optimiseMeshSurface()
 {
     meshSurfaceEngine mse(mesh_);
-    //meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface(); // OF12 port fix: disabled
+    meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
 }
 
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
     boundaryLayers bl(mesh_);
-    // OF12 improvement: terminate layers at concave edges to prevent
-    // inverted cells at blade-endwall junctions and trailing edges
-    bl.terminateLayersAtConcaveEdges();
     bl.addLayerForAllPatches();
 }
 
@@ -183,7 +171,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             readBool(meshDict_.lookup("enforceGeometryConstraints"));
     }
 
-    if( false ) // OF12 port fix: disabled
+    if( true )
     {
         meshSurfaceEngine mse(mesh_);
         meshSurfaceOptimizer surfOpt(mse, *octreePtr_);
@@ -395,10 +383,6 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
 
     meshOctreeCreator(*octreePtr_, meshDict_).createOctreeBoxes();
 
-    // OF12: auto-detect CPU cores
-    # ifdef USE_OMP
-    if( omp_get_max_threads() == 1 ) { omp_set_num_threads(omp_get_num_procs()); Info << "cfMesh: using " << omp_get_num_procs() << " OpenMP threads" << endl; }
-    # endif
     generateMesh();
 }
 
@@ -415,14 +399,6 @@ cartesianMeshGenerator::~cartesianMeshGenerator()
 
 void cartesianMeshGenerator::writeMesh() const
 {
-    // OF12 port fix: sanitize uninitialized points before writing
-    pointFieldPMG& pts = const_cast<pointFieldPMG&>(mesh_.points());
-    forAll(pts, pI)
-    {
-        point& p = pts[pI];
-        if( mag(p) < 1e-100 && mag(p) > 0.0 )
-            p = vector::zero;
-    }
     mesh_.write();
 }
 

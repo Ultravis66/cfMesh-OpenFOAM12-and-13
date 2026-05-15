@@ -270,7 +270,7 @@ void topologicalCleaner::checkInvalidConnectionsForVerticesFaces
         forAll(neiProcs, procI)
         {
             labelList receivedData;
-            IPstream fromOtherProc(Pstream::commsTypes::blocking, neiProcs[procI]);
+            IPstream fromOtherProc(Pstream::commsTypes::blocking, neiProcs[procI], false);
                 fromOtherProc >> receivedData;
 
             label counter(0);

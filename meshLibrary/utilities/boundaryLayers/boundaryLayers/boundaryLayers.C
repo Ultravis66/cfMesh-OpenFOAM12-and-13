@@ -686,6 +686,56 @@ void boundaryLayers::addLayerForAllPatches()
 
         //- create bnd layer cells
         createLayerCells(treatedPatches);
+
+        //- OF12 improvement: quality-based BL rollback
+        //- For each extruded vertex, check if it creates negative-volume cells.
+        //- If so, revert it to the original wall position (zero-thickness layer).
+        {
+            pointFieldPMG& pts = mesh_.points();
+            const cellListPMG& cells = mesh_.cells();
+            const faceListPMG& faces = mesh_.faces();
+            label nReverted = 0;
+            forAll(newLabelForVertex_, pointI)
+            {
+                const label newPtI = newLabelForVertex_[pointI];
+                if( newPtI < 0 || newPtI >= label(pts.size()) ) continue;
+                bool hasNegVol = false;
+                forAll(cells, cellI)
+                {
+                    const cell& c = cells[cellI];
+                    bool found = false;
+                    forAll(c, fI)
+                    {
+                        const face& f = faces[c[fI]];
+                        forAll(f, pI)
+                            if( f[pI] == newPtI ) { found = true; break; }
+                        if( found ) break;
+                    }
+                    if( !found ) continue;
+                    scalar vol = 0.0;
+                    forAll(c, fI)
+                    {
+                        const face& f = faces[c[fI]];
+                        point fc = vector::zero;
+                        forAll(f, pI) fc += pts[f[pI]];
+                        fc /= f.size();
+                        vector fn = vector::zero;
+                        for(label pi=1;pi<f.size()-1;++pi)
+                            fn += (pts[f[pi]]-pts[f[0]])^(pts[f[pi+1]]-pts[f[0]]);
+                        vol += fn & fc;
+                    }
+                    if( vol < 0.0 ) { hasNegVol = true; break; }
+                }
+                if( hasNegVol )
+                {
+                    pts[newPtI] = pts[pointI];
+                    ++nReverted;
+                }
+            }
+            if( nReverted > 0 )
+                Info << "BL rollback: reverted " << nReverted
+                     << " bad layer vertices to wall surface" << endl;
+        }
     }
 }
 

@@ -125,8 +125,7 @@ void meshSurfaceEdgeExtractor2D::distributeBoundaryFaces()
         else
         {
             //- this face is active
-            // OF12 fix: f.centre() garbage - use vertex average
-            point c = vector::zero; forAll(f,pI) c+=points[f[pI]]; c/=f.size();
+            const point c = f.centre(points);
 
             //- find the patch index of the nearest location on the surface mesh
             point mapPoint;

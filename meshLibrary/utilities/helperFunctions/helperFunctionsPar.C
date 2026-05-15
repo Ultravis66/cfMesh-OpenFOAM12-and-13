@@ -79,7 +79,7 @@ void whisperReduce(const ListType& neis, const scatterOp& sop, gatherOp& gop)
     {
         //- receive the data
         List<T> receivedData;
-        IPstream fromOtherProc(Pstream::commsTypes::blocking, above[aboveI]);
+        IPstream fromOtherProc(Pstream::commsTypes::blocking, above[aboveI], false);
         fromOtherProc >> receivedData;
 
         gop(receivedData);
@@ -104,7 +104,7 @@ void whisperReduce(const ListType& neis, const scatterOp& sop, gatherOp& gop)
     {
         //- receive the data
         List<T> receivedData;
-        IPstream fromOtherProc(Pstream::commsTypes::blocking, below[belowI]);
+        IPstream fromOtherProc(Pstream::commsTypes::blocking, below[belowI], false);
         fromOtherProc >> receivedData;
 
         gop(receivedData);
@@ -186,7 +186,7 @@ void exchangeMap
             if( !receiveData.found(iter->first) )
                 continue;
 
-            IPstream fromOtherProc(Pstream::commsTypes::blocking, iter->first);
+            IPstream fromOtherProc(Pstream::commsTypes::blocking, iter->first, false);
             data.appendFromStream(fromOtherProc);
         }
     }
@@ -205,7 +205,7 @@ void exchangeMap
                 continue;
 
             //List<T> receive;
-            IPstream fromOtherProc(Pstream::commsTypes::scheduled, iter->first);
+            IPstream fromOtherProc(Pstream::commsTypes::scheduled, iter->first, false);
             //fromOtherProc >> receive;
             data.appendFromStream(fromOtherProc);
 
@@ -243,7 +243,7 @@ void exchangeMap
             if( !receiveData.found(riter->first) )
                 continue;
 
-            IPstream fromOtherProc(Pstream::commsTypes::scheduled, riter->first);
+            IPstream fromOtherProc(Pstream::commsTypes::scheduled, riter->first, false);
             //List<T> receive;
             //fromOtherProc >> receive;
             data.appendFromStream(fromOtherProc);
@@ -330,7 +330,7 @@ void exchangeMap
         mOut.insert(std::make_pair(iter->first, List<T>()));
         List<T>& dataToReceive = mOut[iter->first];
 
-        IPstream fromOtherProc(Pstream::commsTypes::blocking, iter->first);
+        IPstream fromOtherProc(Pstream::commsTypes::blocking, iter->first, false);
         fromOtherProc >> dataToReceive;
     }
 }

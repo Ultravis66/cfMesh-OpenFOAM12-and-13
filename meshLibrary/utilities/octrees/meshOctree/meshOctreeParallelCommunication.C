@@ -147,7 +147,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         dataToReceive.appendFromStream(fromOtherProc);
     }
 
@@ -159,7 +159,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- send data to other processor
-        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         toOtherProc << toProcs[neiProcI];
     }
 
@@ -172,7 +172,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         dataToReceive.appendFromStream(fromOtherProc);
     }
 
@@ -184,7 +184,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- send data to other processor
-        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         toOtherProc << toProcs[neiProcI];
     }
 }
@@ -299,7 +299,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
 
         dataToReceive.appendFromStream(fromOtherProc);
     }
@@ -312,7 +312,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- send data to other processor
-        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         toOtherProc << toProcs[neiProcI];
     }
 
@@ -325,7 +325,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
 
         dataToReceive.appendFromStream(fromOtherProc);
     }
@@ -338,7 +338,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- send data to other processor
-        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        OPstream toOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
         toOtherProc << toProcs[neiProcI];
     }
 
@@ -353,7 +353,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
 
         receivedRanges.appendFromStream(fromOtherProc);
     }
@@ -385,7 +385,7 @@ void meshOctree::exchangeRequestsWithNeighbourProcessors
             continue;
 
         //- receive data from other processor
-        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI]);
+        IPstream fromOtherProc(Pstream::commsTypes::scheduled, neiProcs_[neiProcI], false);
 
         receivedRanges.appendFromStream(fromOtherProc);
     }

@@ -78,11 +78,7 @@ inline void pointFieldPMG::setSize(const label nElmts)
     if( nElmts >= pointField::size() )
     {
         Info << "Resizing points!" << endl;
-        const label oldSize = pointField::size();
         pointField::setSize(label(1.5*nElmts)+1);
-        // OF12 port fix: zero-initialize new elements
-        for( label i = oldSize; i < pointField::size(); ++i )
-            pointField::operator[](i) = vector::zero;
     }
 
     nElmts_ = nElmts;

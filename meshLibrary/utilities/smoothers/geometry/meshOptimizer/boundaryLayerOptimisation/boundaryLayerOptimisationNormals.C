@@ -385,8 +385,7 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
                 forAllRow(edgeFaces, beI, befI)
                 {
                     const face& bf = bFaces[edgeFaces(beI, befI)];
-                    // OF12 fix: bf.normal() garbage - use triangle fan
-                    vector fNormal = vector::zero; for(label pi=1;pi<bf.size()-1;++pi) fNormal+=(points[bf[pi]]-points[bf[0]])^(points[bf[pi+1]]-points[bf[0]]);
+                    const vector fNormal = bf.normal(points);
 
                     const label pos = bf.which(he.start());
 

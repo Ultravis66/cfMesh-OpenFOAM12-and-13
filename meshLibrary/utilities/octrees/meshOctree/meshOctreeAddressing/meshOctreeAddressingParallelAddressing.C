@@ -171,7 +171,7 @@ void meshOctreeAddressing::calcGlobalPointLabels() const
     {
         //- receive the data
         labelList receivedLabels;
-        IPstream fromOtherProc(Pstream::commsTypes::blocking, above[aboveI]);
+        IPstream fromOtherProc(Pstream::commsTypes::blocking, above[aboveI], false);
         fromOtherProc >> receivedLabels;
 
         label counter(0);
@@ -255,7 +255,7 @@ void meshOctreeAddressing::calcGlobalPointLabels() const
     {
         //- receive the data
         labelList receivedLabels;
-        IPstream fromOtherProc(Pstream::commsTypes::blocking, below[belowI]);
+        IPstream fromOtherProc(Pstream::commsTypes::blocking, below[belowI], false);
         fromOtherProc >> receivedLabels;
 
         label counter(0);

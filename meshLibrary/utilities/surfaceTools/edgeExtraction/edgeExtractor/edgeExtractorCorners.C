@@ -847,8 +847,7 @@ bool edgeExtractor::findCornerCandidates()
     forAll(bFaces, bfI)
     {
         const face& bf = bFaces[bfI];
-        // OF12 fix: bf.centre() garbage - use vertex average
-        point c = vector::zero; forAll(bf,pI) c+=points[bf[pI]]; c/=bf.size();
+        const point c = bf.centre(points);
 
         forAll(bf, pI)
         {

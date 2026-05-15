@@ -125,9 +125,7 @@ void meshOctreeAddressing::createOctreePoints() const
     const VRWGraph& nodeLabels = this->nodeLabels();
     const boundBox& rootBox = octree_.rootBox();
 
-    // OF12 port fix: explicitly zero-initialize to avoid uninitialized
-    // memory for nodes not referenced by any leaf cube.
-    octreePointsPtr_ = new pointField(nNodes_, vector::zero);
+    octreePointsPtr_ = new pointField(nNodes_);
     pointField& octreePoints = *octreePointsPtr_;
 
     const label nLeaves = nodeLabels.size();
