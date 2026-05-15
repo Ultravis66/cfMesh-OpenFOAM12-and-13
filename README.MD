@@ -111,4 +111,3 @@ Implemented the previously stub-only terminateLayersAtConcaveEdges flag using me
 
 ## Disclaimer
 Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
-"""
