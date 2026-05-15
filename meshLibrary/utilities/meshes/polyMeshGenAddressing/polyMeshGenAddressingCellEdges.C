@@ -57,7 +57,7 @@ void polyMeshGenAddressing::calcCellEdges() const
         labelList nEdges(cells.size());
 
         # ifdef USE_OMP
-        const label nThreads = 3 * omp_get_num_procs();
+        const label nThreads = omp_get_max_threads();
         # endif
 
         # ifdef USE_OMP

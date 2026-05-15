@@ -99,7 +99,7 @@ void VRWGraphSMPModifier::reverseAddressing(const VRWGraph& origGraph)
     labelLongList nAppearances;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( origGraph.size() < 1000 )
         nThreads = 1;
     # else
@@ -272,7 +272,7 @@ void VRWGraphSMPModifier::reverseAddressing(const VRWGraph& origGraph)
 void VRWGraphSMPModifier::optimizeMemoryUsage()
 {
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( graph_.size() < 1000 )
         nThreads = 1;
     # else

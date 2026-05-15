@@ -239,7 +239,7 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         scalar distSqApprox;
 
         label iter(0);
-        while( iter++ < 20 )
+        while( iter++ < 5 )
         {
             point newP(vector::zero);
             forAll(patches, patchI)
@@ -349,7 +349,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         point mapPointApprox(p);
         scalar distSqApprox;
         label iter(0);
-        while( iter++ < 20 )
+        while( iter++ < 5 )
         {
             point newP(vector::zero);
 

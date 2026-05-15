@@ -136,7 +136,7 @@ void meshSurfaceEngine::calculateBoundaryNodes() const
     boolList isBndPoint(bp.size(), false);
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     # pragma omp parallel for num_threads(nThreads) schedule(static, 1)
     # endif
     forAll(boundaryFaces, bfI)
@@ -286,7 +286,7 @@ void meshSurfaceEngine::calculatePointFaces() const
     labelLongList npf;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( bPoints.size() < 1000 )
         nThreads = 1;
     # else
@@ -491,7 +491,7 @@ void meshSurfaceEngine::calculatePointPatches() const
     const VRWGraph& pFaces = pointFaces();
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     # endif
 
     labelList npPatches(pFaces.size());
@@ -608,7 +608,7 @@ void meshSurfaceEngine::calculatePointPoints() const
     const labelList& bp = this->bp();
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     # endif
 
     labelList npp(boundaryPoints.size());
@@ -782,7 +782,12 @@ void meshSurfaceEngine::calculateFaceNormals() const
     {
         const face& bf = bFaces[bfI];
 
-        faceNormalsPtr_->operator[](bfI) = bf.normal(points);
+        // Triangle fan normal (robust for cfMesh face ordering)
+        vector normal = vector::zero;
+        const point& p0 = points[bf[0]];
+        for(label pI=1; pI<bf.size()-1; ++pI)
+            normal += (points[bf[pI]] - p0) ^ (points[bf[pI+1]] - p0);
+        faceNormalsPtr_->operator[](bfI) = normal;
     }
 }
 
@@ -797,7 +802,14 @@ void meshSurfaceEngine::calculateFaceCentres() const
     # pragma omp parallel for if( bFaces.size() > 1000 )
     # endif
     forAll(bFaces, bfI)
-        faceCentresPtr_->operator[](bfI) = bFaces[bfI].centre(points);
+    {
+        const face& bf = bFaces[bfI];
+        vector centre = vector::zero;
+        forAll(bf, pI)
+            centre += points[bf[pI]];
+        centre /= bf.size();
+        faceCentresPtr_->operator[](bfI) = centre;
+    }
 }
 
 void meshSurfaceEngine::updatePointNormalsAtProcBoundaries() const
@@ -896,7 +908,7 @@ void meshSurfaceEngine::calculateEdgesAndAddressing() const
     VRWGraph& bpEdges = *bpEdgesPtr_;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( pFaces.size() < 1000 )
         nThreads = 1;
     # else
@@ -1101,7 +1113,7 @@ void meshSurfaceEngine::calculateFaceEdgesAddressing() const
     labelList nfe(bFaces.size());
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
 
     # pragma omp parallel num_threads(nThreads)
     # endif
@@ -1167,7 +1179,7 @@ void meshSurfaceEngine::calculateEdgeFacesAddressing() const
     labelList nef(edges.size());
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
 
     # pragma omp parallel num_threads(nThreads)
     # endif

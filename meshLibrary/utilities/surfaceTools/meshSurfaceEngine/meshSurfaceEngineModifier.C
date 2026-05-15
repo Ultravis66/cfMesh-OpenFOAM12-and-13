@@ -93,7 +93,12 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
         {
             const label bfI = pFaces(bpI, pfI);
 
-            faceCentres[bfI] = bFaces[bfI].centre(points);
+            {
+                const face& bf = bFaces[bfI];
+                vector c = vector::zero;
+                forAll(bf, pI) c += points[bf[pI]];
+                faceCentres[bfI] = c / bf.size();
+            }
         }
     }
 
@@ -107,7 +112,14 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
         {
             const label bfI = pFaces(bpI, pfI);
 
-            faceNormals[bfI] = bFaces[bfI].normal(points);
+            {
+                const face& bf = bFaces[bfI];
+                vector n = vector::zero;
+                const point& p0 = points[bf[0]];
+                for(label pI=1; pI<bf.size()-1; ++pI)
+                    n += (points[bf[pI]]-p0)^(points[bf[pI+1]]-p0);
+                faceNormals[bfI] = n;
+            }
         }
     }
 
@@ -262,7 +274,12 @@ void meshSurfaceEngineModifier::updateGeometry
         forAll(updateFaces, bfI)
         {
             if( updateFaces[bfI] )
-                faceCentres[bfI] = bFaces[bfI].centre(points);
+                {
+                const face& bf = bFaces[bfI];
+                vector c = vector::zero;
+                forAll(bf, pI) c += points[bf[pI]];
+                faceCentres[bfI] = c / bf.size();
+            }
         }
     }
 
@@ -277,7 +294,14 @@ void meshSurfaceEngineModifier::updateGeometry
         forAll(updateFaces, bfI)
         {
             if( updateFaces[bfI] )
-                faceNormals[bfI] = bFaces[bfI].normal(points);
+                {
+                const face& bf = bFaces[bfI];
+                vector n = vector::zero;
+                const point& p0 = points[bf[0]];
+                for(label pI=1; pI<bf.size()-1; ++pI)
+                    n += (points[bf[pI]]-p0)^(points[bf[pI+1]]-p0);
+                faceNormals[bfI] = n;
+            }
         }
     }
 

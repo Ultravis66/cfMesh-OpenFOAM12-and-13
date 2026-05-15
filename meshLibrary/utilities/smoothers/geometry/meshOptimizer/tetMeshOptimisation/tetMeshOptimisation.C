@@ -403,7 +403,7 @@ void tetMeshOptimisation::optimiseBoundaryVolumeOptimizer
     const LongList<direction>& smoothVertex = tetMesh_.smoothVertex();
 
     # ifdef USE_OMP
-    label nThreads = omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( smoothVertex.size() < 100 )
       nThreads = 1;
     # else
@@ -551,7 +551,7 @@ void tetMeshOptimisation::optimiseBoundarySurfaceLaplace
     const LongList<direction>& smoothVertex = tetMesh_.smoothVertex();
 
     # ifdef USE_OMP
-    label nThreads = omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( smoothVertex.size() < 1000 )
       nThreads = 1;
     # else

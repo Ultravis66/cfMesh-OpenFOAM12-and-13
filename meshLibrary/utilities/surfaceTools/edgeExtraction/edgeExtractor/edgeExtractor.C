@@ -218,7 +218,9 @@ void edgeExtractor::findPatchesNearSurfaceFace()
         {
             const face& bf = bFaces[bfI];
 
-            const vector c = bf.centre(points);
+            vector c = vector::zero;
+            forAll(bf, _pi) c += points[bf[_pi]];
+            c /= bf.size();
 
             // find a reasonable searching distance comparable to face size
             scalar d(0.0);
@@ -287,7 +289,9 @@ void edgeExtractor::findFeatureEdgesNearEdge()
         forAll(edges, edgeI)
         {
             const edge& e = edges[edgeI];
-            const vector c = e.centre(points);
+            vector c = vector::zero;
+            forAll(e, _pi) c += points[e[_pi]];
+            c /= e.size();
             const scalar d = 1.5 * e.mag(points);
 
             const boundBox bb(c - vector(d, d, d), c + vector(d, d, d));
@@ -718,7 +722,9 @@ void edgeExtractor::moveVerticesTowardsDiscontinuities(const label nIterations)
             # endif
             forAll(bFaces, bfI)
             {
-                const vector centre = bFaces[bfI].centre(points);
+                vector centre = vector::zero;
+                forAll(bFaces[bfI], _pi) centre += points[bFaces[bfI][_pi]];
+                centre /= bFaces[bfI].size();
 
                 point newP;
                 scalar distSq;
@@ -899,7 +905,9 @@ void edgeExtractor::distributeBoundaryFaces()
     {
         const face& bf = bFaces[bfI];
 
-        const point c = bf.centre(points);
+        vector c = vector::zero;
+        forAll(bf, _pi) c += points[bf[_pi]];
+        c /= bf.size();
 
         //- find the nearest surface patch to face centre
         label fPatch, nTri;
@@ -1020,7 +1028,9 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 scalar dSq(VGREAT);
                 label nearestTriangle;
 
-                point p = bf.centre(points);
+                vector p = vector::zero;
+                forAll(bf, _pi) p += points[bf[_pi]];
+                p /= bf.size();
                 meshOctree_.findNearestSurfacePointInRegion
                 (
                     pMap,
@@ -1035,7 +1045,10 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 //- calculate normal vectors
                 vector tn = surf[nearestTriangle].normal(sPoints);
                 tn /= (mag(tn) + VSMALL);
-                vector fn = bf.normal(points);
+                vector fn = vector::zero;
+                const point& _p0n = points[bf[0]];
+                for(label _pi=1; _pi<bf.size()-1; ++_pi)
+                    fn += (points[bf[_pi]]-_p0n)^(points[bf[_pi+1]]-_p0n);
                 fn /= (mag(fn) + SMALL);
 
                 //- calculate alignment

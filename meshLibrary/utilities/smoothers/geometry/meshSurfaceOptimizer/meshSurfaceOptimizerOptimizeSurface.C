@@ -163,7 +163,7 @@ void meshSurfaceOptimizer::smoothEdgePoints
 {
     List<LongList<labelledPoint> > newPositions(1);
     # ifdef USE_OMP
-    newPositions.setSize(omp_get_num_procs());
+    newPositions.setSize(omp_get_max_threads());
     # endif
 
     //- smooth edge vertices
@@ -220,7 +220,7 @@ void meshSurfaceOptimizer::smoothLaplacianFC
 {
     List<LongList<labelledPoint> > newPositions(1);
     # ifdef USE_OMP
-    newPositions.setSize(omp_get_num_procs());
+    newPositions.setSize(omp_get_max_threads());
     # endif
 
     # ifdef USE_OMP

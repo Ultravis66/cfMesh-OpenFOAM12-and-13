@@ -141,7 +141,7 @@ void createFundamentalSheetsFJ::createSheetsAtFeatureEdges()
 //
 //     LongList<labelPair> front;
 //
-//     const label nThreads = 2 * omp_get_num_procs();
+//     const label nThreads = 2 * omp_get_max_threads();
 //     # pragma omp parallel num_threads(nThreads)
 //     {
 //         # pragma omp for

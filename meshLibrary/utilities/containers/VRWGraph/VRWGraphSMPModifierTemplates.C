@@ -43,7 +43,7 @@ void VRWGraphSMPModifier::setSizeAndRowSize(const ListType& s)
     graph_.rows_.setSize(s.size());
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( s.size() < 1000 )
         nThreads = 1;
     # else
@@ -114,7 +114,7 @@ void VRWGraphSMPModifier::reverseAddressing(const GraphType& origGraph)
     labelLongList nAppearances;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( origGraph.size() < 1000 )
         nThreads = 1;
     # else
@@ -290,7 +290,7 @@ void VRWGraphSMPModifier::reverseAddressing
     ListType nAppearances;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( origGraph.size() < 1000 )
         nThreads = 1;
     # else
@@ -467,7 +467,7 @@ void VRWGraphSMPModifier::reverseAddressing
     ListType nAppearances;
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( origGraph.size() < 1000 )
         nThreads = 1;
     # else

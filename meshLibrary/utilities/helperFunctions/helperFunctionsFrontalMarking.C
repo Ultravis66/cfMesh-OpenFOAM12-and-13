@@ -168,7 +168,7 @@ label groupMarking
     label nThreads(1);
 
     # ifdef USE_OMP
-    //nThreads = 3 * omp_get_num_procs();
+    //nThreads = omp_get_max_threads();
     # endif
 
     DynList<label> nGroupsAtThread(nThreads, 0);

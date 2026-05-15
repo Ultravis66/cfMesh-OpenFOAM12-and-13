@@ -52,7 +52,7 @@ void triSurfAddressing::calculateEdges() const
     const VRWGraph& pFacets = pointFacets();
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( pFacets.size() < 1000 )
         nThreads = 1;
     # else

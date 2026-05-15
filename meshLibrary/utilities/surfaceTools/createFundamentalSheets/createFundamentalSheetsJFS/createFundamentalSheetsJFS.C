@@ -188,7 +188,7 @@ void createFundamentalSheetsJFS::createSheetsAtFeatureEdges()
     LongList<labelPair> front;
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     # pragma omp parallel num_threads(nThreads)
     # endif
     {

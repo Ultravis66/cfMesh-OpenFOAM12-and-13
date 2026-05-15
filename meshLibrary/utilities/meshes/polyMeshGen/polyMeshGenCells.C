@@ -84,7 +84,7 @@ void polyMeshGenCells::calculateOwnersAndNeighbours() const
     nIntFaces_ = 0;
 
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     const label chunkSize = faces_.size() / nThreads + 1;
     # else
     const label nThreads = 1;

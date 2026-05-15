@@ -107,7 +107,7 @@ void meshOctree::findNearestSurfacePoint
         if( !found )
             sizeVec *= 2.0;
 
-    } while( !found && (iterationI++ < 100) );
+    } while( !found && (iterationI++ < 10) );
 
     # ifdef DEBUGSearch
     forAll(surface_, triI)
@@ -546,7 +546,7 @@ bool meshOctree::findNearestPointToPatches
     nearest = p;
     scalar distSqApprox;
     label iter(0);
-    while( iter++ < 40 )
+    while( iter++ < 5 )
     {
         point newP(vector::zero);
         forAll(patches, patchI)

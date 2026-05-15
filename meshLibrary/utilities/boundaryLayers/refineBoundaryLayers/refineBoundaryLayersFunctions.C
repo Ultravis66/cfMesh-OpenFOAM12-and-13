@@ -338,7 +338,7 @@ void refineBoundaryLayers::generateNewVertices()
 
     //- count the number of vertices for each split edge
     # ifdef USE_OMP
-    const label nThreads = 3 * omp_get_num_procs();
+    const label nThreads = omp_get_max_threads();
     # else
     const label nThreads = 1;
     # endif

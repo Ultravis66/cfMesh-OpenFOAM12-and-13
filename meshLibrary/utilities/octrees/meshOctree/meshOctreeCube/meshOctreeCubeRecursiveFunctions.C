@@ -46,6 +46,7 @@ void meshOctreeCube::leavesInBox
     DynList<const meshOctreeCube*, 256>& leaves
 ) const
 {
+    if( leaves.size() > 50000 ) return;
     boundBox cubeBox;
     this->cubeBox(rootBox, cubeBox.min(), cubeBox.max());
 
@@ -61,7 +62,7 @@ void meshOctreeCube::leavesInBox
             {
                 meshOctreeCube* scPtr = subCubesPtr_[scI];
 
-                if( scPtr )
+                if( scPtr && scPtr != this )
                 {
                     scPtr->leavesInBox
                     (

@@ -149,7 +149,7 @@ void meshOctreeInsideOutside::frontalMarking()
 
     # ifdef USE_OMP
     if( leaves.size() > 1000 )
-        nThreads = 3 * omp_get_num_procs();
+        nThreads = omp_get_max_threads();
 
     # pragma omp parallel num_threads(nThreads) \
     private(frontCubes, neighbours)

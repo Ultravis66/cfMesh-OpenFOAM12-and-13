@@ -105,7 +105,7 @@ void cartesianMeshGenerator::mapMeshToSurface()
 
     //- pre-map mesh surface
     meshSurfaceMapper mapper(mse, *octreePtr_);
-    mapper.preMapVertices();
+    mapper.preMapVertices(0);
 
     //- map mesh surface on the geometry surface
     mapper.mapVerticesOntoSurface();

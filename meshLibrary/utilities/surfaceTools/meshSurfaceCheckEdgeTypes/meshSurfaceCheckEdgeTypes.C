@@ -72,7 +72,7 @@ void meshSurfaceCheckEdgeTypes::classifyEdges()
     edgeType_.setSize(edges.size());
 
     # ifdef USE_OMP
-    label nThreads = 3 * omp_get_num_procs();
+    label nThreads = omp_get_max_threads();
     if( edges.size() < 1000 )
         nThreads = 1;
     # endif

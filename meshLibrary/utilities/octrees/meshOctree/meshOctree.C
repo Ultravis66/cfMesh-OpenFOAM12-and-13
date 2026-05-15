@@ -211,9 +211,9 @@ void meshOctree::createInitialOctreeBox()
 
     //- allocate data slots
     # ifdef USE_OMP
-    if( omp_get_num_procs() > 0 )
+    if( omp_get_max_threads() > 0 )
     {
-        dataSlots_.setSize(omp_get_num_procs());
+        dataSlots_.setSize(omp_get_max_threads());
     }
     else
     {

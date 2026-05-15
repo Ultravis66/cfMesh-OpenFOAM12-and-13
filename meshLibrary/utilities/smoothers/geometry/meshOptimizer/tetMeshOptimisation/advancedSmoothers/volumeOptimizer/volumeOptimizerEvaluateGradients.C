@@ -278,7 +278,7 @@ scalar volumeOptimizer::optimiseDivideAndConquer(const scalar tol)
 
         if( t < tol )
             break;
-    } while( ++iter < 100 );
+    } while( ++iter < 10 );
 
     return funcAfter;
 }
@@ -387,7 +387,7 @@ scalar volumeOptimizer::optimiseSteepestDescent(const scalar tol)
             p += disp;
             funcAfter = evaluateFunc();
         }
-    } while( (++iter < 100) && !finished );
+    } while( (++iter < 10) && !finished );
 
     # ifdef DEBUGSmooth
     scalar Vmin(VGREAT);

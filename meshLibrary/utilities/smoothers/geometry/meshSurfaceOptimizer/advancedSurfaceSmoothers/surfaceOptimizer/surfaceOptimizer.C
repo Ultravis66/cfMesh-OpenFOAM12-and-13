@@ -263,7 +263,7 @@ scalar surfaceOptimizer::optimiseDivideAndConquer(const scalar tol)
 
         if( t < tol )
             break;
-    } while( ++iter < 100 );
+    } while( ++iter < 10 );
 
     return funcAfter;
 }

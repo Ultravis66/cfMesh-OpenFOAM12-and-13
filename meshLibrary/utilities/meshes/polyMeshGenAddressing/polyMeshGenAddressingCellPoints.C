@@ -57,7 +57,7 @@ void polyMeshGenAddressing::calcCellPoints() const
         labelList nPoints(cells.size());
 
         # ifdef USE_OMP
-        const label nThreads = 3 * omp_get_num_procs();
+        const label nThreads = omp_get_max_threads();
         # pragma omp parallel num_threads(nThreads) if( cells.size() > 10000 )
         # endif
         {
