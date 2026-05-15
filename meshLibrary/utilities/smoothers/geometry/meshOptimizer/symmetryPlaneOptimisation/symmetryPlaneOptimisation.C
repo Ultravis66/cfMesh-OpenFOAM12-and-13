@@ -66,8 +66,9 @@ void symmetryPlaneOptimisation::detectSymmetryPlanes()
             const label end = start + boundaries[patchI].patchSize();
             for(label faceI=start;faceI<end;++faceI)
             {
-                cs.first += faces[faceI].centre(points);
-                ns.first += faces[faceI].normal(points);
+                // OF12 fix: centre/normal garbage - use vertex average and triangle fan
+                { const face& ff=faces[faceI]; point cc=vector::zero; forAll(ff,pI) cc+=points[ff[pI]]; cc/=ff.size(); cs.first+=cc; }
+                { const face& ff=faces[faceI]; vector nn=vector::zero; for(label pi=1;pi<ff.size()-1;++pi) nn+=(points[ff[pi]]-points[ff[0]])^(points[ff[pi+1]]-points[ff[0]]); ns.first+=nn; }
             }
 
             cs.second = ns.second = boundaries[patchI].patchSize();

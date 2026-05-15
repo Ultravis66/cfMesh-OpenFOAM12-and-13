@@ -146,9 +146,12 @@ void cartesianMeshGenerator::optimiseMeshSurface()
 
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
-    // OF12 temp: boundary layers disabled for clean base mesh
-    //boundaryLayers bl(mesh_);
-    //bl.addLayerForAllPatches();
+    //- add boundary layers
+    boundaryLayers bl(mesh_);
+    // OF12 improvement: terminate layers at concave edges to prevent
+    // inverted cells at blade-endwall junctions and trailing edges
+    bl.terminateLayersAtConcaveEdges();
+    bl.addLayerForAllPatches();
 }
 
 void cartesianMeshGenerator::refBoundaryLayers()

@@ -1,3 +1,4 @@
+#include "meshSurfaceCheckEdgeTypes.H"
 /*---------------------------------------------------------------------------*\
   =========                 |
   \\      /  F ield         | cfMesh: A library for mesh generation
@@ -160,11 +161,13 @@ point boundaryLayers::createNewVertex
 
                 if( treatPatches[patchLabel] )
                 {
-                    normal += f.normal(points);
+                    // OF12 fix: f.normal() garbage - use triangle fan
+                    { vector fn=vector::zero; for(label pi=1;pi<f.size()-1;++pi) fn+=(points[f[pi]]-points[f[0]])^(points[f[pi+1]]-points[f[0]]); normal += fn; }
                 }
                 else
                 {
-                    v += f.normal(points);
+                    // OF12 fix: f.normal() garbage - use triangle fan
+                    { vector fn=vector::zero; for(label pi=1;pi<f.size()-1;++pi) fn+=(points[f[pi]]-points[f[0]])^(points[f[pi+1]]-points[f[0]]); v += fn; }
                 }
             }
 
@@ -304,6 +307,45 @@ point boundaryLayers::createNewVertex
     Info << "Distance is " << dist << endl;
     # endif
 
+    //- OF12 port fix: gap-distance detection
+    //- Ray-cast along normal to find opposing surfaces.
+    //- Limits BL thickness to 50% of gap distance.
+    {
+        const faceList::subList& bFaces = mse.boundaryFaces();
+        const vectorField& fCentres = mse.faceCentres();
+        const vectorField& fNormals = mse.faceNormals();
+        scalar minGapDist = VGREAT;
+        const scalar searchDist = dist * 4.0;
+        forAllRow(pFaces, bpI, pfI)
+        {
+            const label faceI = pFaces(bpI, pfI);
+            const face& f = bFaces[faceI];
+            forAll(f, pJ)
+            {
+                const label bpJ = mse.bp()[f[pJ]];
+                if( bpJ < 0 ) continue;
+                forAllRow(pFaces, bpJ, pfJ)
+                {
+                    const label faceJ = pFaces(bpJ, pfJ);
+                    if( bFaces[faceJ].which(bPoints[bpI]) >= 0 ) continue;
+                    const vector& fc = fCentres[faceJ];
+                    const vector& fn = fNormals[faceJ];
+                    const scalar fnMag = mag(fn);
+                    if( fnMag < VSMALL ) continue;
+                    const scalar dot = (fn / fnMag) & normal;
+                    if( dot > -0.3 ) continue;
+                    const vector toFace = fc - p;
+                    const scalar denom = normal & (fn / fnMag);
+                    if( mag(denom) < VSMALL ) continue;
+                    const scalar t = (toFace & (fn / fnMag)) / denom;
+                    if( t > VSMALL && t < searchDist )
+                        minGapDist = Foam::min(minGapDist, t);
+                }
+            }
+        }
+        if( minGapDist < VGREAT )
+            dist = Foam::min(dist, 0.5 * minGapDist);
+    }
     dist = Foam::max(dist, VSMALL);
 
     const point newP = p - dist * normal;
@@ -322,6 +364,28 @@ void boundaryLayers::createNewVertices(const boolList& treatPatches)
     findPatchVertices(treatPatches, patchVertex);
 
     const meshSurfaceEngine& mse = surfaceEngine();
+    // OF12 improvement: terminate layers at concave edges
+    if( terminateLayersAtConcaveEdges_ )
+    {
+        meshSurfaceCheckEdgeTypes edgeCheck(mse);
+        const List<direction>& edgeTypes = edgeCheck.edgeTypes();
+        const edgeList& edges = mse.edges();
+        const labelList& bp = mse.bp();
+        forAll(edgeTypes, edgeI)
+        {
+            if( edgeTypes[edgeI] & meshSurfaceCheckEdgeTypes::CONCAVEEDGE )
+            {
+                const label bp0 = bp[edges[edgeI].start()];
+                const label bp1 = bp[edges[edgeI].end()];
+                if( bp0 >= 0 && bp0 < label(patchVertex.size()) )
+                    patchVertex[bp0] = NONE;
+                if( bp1 >= 0 && bp1 < label(patchVertex.size()) )
+                    patchVertex[bp1] = NONE;
+            }
+        }
+        Info << "Terminated layers at concave edges" << endl;
+    }
+
     const labelList& bPoints = mse.boundaryPoints();
 
     //- the following is needed for parallel runs
@@ -879,11 +943,13 @@ void boundaryLayers::createNewEdgeVerticesParallel
 
                 if( treatPatches[patchLabel] )
                 {
-                    normal[epI] += f.normal(points);
+                    // OF12 fix: f.normal() garbage - use triangle fan
+                    { vector fn=vector::zero; for(label pi=1;pi<f.size()-1;++pi) fn+=(points[f[pi]]-points[f[0]])^(points[f[pi+1]]-points[f[0]]); normal[epI] += fn; }
                 }
                 else
                 {
-                    v[epI] += f.normal(points);
+                    // OF12 fix: f.normal() garbage - use triangle fan
+                    { vector fn=vector::zero; for(label pi=1;pi<f.size()-1;++pi) fn+=(points[f[pi]]-points[f[0]])^(points[f[pi+1]]-points[f[0]]); v[epI] += fn; }
                 }
             }
         }

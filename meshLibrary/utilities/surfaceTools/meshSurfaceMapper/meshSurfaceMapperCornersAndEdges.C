@@ -148,8 +148,9 @@ scalar meshSurfaceMapper::faceMetricInPatch
 
     const pointFieldPMG& points = surfaceEngine_.points();
 
-    const point centre = bf.centre(points);
-    const vector area = bf.normal(points);
+    // OF12 fix: bf.centre/normal garbage - use vertex average and triangle fan
+    point centre = vector::zero; forAll(bf,pI) centre+=points[bf[pI]]; centre/=bf.size();
+    vector area = vector::zero; for(label pi=1;pi<bf.size()-1;++pi) area+=(points[bf[pi]]-points[bf[0]])^(points[bf[pi+1]]-points[bf[0]]);
 
     point projCentre;
     scalar dSq;
