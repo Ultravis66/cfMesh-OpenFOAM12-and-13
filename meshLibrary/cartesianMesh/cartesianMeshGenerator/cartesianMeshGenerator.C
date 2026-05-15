@@ -395,6 +395,10 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
 
     meshOctreeCreator(*octreePtr_, meshDict_).createOctreeBoxes();
 
+    // OF12: auto-detect CPU cores
+    # ifdef USE_OMP
+    if( omp_get_max_threads() == 1 ) { omp_set_num_threads(omp_get_num_procs()); Info << "cfMesh: using " << omp_get_num_procs() << " OpenMP threads" << endl; }
+    # endif
     generateMesh();
 }
 
