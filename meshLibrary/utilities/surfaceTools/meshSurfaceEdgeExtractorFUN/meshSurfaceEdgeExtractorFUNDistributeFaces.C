@@ -85,7 +85,8 @@ void meshSurfaceEdgeExtractorFUN::distributeBoundaryFaces()
     # endif
     forAll(bFaces, bfI)
     {
-        const point c = bFaces[bfI].centre(points);
+        // OF12 fix: centre() garbage - use vertex average
+        const face& bff88 = bFaces[bfI]; point c = vector::zero; forAll(bff88,pI) c+=points[bff88[pI]]; c/=bff88.size();
 
         label facePatch, nt;
         point p;

@@ -719,7 +719,8 @@ void edgeExtractor::moveVerticesTowardsDiscontinuities(const label nIterations)
             # endif
             forAll(bFaces, bfI)
             {
-                const vector centre = bFaces[bfI].centre(points);
+                // OF12 fix: centre() garbage - use vertex average
+                const face& bff = bFaces[bfI]; vector centre = vector::zero; forAll(bff,pI) centre+=points[bff[pI]]; centre/=bff.size();
 
                 point newP;
                 scalar distSq;
@@ -1038,7 +1039,8 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 //- calculate normal vectors
                 vector tn = surf[nearestTriangle].normal(sPoints);
                 tn /= (mag(tn) + VSMALL);
-                vector fn = bf.normal(points);
+                // OF12 fix: bf.normal() garbage - use triangle fan
+                vector fn = vector::zero; for(label pi=1;pi<bf.size()-1;++pi) fn+=(points[bf[pi]]-points[bf[0]])^(points[bf[pi+1]]-points[bf[0]]);
                 fn /= (mag(fn) + SMALL);
 
                 //- calculate alignment

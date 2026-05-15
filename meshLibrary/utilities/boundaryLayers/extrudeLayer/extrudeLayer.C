@@ -778,12 +778,16 @@ void extrudeLayer::movePoints()
                     if( faceI >= nOrigFaces_ )
                     {
                         const face& f = faces[faceI];
-
-                        lps.coordinates() -= f.normal(points);
+                        // OF12 fix: f.normal() garbage - use triangle fan normal
+                        vector fNormal1 = vector::zero;
+                        for(label pI=1;pI<f.size()-1;++pI)
+                            fNormal1 += (points[f[pI]]-points[f[0]])^(points[f[pI+1]]-points[f[0]]);
+                        lps.coordinates() -= fNormal1;
 
                         if( thickness_ < 0.0 )
                         {
-                            const vector c = f.centre(points);
+                            // OF12 fix: f.centre() garbage - use vertex average
+                            vector c = vector::zero; forAll(f,pI) c+=points[f[pI]]; c/=f.size();
                             scalar d(VGREAT);
 
                             forAll(f, pI)
@@ -868,12 +872,16 @@ void extrudeLayer::movePoints()
                 if( faceI >= nOrigFaces_ )
                 {
                     const face& f = faces[faceI];
-
-                    normal -= f.normal(points);
+                    // OF12 fix: f.normal() garbage - use triangle fan normal
+                    vector fNormal2 = vector::zero;
+                    for(label pI=1;pI<f.size()-1;++pI)
+                        fNormal2 += (points[f[pI]]-points[f[0]])^(points[f[pI+1]]-points[f[0]]);
+                    normal -= fNormal2;
 
                     if( thickness_ < 0.0 )
                     {
-                        const vector c = f.centre(points);
+                        // OF12 fix: f.centre() garbage - use vertex average
+                        vector c = vector::zero; forAll(f,pI) c+=points[f[pI]]; c/=f.size();
                         scalar d(VGREAT);
 
                         forAll(f, pI)

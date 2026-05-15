@@ -740,30 +740,76 @@ void meshSurfaceEngine::calculatePointNormals() const
 {
     const VRWGraph& pFaces = pointFaces();
     const vectorField& fNormals = faceNormals();
+    const labelList& bndFacePatches = boundaryFacePatches();
 
-    pointNormalsPtr_ = new vectorField(pFaces.size());
+    // Feature angle threshold for normal averaging
+    // Faces whose normals differ by more than featureAngle are on different
+    // sides of a sharp feature and should NOT be averaged together.
+    const scalar featureAngleCos = Foam::cos(degToRad(30.0));
+
+    pointNormalsPtr_ = new vectorField(pFaces.size(), vector::zero);
+    vectorField& pNormals = *pointNormalsPtr_;
 
     # ifdef USE_OMP
     # pragma omp parallel for if( pFaces.size() > 1000 ) schedule(dynamic, 50)
     # endif
     forAll(pFaces, pI)
     {
+        const label nFaces = pFaces.sizeOfRow(pI);
+        if( nFaces == 0 ) continue;
+
+        // Collect all face normals around this vertex
+        DynList<vector> faceNorms;
+        faceNorms.setSize(nFaces);
+        for(label pfI = 0; pfI < nFaces; ++pfI)
+        {
+            const vector& fn = fNormals[pFaces(pI, pfI)];
+            const scalar fnMag = mag(fn);
+            faceNorms[pfI] = (fnMag > VSMALL) ? fn/fnMag : vector::zero;
+        }
+
+        // Check if this is a feature vertex (normals span > featureAngle)
+        bool isFeatureVertex = false;
+        for(label i = 0; i < nFaces && !isFeatureVertex; ++i)
+            for(label j = i+1; j < nFaces && !isFeatureVertex; ++j)
+                if( (faceNorms[i] & faceNorms[j]) < featureAngleCos )
+                    isFeatureVertex = true;
+
         vector normal(vector::zero);
 
-        forAllRow(pFaces, pI, pfI)
-            normal += fNormals[pFaces(pI, pfI)];
-
-        const scalar d = mag(normal);
-        if( d > VSMALL )
+        if( !isFeatureVertex )
         {
-            normal /= d;
+            // Smooth vertex: area-weighted average of all face normals
+            for(label pfI = 0; pfI < nFaces; ++pfI)
+                normal += fNormals[pFaces(pI, pfI)];
         }
         else
         {
-            normal = vector::zero;
+            // Feature vertex: use only the patch with the most faces
+            // Find dominant patch
+            Map<label> patchCount;
+            for(label pfI = 0; pfI < nFaces; ++pfI)
+            {
+                const label patch = bndFacePatches[pFaces(pI, pfI)];
+                if( patchCount.found(patch) )
+                    ++patchCount[patch];
+                else
+                    patchCount.insert(patch, 1);
+            }
+            label domPatch = -1;
+            label maxCount = 0;
+            forAllConstIter(Map<label>, patchCount, iter)
+                if( iter() > maxCount )
+                { maxCount = iter(); domPatch = iter.key(); }
+
+            // Average normals only from dominant patch
+            for(label pfI = 0; pfI < nFaces; ++pfI)
+                if( bndFacePatches[pFaces(pI, pfI)] == domPatch )
+                    normal += fNormals[pFaces(pI, pfI)];
         }
 
-        (*pointNormalsPtr_)[pI] = normal;
+        const scalar d = mag(normal);
+        pNormals[pI] = (d > VSMALL) ? normal/d : vector::zero;
     }
 
     updatePointNormalsAtProcBoundaries();
@@ -783,9 +829,10 @@ void meshSurfaceEngine::calculateFaceNormals() const
     {
         const face& bf = bFaces[bfI];
         // OF12 port fix: face::normal() in OF12 uses (b-a)^(c-a) which
-        // is opposite in sign to the old OF convention used when cfMesh
-        // was originally written. Negate to restore expected outward normal.
-        faceNormalsPtr_->operator[](bfI) = -bf.normal(points);
+        // OF12 fix: triangle fan normal - bf.normal() garbage for cfMesh ordering
+        vector n = vector::zero;
+        for(label pI=1;pI<bf.size()-1;++pI) n+=(points[bf[pI]]-points[bf[0]])^(points[bf[pI+1]]-points[bf[0]]);
+        faceNormalsPtr_->operator[](bfI) = n;
     }
 }
 

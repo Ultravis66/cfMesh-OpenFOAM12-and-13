@@ -119,7 +119,8 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                 newFacesForFace_.append(faceI, nFaces++);
             }
 
-            p = f.centre(points);
+            // OF12 fix: f.centre() garbage - use vertex average
+            { p = vector::zero; forAll(f,pI) p+=points[f[pI]]; p/=f.size(); }
             points[nPoints] = p;
             ++nPoints;
         }
@@ -171,7 +172,8 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                     newFacesForFace_.append(bfI, nFaces++);
                 }
 
-                p = f.centre(points);
+                // OF12 fix: f.centre() garbage - use vertex average
+            { p = vector::zero; forAll(f,pI) p+=points[f[pI]]; p/=f.size(); }
                 points[nPoints++] = p;
             }
             else
@@ -248,7 +250,8 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                         newFacesForFace_.append(bfI, nFaces++);
                     }
 
-                    p = f.centre(points);
+                    // OF12 fix: f.centre() garbage - use vertex average
+            { p = vector::zero; forAll(f,pI) p+=points[f[pI]]; p/=f.size(); }
                     points[nPoints++] = p;
                 }
                 else
@@ -429,7 +432,8 @@ void decomposeFaces::decomposeConcaveInternalFaces
                 newFaces.appendList(newF);
             }
 
-            const point fCent = f.centre(points);
+            // OF12 fix: f.centre() garbage - use vertex average
+            point fCent = vector::zero; forAll(f,pI) fCent+=points[f[pI]]; fCent/=f.size();
             points.append(fCent);
         }
         else
