@@ -150,6 +150,15 @@ point boundaryLayers::createNewVertex
             # ifdef DEBUGLayer
             Info << "Vertex is on an edge" << endl;
             # endif
+            //- zero-dist for BL-transition edge points
+            if( terminateLayersAtConcaveEdges_
+             && layerScale_.size() > bpI
+             && layerScale_[bpI] < 0.01 )
+            {
+                dist = 0.0;
+            }
+            else
+            {
             vector v(vector::zero);
 
             forAllRow(pFaces, bpI, pfI)
@@ -171,9 +180,20 @@ point boundaryLayers::createNewVertex
             const scalar magV = mag(v) + VSMALL;
             v /= magV;
 
-            normal -= (normal & v) * v;
-
-            const scalar magN = mag(normal) + VSMALL;
+            // For BL/no-BL transition zone: skip projection, use pure wall normal
+            if( terminateLayersAtConcaveEdges_
+             && layerScale_.size() > bpI
+             && layerScale_[bpI] < 0.99 )
+            {
+                const scalar magN = mag(normal) + VSMALL;
+                normal /= magN;
+            }
+            else
+            {
+                normal -= (normal & v) * v;
+                const scalar magN = mag(normal) + VSMALL;
+                normal /= magN;
+            }
             normal /= magN;
 
             forAllRow(pointPoints, bpI, ppI)
@@ -187,6 +207,7 @@ point boundaryLayers::createNewVertex
                 if( prod < dist )
                     dist = prod;
             }
+            }  // closes zero-dist else block
         }
         else if( otherPatches.size() == 2 )
         {
@@ -226,11 +247,19 @@ point boundaryLayers::createNewVertex
                 ) << "Cannot find moving vertex!" << exit(FatalError);
             }
 
-            //- normal vector is co-linear with that edge
-            normal = p - points[bPoints[otherVertex]];
-            dist = 0.5 * mag(normal) + VSMALL;
-
-            normal /= 2.0 * dist;
+            if( terminateLayersAtConcaveEdges_
+             && layerScale_.size() > bpI
+             && layerScale_[bpI] < 0.01 )
+            {
+                dist = 0.0;
+            }
+            else
+            {
+                //- normal vector is co-linear with that edge
+                normal = p - points[bPoints[otherVertex]];
+                dist = 0.5 * mag(normal) + VSMALL;
+                normal /= 2.0 * dist;
+            }
         }
         else
         {
@@ -282,7 +311,28 @@ point boundaryLayers::createNewVertex
     }
     else
     {
-        normal = pNormals[bpI];
+        // Feature-aware normal: only average faces from treated patches
+        {
+            vector patchNormal(vector::zero);
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label patchLabel = boundaryFacePatches[pFaces(bpI, pfI)];
+                if( treatPatches[patchLabel] )
+                {
+                    const face& f = bFaces[pFaces(bpI, pfI)];
+                    vector _n=vector::zero;
+                    const point& _p0=points[f[0]];
+                    for(label _pi=1;_pi<f.size()-1;++_pi)
+                        _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0);
+                    patchNormal += _n;
+                }
+            }
+            const scalar magPN = mag(patchNormal);
+            if( magPN > VSMALL )
+                normal = patchNormal / magPN;
+            else
+                normal = pNormals[bpI];
+        }
 
         forAllRow(pointPoints, bpI, ppI)
         {
@@ -304,12 +354,68 @@ point boundaryLayers::createNewVertex
     Info << "Distance is " << dist << endl;
     # endif
 
-    dist = Foam::max(dist, VSMALL);
+    // Apply layerScale_ ramp at BL/no-BL transition zones
+    if( terminateLayersAtConcaveEdges_ && layerScale_.size() > bpI )
+    {
+        const scalar oldDist = dist;
+        dist *= layerScale_[bpI];
+        static label nS0=0, nS25=0, nS50=0, nS75=0;
+        const scalar sc = layerScale_[bpI];
+        if( sc < 0.01 && ++nS0 <= 5 )
+            Info << "scale=0 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
+        else if( sc < 0.3 && ++nS25 <= 5 )
+            Info << "scale=0.25 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
+        else if( sc < 0.6 && ++nS50 <= 5 )
+            Info << "scale=0.5 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
+        else if( sc < 0.9 && ++nS75 <= 5 )
+            Info << "scale=0.75 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
+    }
+    if( dist > SMALL )
+        dist = Foam::max(dist, VSMALL);
+    else
+        dist = 0.0;
 
-    const point newP = p - dist * normal;
-
+    point newP = p - dist * normal;
     if( help::isnan(newP) || help::isinf(newP) )
         return p;
+    // Robust candidate-point clamping near BL/no-BL termination patches
+    if( terminateLayersAtConcaveEdges_
+     && layerScale_.size() > bpI
+     && layerScale_[bpI] < 0.99 )
+    {
+        forAllRow(pFaces, bpI, pfI)
+        {
+            const label faceI = pFaces(bpI, pfI);
+            const label patchI = boundaryFacePatches[faceI];
+            if( patchI < 0 || patchI >= patchNames_.size() ) continue;
+            const word& nm = patchNames_[patchI];
+            if( nm != "inlet" && nm != "outlet"
+             && nm != "periodic_1" && nm != "periodic_2" ) continue;
+            const face& f = bFaces[faceI];
+            vector fn = vector::zero;
+            const point& fp0 = points[f[0]];
+            for(label pi=1; pi<f.size()-1; ++pi)
+                fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
+            if( mag(fn) < VSMALL ) continue;
+            fn /= mag(fn);
+            point fc = point::zero;
+            forAll(f, fi) fc += points[f[fi]];
+            fc /= scalar(f.size());
+            const scalar s0 = mag((p - fc) & fn);
+            const scalar s1 = mag((newP - fc) & fn);
+            if( s1 > s0 + SMALL )
+            {
+                point candidate = p - 0.25*dist*normal;
+                const scalar s2 = mag((candidate - fc) & fn);
+                if( s2 <= s0 + SMALL )
+                    newP = candidate;
+                else
+                    newP = p;
+                break;
+            }
+        }
+    }
+    return newP;
 
     return newP;
 }
@@ -408,6 +514,12 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
 
     const meshSurfaceEngine& mse = surfaceEngine();
     const labelList& bPoints = mse.boundaryPoints();
+    //- populate zeroDistPoints_ for BL-transition vertices
+    if( terminateLayersAtConcaveEdges_ )
+    {
+        boolList _skipPoint(bPoints.size(), false);
+        markConcaveEdgePoints(_skipPoint);
+    }
 
     const meshSurfacePartitioner& mPart = surfacePartitioner();
     const VRWGraph& pPatches = mPart.pointPatches();
@@ -775,7 +887,11 @@ void boundaryLayers::createNewPartitionVerticesParallel
             continue;
 
         const point& p = points[bPoints[bpI]];
-        const point np = p - pNormals[bpI] * penetrationDistances[bpI];
+        scalar layerDist = penetrationDistances[bpI];
+        if( terminateLayersAtConcaveEdges_
+         && layerScale_.size() > bpI )
+            layerDist *= layerScale_[bpI];
+        const point np = p - pNormals[bpI] * layerDist;
         if( !help::isnan(np) && !help::isinf(np) )
         {
             points[nPoints_] = np;

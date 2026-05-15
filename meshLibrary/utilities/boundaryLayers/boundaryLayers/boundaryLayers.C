@@ -31,11 +31,13 @@ Description
 #include "helperFunctions.H"
 #include "helperFunctionsPar.H"
 #include "meshSurfaceCheckInvertedVertices.H"
+#include "meshSurfaceCheckEdgeTypes.H"
 #include "meshSurfacePartitioner.H"
 #include "polyMeshGen2DEngine.H"
 
 #include "labelledPoint.H"
 #include <map>
+#include <string>
 #include <set>
 
 # ifdef USE_OMP
@@ -599,6 +601,181 @@ void boundaryLayers::createOTopologyLayers()
 void boundaryLayers::terminateLayersAtConcaveEdges()
 {
     terminateLayersAtConcaveEdges_ = true;
+}
+
+void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
+{
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const VRWGraph& edgeFaces = mse.edgeFaces();
+    const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+    const edgeList& edges = mse.edges();
+    const labelList& bPoints = mse.boundaryPoints();
+    const VRWGraph& pointPoints = mse.pointPoints();
+    const meshSurfacePartitioner& mPart = surfacePartitioner();
+    const VRWGraph& pPatches = mPart.pointPatches();
+
+    // Classify patches: wall patches get BL, others are termination
+    // Note: cfMesh stores all patch types as "empty" internally
+    // so use name-based detection
+    boolList isBLPatch(patchNames_.size(), true);
+    boolList isTerminationPatch(patchNames_.size(), false);
+    forAll(patchNames_, patchI)
+    {
+        const word& nm = patchNames_[patchI];
+        if( nm == "inlet" || nm == "outlet"
+         || nm == "periodic_1" || nm == "periodic_2" )
+        {
+            isBLPatch[patchI] = false;
+            isTerminationPatch[patchI] = true;
+        }
+        Info << "BL ramp: patch " << patchI
+             << " name=" << nm
+             << " isBL=" << isBLPatch[patchI] << endl;
+    }
+
+    // Mark which boundary points belong to at least one BL patch
+    boolList boundaryPointIsBL(bPoints.size(), false);
+    forAll(bPoints, bpI)
+        forAllRow(pPatches, bpI, pI)
+        {
+            const label patchI = pPatches(bpI, pI);
+            if( patchI >= 0 && patchI < isBLPatch.size()
+             && isBLPatch[patchI] )
+            {
+                boundaryPointIsBL[bpI] = true;
+                break;
+            }
+        }
+
+    labelList meshToBnd(mesh_.points().size(), -1);
+    forAll(bPoints, bpI)
+        meshToBnd[bPoints[bpI]] = bpI;
+
+    // Initialize scale fields
+    layerScale_.setSize(bPoints.size(), 1.0);
+    zeroDistPoints_.setSize(bPoints.size(), false);
+    boolList zeroPts(bPoints.size(), false);
+
+    // Mark exact transition edge points
+    label nTransitionEdges = 0;
+    forAll(edges, edgeI)
+    {
+        if( edgeFaces.sizeOfRow(edgeI) != 2 ) continue;
+        const label f0 = edgeFaces(edgeI, 0);
+        const label f1 = edgeFaces(edgeI, 1);
+        if( f0 < 0 || f0 >= boundaryFacePatches.size() ) continue;
+        if( f1 < 0 || f1 >= boundaryFacePatches.size() ) continue;
+        const label patch0 = boundaryFacePatches[f0];
+        const label patch1 = boundaryFacePatches[f1];
+        if( patch0 < 0 || patch0 >= patchNames_.size() ) continue;
+        if( patch1 < 0 || patch1 >= patchNames_.size() ) continue;
+        if( patch0 == patch1 ) continue;
+        const bool bl0 = isBLPatch[patch0];
+        const bool bl1 = isBLPatch[patch1];
+        const bool term0 = isTerminationPatch[patch0];
+        const bool term1 = isTerminationPatch[patch1];
+        if( (bl0 && term1) || (bl1 && term0) )
+        {
+            const edge& e = edges[edgeI];
+            const label bp0 = meshToBnd[e[0]];
+            const label bp1 = meshToBnd[e[1]];
+            if( bp0 >= 0 )
+            {
+                zeroDistPoints_[bp0] = true;
+                layerScale_[bp0] = 0.0;
+                zeroPts[bp0] = true;
+            }
+            if( bp1 >= 0 )
+            {
+                zeroDistPoints_[bp1] = true;
+                layerScale_[bp1] = 0.0;
+                zeroPts[bp1] = true;
+            }
+            ++nTransitionEdges;
+        }
+    }
+
+    // Ring 1: neighbors of zero points on BL patches -> 0.25
+    boolList ring1(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !zeroPts[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring1[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.0));
+        }
+    }
+
+    // Ring 2: neighbors of ring1 on BL patches -> 0.5
+    boolList ring2(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !ring1[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] || ring1[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring2[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.1));
+        }
+    }
+
+    // Ring 3: neighbors of ring2 on BL patches -> 0.3
+    boolList ring3(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !ring2[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring3[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.3));
+        }
+    }
+
+    // Ring 4: neighbors of ring3 on BL patches -> 0.6
+    boolList ring4(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !ring3[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring4[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.6));
+        }
+    }
+
+    label nZero = 0, nRing1 = 0, nRing2 = 0, nRing3 = 0, nRing4 = 0;
+    forAll(bPoints, bpI)
+    {
+        if( zeroPts[bpI] ) ++nZero;
+        else if( ring1[bpI] ) ++nRing1;
+        else if( ring2[bpI] ) ++nRing2;
+        else if( ring3[bpI] ) ++nRing3;
+        else if( ring4[bpI] ) ++nRing4;
+    }
+    Info << "BL layerScale ramp: zero=" << nZero
+         << " ring1=" << nRing1
+         << " ring2=" << nRing2
+         << " ring3=" << nRing3
+         << " ring4=" << nRing4
+         << endl;
+    Info << "terminateLayersAtConcaveEdges: marked "
+         << nTransitionEdges << " BL-transition edges." << endl;
 }
 
 void boundaryLayers::activate2DMode()

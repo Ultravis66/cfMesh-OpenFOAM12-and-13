@@ -75,6 +75,8 @@ class boundaryLayers
 
         //- shall the layers be terminated at concave edges (true)
         bool terminateLayersAtConcaveEdges_;
+        mutable boolList zeroDistPoints_;
+        mutable scalarField layerScale_;
 
         //- is it a 2D mesh
         bool is2DMesh_;
@@ -264,6 +266,7 @@ public:
 
         //- terminate boundary layers at concave edges (used as a flag)
         void terminateLayersAtConcaveEdges();
+        void markConcaveEdgePoints(boolList& skipPoint) const;
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches

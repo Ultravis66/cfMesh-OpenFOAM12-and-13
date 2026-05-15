@@ -139,6 +139,8 @@ void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
     boundaryLayers bl(mesh_);
+    bl.terminateLayersAtConcaveEdges();
+    Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
     bl.addLayerForAllPatches();
 }
 
