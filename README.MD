@@ -112,17 +112,3 @@ Implemented the previously stub-only terminateLayersAtConcaveEdges flag using me
 ## Disclaimer
 Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
 """
-
-with open('/root/cfmesh-repo/README.MD', 'w') as f:
-    f.write(content)
-print("README written")
-PYEOF
-
-cd ~/cfmesh-repo
-git add README.MD
-git commit -m "Update README with BL improvements and full fix table"
-git push origin master
-git checkout openfoam13
-git merge master --no-edit
-git push origin openfoam13
-git checkout master
