@@ -1,4 +1,4 @@
-> **WORK IN PROGRESS** — active development, more patches coming.
+> **WORK IN PROGRESS** — more patches coming.
 
 A working port of cfMesh to OpenFOAM Foundation versions 12 and 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
