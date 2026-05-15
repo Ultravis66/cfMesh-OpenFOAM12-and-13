@@ -787,20 +787,26 @@ void meshSurfaceEngine::calculatePointNormals() const
         {
             // Feature vertex: use only the patch with the most faces
             // Find dominant patch
-            Map<label> patchCount;
+            // Use simple linear search - vertices typically on 1-3 patches
+            // Avoids heap allocation (Map) inside OpenMP parallel region
+            DynList<label> patchIds;
+            DynList<label> patchCounts;
             for(label pfI = 0; pfI < nFaces; ++pfI)
             {
                 const label patch = bndFacePatches[pFaces(pI, pfI)];
-                if( patchCount.found(patch) )
-                    ++patchCount[patch];
+                label idx = -1;
+                forAll(patchIds, k)
+                    if( patchIds[k] == patch ) { idx = k; break; }
+                if( idx >= 0 )
+                    ++patchCounts[idx];
                 else
-                    patchCount.insert(patch, 1);
+                { patchIds.append(patch); patchCounts.append(1); }
             }
             label domPatch = -1;
             label maxCount = 0;
-            forAllConstIter(Map<label>, patchCount, iter)
-                if( iter() > maxCount )
-                { maxCount = iter(); domPatch = iter.key(); }
+            forAll(patchIds, k)
+                if( patchCounts[k] > maxCount )
+                { maxCount = patchCounts[k]; domPatch = patchIds[k]; }
 
             // Average normals only from dominant patch
             for(label pfI = 0; pfI < nFaces; ++pfI)
