@@ -779,11 +779,11 @@ void extrudeLayer::movePoints()
                     {
                         const face& f = faces[faceI];
 
-                        lps.coordinates() -= f.normal(points);
+                        { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); lps.coordinates() -= _n; }
 
                         if( thickness_ < 0.0 )
                         {
-                            const vector c = f.centre(points);
+                            vector c=vector::zero; forAll(f,_pi) c+=points[f[_pi]]; c/=f.size();
                             scalar d(VGREAT);
 
                             forAll(f, pI)
@@ -869,11 +869,11 @@ void extrudeLayer::movePoints()
                 {
                     const face& f = faces[faceI];
 
-                    normal -= f.normal(points);
+                    { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); normal -= _n; }
 
                     if( thickness_ < 0.0 )
                     {
-                        const vector c = f.centre(points);
+                        vector c=vector::zero; forAll(f,_pi) c+=points[f[_pi]]; c/=f.size();
                         scalar d(VGREAT);
 
                         forAll(f, pI)

@@ -1259,7 +1259,7 @@ void checkFaceSkewness
         {
             const vector d = fCentres[faceI] - centres[own[faceI]];
 
-            vector n = faces[faceI].normal(points);
+            vector n=vector::zero; const point& _p0n=points[faces[faceI][0]]; for(label _pi=1;_pi<faces[faceI].size()-1;++_pi) n+=(points[faces[faceI][_pi]]-_p0n)^(points[faces[faceI][_pi+1]]-_p0n);
             const scalar magn = mag(n);
             if( magn > VSMALL )
             {

@@ -160,11 +160,11 @@ point boundaryLayers::createNewVertex
 
                 if( treatPatches[patchLabel] )
                 {
-                    normal += f.normal(points);
+                    { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); normal += _n; }
                 }
                 else
                 {
-                    v += f.normal(points);
+                    { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); v += _n; }
                 }
             }
 
@@ -879,11 +879,11 @@ void boundaryLayers::createNewEdgeVerticesParallel
 
                 if( treatPatches[patchLabel] )
                 {
-                    normal[epI] += f.normal(points);
+                    { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); normal[epI] += _n; }
                 }
                 else
                 {
-                    v[epI] += f.normal(points);
+                    { vector _n=vector::zero; const point& _p0=points[f[0]]; for(label _pi=1;_pi<f.size()-1;++_pi) _n+=(points[f[_pi]]-_p0)^(points[f[_pi+1]]-_p0); v[epI] += _n; }
                 }
             }
         }

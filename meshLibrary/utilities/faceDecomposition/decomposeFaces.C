@@ -119,7 +119,7 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                 newFacesForFace_.append(faceI, nFaces++);
             }
 
-            p = f.centre(points);
+            { vector _c=vector::zero; forAll(f,_pi) _c+=points[f[_pi]]; p=_c/f.size(); }
             points[nPoints] = p;
             ++nPoints;
         }
@@ -171,7 +171,7 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                     newFacesForFace_.append(bfI, nFaces++);
                 }
 
-                p = f.centre(points);
+                { vector _c=vector::zero; forAll(f,_pi) _c+=points[f[_pi]]; p=_c/f.size(); }
                 points[nPoints++] = p;
             }
             else
@@ -248,7 +248,7 @@ void decomposeFaces::decomposeMeshFaces(const boolList& decomposeFace)
                         newFacesForFace_.append(bfI, nFaces++);
                     }
 
-                    p = f.centre(points);
+                    { vector _c=vector::zero; forAll(f,_pi) _c+=points[f[_pi]]; p=_c/f.size(); }
                     points[nPoints++] = p;
                 }
                 else
@@ -429,7 +429,7 @@ void decomposeFaces::decomposeConcaveInternalFaces
                 newFaces.appendList(newF);
             }
 
-            const point fCent = f.centre(points);
+            vector fCent=vector::zero; forAll(f,_pi) fCent+=points[f[_pi]]; fCent/=f.size();
             points.append(fCent);
         }
         else

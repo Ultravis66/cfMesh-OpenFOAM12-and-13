@@ -70,7 +70,7 @@ bool triangulateNonPlanarBaseFaces::findNonPlanarBoundaryFaces()
 
         //- calculate min face diagonal
         scalar minDist(VGREAT);
-        const point c = bf.centre(points);
+        vector c=vector::zero; forAll(bf,_pi) c+=points[bf[_pi]]; c/=bf.size();
         forAll(bf, pI)
         {
             minDist = Foam::min(minDist, Foam::mag(c - points[bf[pI]]));

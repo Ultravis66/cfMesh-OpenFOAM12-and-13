@@ -385,7 +385,7 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
                 forAllRow(edgeFaces, beI, befI)
                 {
                     const face& bf = bFaces[edgeFaces(beI, befI)];
-                    const vector fNormal = bf.normal(points);
+                    vector fNormal=vector::zero; const point& _p0f=points[bf[0]]; for(label _pi=1;_pi<bf.size()-1;++_pi) fNormal+=(points[bf[_pi]]-_p0f)^(points[bf[_pi+1]]-_p0f);
 
                     const label pos = bf.which(he.start());
 

@@ -66,8 +66,8 @@ void symmetryPlaneOptimisation::detectSymmetryPlanes()
             const label end = start + boundaries[patchI].patchSize();
             for(label faceI=start;faceI<end;++faceI)
             {
-                cs.first += faces[faceI].centre(points);
-                ns.first += faces[faceI].normal(points);
+                { vector _c=vector::zero; forAll(faces[faceI],_pi) _c+=points[faces[faceI][_pi]]; _c/=faces[faceI].size(); cs.first += _c; }
+                { vector _n=vector::zero; const point& _p0=points[faces[faceI][0]]; for(label _pi=1;_pi<faces[faceI].size()-1;++_pi) _n+=(points[faces[faceI][_pi]]-_p0)^(points[faces[faceI][_pi+1]]-_p0); ns.first += _n; }
             }
 
             cs.second = ns.second = boundaries[patchI].patchSize();

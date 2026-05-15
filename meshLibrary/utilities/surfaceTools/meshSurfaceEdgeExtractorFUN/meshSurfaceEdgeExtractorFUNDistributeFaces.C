@@ -85,7 +85,7 @@ void meshSurfaceEdgeExtractorFUN::distributeBoundaryFaces()
     # endif
     forAll(bFaces, bfI)
     {
-        const point c = bFaces[bfI].centre(points);
+        vector c=vector::zero; forAll(bFaces[bfI],_pi) c+=points[bFaces[bfI][_pi]]; c/=bFaces[bfI].size();
 
         label facePatch, nt;
         point p;
