@@ -1,6 +1,3 @@
-python3 << 'PYEOF'
-content = """# cfMesh OpenFOAM 12 & 13 Port
-
 > **WORK IN PROGRESS** — active development, more patches coming.
 
 A working port of cfMesh to OpenFOAM Foundation versions 12 and 13, with significant boundary layer robustness improvements beyond the original cfMesh.
