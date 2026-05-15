@@ -145,11 +145,11 @@ void voronoiMeshGenerator::optimiseMeshSurface()
 
 void voronoiMeshGenerator::generateBoudaryLayers()
 {
-    boundaryLayers bl(mesh_);
+    boundaryLayers bl(mesh_, meshDict_);
 
     if( meshDict_.found("boundaryLayers") )
     {
-        boundaryLayers bl(mesh_);
+        boundaryLayers bl(mesh_, meshDict_);
 
         const dictionary& bndLayers = meshDict_.subDict("boundaryLayers");
 

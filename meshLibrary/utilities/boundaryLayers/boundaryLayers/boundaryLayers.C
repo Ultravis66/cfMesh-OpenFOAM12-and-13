@@ -535,7 +535,8 @@ void boundaryLayers::addLayerForPatch(const label patchLabel)
 // Construct from mesh reference
 boundaryLayers::boundaryLayers
 (
-    polyMeshGen& mesh
+    polyMeshGen& mesh,
+    const dictionary& meshDict
 )
 :
     mesh_(mesh),
@@ -567,6 +568,34 @@ boundaryLayers::boundaryLayers
     treatedPatch_ = false;
 
     treatPatchesWithPatch_.setSize(boundaries.size());
+
+    // Per-patch nLayers: 0 means no BL (termination patch)
+    nLayersForPatch_.setSize(boundaries.size(), 0);
+    if( meshDict.isDict("boundaryLayers") )
+    {
+        const dictionary& bndLayers = meshDict.subDict("boundaryLayers");
+        label globalNLayers(0);
+        if( bndLayers.found("nLayers") )
+            globalNLayers = readLabel(bndLayers.lookup("nLayers"));
+        nLayersForPatch_ = globalNLayers;
+
+        if( bndLayers.isDict("patchBoundaryLayers") )
+        {
+            const dictionary& patchBndLayers =
+                bndLayers.subDict("patchBoundaryLayers");
+            forAll(boundaries, patchI)
+            {
+                const word& nm = boundaries[patchI].patchName();
+                if( patchBndLayers.isDict(nm) )
+                {
+                    const dictionary& pd = patchBndLayers.subDict(nm);
+                    if( pd.found("nLayers") )
+                        nLayersForPatch_[patchI] =
+                            readLabel(pd.lookup("nLayers"));
+                }
+            }
+        }
+    }
 }
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
@@ -615,22 +644,16 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     const VRWGraph& pPatches = mPart.pointPatches();
 
     // Classify patches: wall patches get BL, others are termination
-    // Note: cfMesh stores all patch types as "empty" internally
-    // so use name-based detection
+    // Classify patches: nLayers==0 => termination (no BL)
     boolList isBLPatch(patchNames_.size(), true);
     boolList isTerminationPatch(patchNames_.size(), false);
     forAll(patchNames_, patchI)
     {
-        const word& nm = patchNames_[patchI];
-        if( nm == "inlet" || nm == "outlet"
-         || nm == "periodic_1" || nm == "periodic_2" )
+        if( nLayersForPatch_[patchI] == 0 )
         {
             isBLPatch[patchI] = false;
             isTerminationPatch[patchI] = true;
         }
-        Info << "BL ramp: patch " << patchI
-             << " name=" << nm
-             << " isBL=" << isBLPatch[patchI] << endl;
     }
 
     // Mark which boundary points belong to at least one BL patch

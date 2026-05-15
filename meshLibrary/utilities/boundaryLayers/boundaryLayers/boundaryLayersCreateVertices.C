@@ -191,9 +191,8 @@ point boundaryLayers::createNewVertex
             else
             {
                 normal -= (normal & v) * v;
-                const scalar magN = mag(normal) + VSMALL;
-                normal /= magN;
             }
+            const scalar magN = mag(normal) + VSMALL;
             normal /= magN;
 
             forAllRow(pointPoints, bpI, ppI)
@@ -388,9 +387,7 @@ point boundaryLayers::createNewVertex
             const label faceI = pFaces(bpI, pfI);
             const label patchI = boundaryFacePatches[faceI];
             if( patchI < 0 || patchI >= patchNames_.size() ) continue;
-            const word& nm = patchNames_[patchI];
-            if( nm != "inlet" && nm != "outlet"
-             && nm != "periodic_1" && nm != "periodic_2" ) continue;
+            if( nLayersForPatch_[patchI] != 0 ) continue;
             const face& f = bFaces[faceI];
             vector fn = vector::zero;
             const point& fp0 = points[f[0]];

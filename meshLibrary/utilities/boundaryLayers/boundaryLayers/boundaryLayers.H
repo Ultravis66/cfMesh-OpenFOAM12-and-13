@@ -104,6 +104,9 @@ class boundaryLayers
         //- a key assigned to each patch. It is needed to search in otherVrts_
         labelList patchKey_;
 
+        //- number of BL layers per patch (0 = no BL = termination patch)
+        labelList nLayersForPatch_;
+
         //- number of vertices in the mesh
         label nPoints_;
 
@@ -252,7 +255,7 @@ public:
     // Constructors
 
         //- Construct from mesh reference
-        boundaryLayers(polyMeshGen& mesh);
+        boundaryLayers(polyMeshGen& mesh, const dictionary& meshDict);
 
     // Destructor
         ~boundaryLayers();

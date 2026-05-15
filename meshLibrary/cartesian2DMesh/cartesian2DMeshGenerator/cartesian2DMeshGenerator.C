@@ -137,7 +137,7 @@ void cartesian2DMeshGenerator::optimiseMeshSurface()
 
 void cartesian2DMeshGenerator::generateBoundaryLayers()
 {
-    boundaryLayers bl(mesh_);
+    boundaryLayers bl(mesh_, meshDict_);
 
     bl.activate2DMode();
 
