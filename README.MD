@@ -1,6 +1,8 @@
 # cfMesh for OpenFOAM 13
 
-> **WORK IN PROGRESS** — active development on OpenFOAM 13 only. Since this got complicated extremely fast, I will only be working on 13 going forward. If you would like to patch 12 with the changes I made to 13, feel free to do it.
+> **WORK IN PROGRESS** — active development on OpenFOAM 13 only.
+> **Since this got complicated extremely fast, I will only be working on 13 going forward.
+> **If you would like to patch 12 with the changes I made to 13, feel free to do it.
 
 A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
