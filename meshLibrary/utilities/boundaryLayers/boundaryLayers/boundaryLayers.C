@@ -74,6 +74,13 @@ void boundaryLayers::findPatchesToBeTreatedTogether()
     if( geometryAnalysed_ )
         return;
 
+    // Pre-mark zero-layer patches as treated so they are excluded
+    // from concave-edge grouping with BL patches
+    forAll(treatedPatch_, patchI)
+        if( patchI < nLayersForPatch_.size()
+         && nLayersForPatch_[patchI] == 0 )
+            treatedPatch_[patchI] = true;
+
     forAll(treatPatchesWithPatch_, patchI)
         treatPatchesWithPatch_[patchI].append(patchI);
 
@@ -498,6 +505,14 @@ void boundaryLayers::addLayerForPatch(const label patchLabel)
     if( treatedPatch_[patchLabel] )
         return;
 
+    // Skip patches explicitly configured with nLayers==0
+    if( patchLabel < nLayersForPatch_.size()
+     && nLayersForPatch_[patchLabel] == 0 )
+    {
+        treatedPatch_[patchLabel] = true;
+        return;
+    }
+
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
 
     if( returnReduce(boundaries[patchLabel].patchSize(), sumOp<label>()) == 0 )
@@ -571,6 +586,7 @@ boundaryLayers::boundaryLayers
 
     // Per-patch nLayers: 0 means no BL (termination patch)
     nLayersForPatch_.setSize(boundaries.size(), 0);
+    Info << "boundaryLayers constructor: nPatches=" << boundaries.size() << endl;
     if( meshDict.isDict("boundaryLayers") )
     {
         const dictionary& bndLayers = meshDict.subDict("boundaryLayers");
@@ -596,6 +612,10 @@ boundaryLayers::boundaryLayers
             }
         }
     }
+    forAll(boundaries, patchI)
+        Info << "  nLayersForPatch[" << patchI << "] "
+             << boundaries[patchI].patchName()
+             << " = " << nLayersForPatch_[patchI] << endl;
 }
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
@@ -730,7 +750,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring1[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.0));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.25));
         }
     }
 
@@ -746,7 +766,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring2[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.1));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.5));
         }
     }
 
@@ -762,7 +782,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring3[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.3));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.75));
         }
     }
 
@@ -778,7 +798,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring4[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.6));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(1.0));
         }
     }
 
@@ -860,7 +880,12 @@ void boundaryLayers::addLayerForAllPatches()
     if( !patchWiseLayers_ )
     {
         forAll(boundaries, patchI)
+        {
+            if( patchI < nLayersForPatch_.size()
+             && nLayersForPatch_[patchI] == 0 )
+                continue;
             addLayerForPatch(patchI);
+        }
     }
     else
     {
@@ -870,6 +895,11 @@ void boundaryLayers::addLayerForAllPatches()
         patchKey_.clear();
 
         //- avoid generating bnd layer at empty patches in case of 2D meshing
+        //- also skip patches with nLayers==0 (inlet, outlet, periodic, etc)
+        forAll(treatedPatch_, patchI)
+            if( patchI < nLayersForPatch_.size()
+             && nLayersForPatch_[patchI] == 0 )
+                treatedPatch_[patchI] = true;
         label counter(0);
         forAll(treatedPatch_, patchI)
             if( !treatedPatch_[patchI] )
