@@ -98,15 +98,15 @@ checkMesh
 ### Patch-based BL control
 Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names — now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
 
-### BL/BL junction topology infrastructure (C1/C3)
-Persistent metadata for sharp BL/BL junction points is now carried through the full meshing pipeline:
+### BL/BL junction topology infrastructure (C1)
 
-- `blblJunctionPoints_` — `labelHashSet` on `boundaryLayers` capturing all boundary points on sharp BL/BL feature curves (blade+hub, blade+shroud). Populated by `markConcaveEdgePoints`, accessible downstream via `blblJunctionPoints()`.
-- Junction points use `layerScale_ = 0.0` — ensures clean zero-displacement at the singular feature line rather than spurious extrusion with a badly-oriented normal.
-- `refineBoundaryLayersFunctions`: degenerate hair edges (zero-length, at junction points) are detected and clamped to prevent machine-epsilon intermediate vertex placement.
-- `refineBoundaryLayersCells`: intermediate layer faces with all-coincident vertices are skipped, preventing zero-volume cell assembly at junction edges.
+Persistent metadata for sharp BL/BL junction points is now carried through the boundary-layer generation pipeline:
 
-This is the foundation for a future full wedge/pyramid topology fix at sharp BL/BL intersections.
+- `blblJunctionPoints_` — `labelHashSet` on `boundaryLayers` capturing boundary points on sharp BL/BL feature curves.
+- Junction points use `layerScale_ = 0.0` to suppress spurious extrusion at the singular feature line.
+- Sharp BL/BL junctions are detected using patch-normal angle comparison rather than hardcoded patch names.
+
+This provides groundwork for a future transition-topology implementation at sharp BL/BL intersections. The remaining planned work is explicit wedge/pyramid/O-grid style topology emission for junction regions where ordinary prism extrusion becomes ill-conditioned.
 
 ### layerScale ramp field
 Smooth suppression zone at BL/no-BL patch boundaries:
@@ -135,7 +135,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issue
-13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. Volume is at floating-point machine epsilon and does not affect solver convergence. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
+13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
 
 ---
 
@@ -187,6 +187,91 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Authors: Franjo Juretic, Philippose Rajan, Ivor Clifford
 
 ---
+## Tutorial: meshing NASA Rotor 37
+
+A complete worked example using the included Rotor 37 two-passage turbomachinery sector geometry.
+
+### Prerequisites
+- cfMesh built and sourced (see Quick start above)
+- ParaView installed (for visualization)
+
+### 1. Set up the case
+
+```bash
+mkdir -p ~/rotor37_mesh/constant/triSurface
+mkdir -p ~/rotor37_mesh/system
+cp /path/to/Rotor37_cfmesh.stl ~/rotor37_mesh/constant/triSurface/
+```
+
+### 2. Copy the included meshDict
+```bash
+cp /path/to/cfMesh/tutorials/rotor37/system/meshDict ~/rotor37_mesh/system/
+```
+
+The included `meshDict` is pre-configured for the Rotor 37 geometry with 3-layer blade BL and 5-layer hub/shroud BL.
+
+### 3. Run the mesher
+
+```bash
+cd ~/rotor37_mesh
+cartesianMesh 2>&1 | tee mesh.log
+```
+
+Expected runtime: ~60 seconds on a modern CPU. Watch for: (7950X3d in my case)
+```
+Finished renaming boundary patches
+```
+
+### 4. Check mesh quality
+
+```bash
+checkMesh -case ~/rotor37_mesh 2>&1 | grep -E "cells:|average non-orth|Failed|aspect|negative"
+```
+
+Expected output:
+cells:            ~2.1M
+Mesh non-orthogonality Max: ~100 degrees  average: 10.5 degrees
+***High aspect ratio cells found, number of cells 13
+***Zero or negative cell volume detected, Number of negative volume cells: 7
+Failed 5 mesh checks.
+
+The 13 high-aspect and 7 negative-volume cells are a known limitation at blade+endwall geometric singularities (machine-epsilon volume, no effect on solver convergence). All other metrics are solver-ready.
+
+### 5. Visualize in ParaView
+
+```bash
+paraFoam -case ~/rotor37_mesh &
+```
+
+Or create a `.foam` file and open manually:
+```bash
+touch ~/rotor37_mesh/rotor37.foam
+# Open rotor37.foam in ParaView
+# Apply → select patches: blade_1-4, hub, shroud
+# Color by: p or U after running a solver
+```
+
+To inspect boundary layers: in ParaView, use **Filters → Extract Block** to isolate wall patches, then apply **Surface with Edges** representation. The 3–5 layer prism stacks on blade and endwall surfaces should be clearly visible.
+
+Or create a `.foam` file and open manually:
+```bash
+touch ~/rotor37_mesh/rotor37.foam
+# Open rotor37.foam in ParaView
+# Apply → select patches: blade_1-4, hub, shroud
+# Color by: p or U after running a solver
+```
+
+To inspect boundary layers: in ParaView, use **Filters → Extract Block** to isolate wall patches, then apply **Surface with Edges** representation. The 3–5 layer prism stacks on blade and endwall surfaces should be clearly visible.
+
+---
+
+## License
+
+This project is licensed under the GNU General Public License v3.0, consistent with the original cfMesh license.
+
+See the `LICENSE` file for details.
 
 ## Disclaimer
 Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
+
+
