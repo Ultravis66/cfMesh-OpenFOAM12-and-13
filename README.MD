@@ -147,8 +147,36 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 | Average non-orthogonality | 10.5° |
 | Bad faces after untangling | 0 |
 | Runtime | ~60s |
-
+| Regression test | 6/6 PASS |
 ---
+## Running the regression test
+
+A automated validation script is included that runs `cartesianMesh` on the Rotor 37 case and checks all key quality metrics against known-good baselines.
+
+```bash
+~/cfMesh/tutorials/rotor37/regression_test.sh ~/rotor37_mesh
+```
+
+Expected output:
+```
+======================================================
+cfMesh Rotor 37 Regression Test
+...
+[ 1/3 ] Running cartesianMesh...
+PASS: cartesianMesh completed in ~75s
+PASS: Bad faces after untangling: 0 (limit: 10)
+[ 2/3 ] Running checkMesh...
+PASS: Cell count: ~2.0M (baseline: 2100000 +/-10%)
+PASS: Average non-orthogonality: ~10deg (limit: 15deg)
+PASS: High aspect ratio cells: 13 (known limit: 13)
+PASS: Negative volume cells: 7 (known limit: 7)
+[ 3/3 ] Summary
+PASSED: 6
+FAILED: 0
+RESULT: PASS
+```
+
+Run this after any code change to catch regressions before committing.
 
 ## Troubleshooting
 
