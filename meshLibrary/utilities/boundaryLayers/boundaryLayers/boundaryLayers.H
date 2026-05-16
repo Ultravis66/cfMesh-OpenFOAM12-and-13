@@ -78,6 +78,13 @@ class boundaryLayers
         mutable boolList zeroDistPoints_;
         mutable scalarField layerScale_;
 
+        //- meshDict-configurable BL transition parameters
+        scalar blblFeatureAngleDeg_;   // degrees, default 40
+        scalar layerScaleRing1_;       // default 0.25
+        scalar layerScaleRing2_;       // default 0.50
+        scalar layerScaleRing3_;       // default 0.75
+        scalar layerScaleRing4_;       // default 1.00
+
         //- is it a 2D mesh
         bool is2DMesh_;
 

@@ -568,7 +568,12 @@ boundaryLayers::boundaryLayers
     otherVrts_(),
     patchKey_(),
     nPoints_(mesh.points().size()),
-    geometryAnalysed_(false)
+    geometryAnalysed_(false),
+    blblFeatureAngleDeg_(40.0),
+    layerScaleRing1_(0.25),
+    layerScaleRing2_(0.50),
+    layerScaleRing3_(0.75),
+    layerScaleRing4_(1.00)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -593,6 +598,23 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("nLayers") )
             globalNLayers = readLabel(bndLayers.lookup("nLayers"));
         nLayersForPatch_ = globalNLayers;
+
+        // Ramp parameters - optional, defaults match hardcoded values
+        if( bndLayers.found("blblFeatureAngleDeg") )
+            blblFeatureAngleDeg_ =
+                readScalar(bndLayers.lookup("blblFeatureAngleDeg"));
+        if( bndLayers.found("layerScaleRing1") )
+            layerScaleRing1_ =
+                readScalar(bndLayers.lookup("layerScaleRing1"));
+        if( bndLayers.found("layerScaleRing2") )
+            layerScaleRing2_ =
+                readScalar(bndLayers.lookup("layerScaleRing2"));
+        if( bndLayers.found("layerScaleRing3") )
+            layerScaleRing3_ =
+                readScalar(bndLayers.lookup("layerScaleRing3"));
+        if( bndLayers.found("layerScaleRing4") )
+            layerScaleRing4_ =
+                readScalar(bndLayers.lookup("layerScaleRing4"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -781,7 +803,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // (blade+hub, blade+shroud) create degenerate layer cells.
     // Threshold: 40 degrees between patch normals.
     {
-        const scalar cosThresh = Foam::cos(40.0 * M_PI / 180.0);
+        const scalar cosThresh = Foam::cos(blblFeatureAngleDeg_ * M_PI / 180.0);
         label nBLBL = 0;
         const VRWGraph& ptFaces = mse.pointFaces();
         forAll(bPoints, bpI)
@@ -862,7 +884,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring1[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.25));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing1_);
         }
     }
 
@@ -878,7 +900,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring2[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.50));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing2_);
         }
     }
 
@@ -894,7 +916,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring3[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.75));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing3_);
         }
     }
 
@@ -910,7 +932,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring4[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(1.0));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing4_);
         }
     }
 
