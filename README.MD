@@ -269,8 +269,6 @@ To inspect boundary layers: in ParaView, use **Filters → Extract Block** to is
 
 This project is licensed under the GNU General Public License v3.0, consistent with the original cfMesh license.
 
-See the `LICENSE` file for details.
-
 ## Disclaimer
 Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
 
