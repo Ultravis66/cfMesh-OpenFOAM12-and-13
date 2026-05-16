@@ -98,6 +98,16 @@ checkMesh
 ### Patch-based BL control
 Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names — now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
 
+### BL/BL junction topology infrastructure (C1/C3)
+Persistent metadata for sharp BL/BL junction points is now carried through the full meshing pipeline:
+
+- `blblJunctionPoints_` — `labelHashSet` on `boundaryLayers` capturing all boundary points on sharp BL/BL feature curves (blade+hub, blade+shroud). Populated by `markConcaveEdgePoints`, accessible downstream via `blblJunctionPoints()`.
+- Junction points use `layerScale_ = 0.0` — ensures clean zero-displacement at the singular feature line rather than spurious extrusion with a badly-oriented normal.
+- `refineBoundaryLayersFunctions`: degenerate hair edges (zero-length, at junction points) are detected and clamped to prevent machine-epsilon intermediate vertex placement.
+- `refineBoundaryLayersCells`: intermediate layer faces with all-coincident vertices are skipped, preventing zero-volume cell assembly at junction edges.
+
+This is the foundation for a future full wedge/pyramid topology fix at sharp BL/BL intersections.
+
 ### layerScale ramp field
 Smooth suppression zone at BL/no-BL patch boundaries:
 
@@ -125,7 +135,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issue
-13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where simple prism extrusion can become topologically ill-conditioned without specialized transition topology such as butterfly/O-grid treatment. Two-pass quality rollback is the planned fix.
+13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. Volume is at floating-point machine epsilon and does not affect solver convergence. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
 
 ---
 
@@ -133,7 +143,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 
 | Metric | Value |
 |--------|-------|
-| Cells | ~2.17M |
+| Cells | ~2.1M |
 | Average non-orthogonality | 10.5° |
 | Bad faces after untangling | 0 |
 | Runtime | ~60s |
