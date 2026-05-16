@@ -1,0 +1,69 @@
+FoamFile
+{
+    version   2.0;
+    format    ascii;
+    class     dictionary;
+    location  "system";
+    object    meshDict;
+}
+
+surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
+
+maxCellSize 0.003;
+boundaryCellSize 0.001;
+minCellSize 0.0005;
+
+insideMesh (0.214 0.000 0.025);
+
+localRefinement
+{
+    blade_1 { cellSize 0.0005; }
+    blade_2 { cellSize 0.0005; }
+    blade_3 { cellSize 0.0005; }
+    blade_4 { cellSize 0.0005; }
+    hub     { cellSize 0.001; }
+    shroud  { cellSize 0.001; }
+    periodic_1 { cellSize 0.001; }
+    periodic_2 { cellSize 0.001; }
+}
+
+boundaryLayers
+{
+    nLayers 5;
+    thicknessRatio 1.3;
+    maxFirstLayerThickness 1e-4;
+
+    patchBoundaryLayers
+    {
+        blade_1 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_2 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_3 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_4 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        hub     { nLayers 5; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
+        shroud  { nLayers 5; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
+        inlet   { nLayers 0; }
+        outlet  { nLayers 0; }
+        periodic_1 { nLayers 0; }
+        periodic_2 { nLayers 0; }
+    }
+}
+
+renameBoundary
+{
+    defaultName     walls;
+    defaultType     wall;
+
+    newPatchNames
+    {
+        inlet      { newName inlet;      type patch; }
+        outlet     { newName outlet;     type patch; }
+        hub        { newName hub;        type wall;  }
+        shroud     { newName shroud;     type wall;  }
+        periodic_1 { newName periodic_1; type patch; }
+        periodic_2 { newName periodic_2; type patch; }
+        blade_1    { newName blade_1;    type wall;  }
+        blade_2    { newName blade_2;    type wall;  }
+        blade_3    { newName blade_3;    type wall;  }
+        blade_4    { newName blade_4;    type wall;  }
+    }
+}
