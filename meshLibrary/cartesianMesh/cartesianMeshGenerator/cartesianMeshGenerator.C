@@ -142,6 +142,7 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.terminateLayersAtConcaveEdges();
     Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
     bl.addLayerForAllPatches();
+    // mixedDisplacementFaces_ handoff disabled - two-pass rollback pending
 }
 
 void cartesianMeshGenerator::refBoundaryLayers()
@@ -151,6 +152,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
         refineBoundaryLayers refLayers(mesh_);
 
         refineBoundaryLayers::readSettings(meshDict_, refLayers);
+
+        // forceSingleLayerAtFaces disabled - two-pass rollback pending
 
         refLayers.refineLayers();
 

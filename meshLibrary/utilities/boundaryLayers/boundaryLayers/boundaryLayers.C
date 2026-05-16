@@ -652,6 +652,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     const meshSurfaceEngine& mse = surfaceEngine();
     const VRWGraph& edgeFaces = mse.edgeFaces();
     const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const pointFieldPMG& points = mesh_.points();
     const edgeList& edges = mse.edges();
     const labelList& bPoints = mse.boundaryPoints();
     const VRWGraph& pointPoints = mse.pointPoints();
@@ -720,17 +722,130 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( bp0 >= 0 )
             {
                 zeroDistPoints_[bp0] = true;
-                layerScale_[bp0] = 0.0;
+                layerScale_[bp0] = 0.02;
                 zeroPts[bp0] = true;
             }
             if( bp1 >= 0 )
             {
                 zeroDistPoints_[bp1] = true;
-                layerScale_[bp1] = 0.0;
+                layerScale_[bp1] = 0.02;
                 zeroPts[bp1] = true;
             }
             ++nTransitionEdges;
         }
+    }
+
+    // Triple-junction suppression:
+    // Points on 2+ BL patches + 1+ termination patch are geometrically
+    // overconstrained - suppress BL and let ramp handle transition
+    label nTriple = 0;
+    label nPts2 = 0, nPts3 = 0, nPts4plus = 0;
+    forAll(bPoints, bpI)
+    {
+        if( !boundaryPointIsBL[bpI] ) continue;
+        if( zeroPts[bpI] ) continue;
+        label nPatches = 0, nBLPatches = 0, nTermPatches = 0;
+        DynList<label> seenPatches;
+        forAllRow(pPatches, bpI, pI)
+        {
+            const label patchI = pPatches(bpI, pI);
+            if( patchI < 0 || patchI >= label(patchNames_.size()) ) continue;
+            if( seenPatches.contains(patchI) ) continue;
+            seenPatches.append(patchI);
+            ++nPatches;
+            if( patchI < label(nLayersForPatch_.size())
+             && nLayersForPatch_[patchI] > 0 )
+                ++nBLPatches;
+            else
+                ++nTermPatches;
+        }
+        if( nPatches == 2 ) ++nPts2;
+        else if( nPatches == 3 ) ++nPts3;
+        else if( nPatches > 3 ) ++nPts4plus;
+        if( nPatches >= 3 && nBLPatches >= 2 && nTermPatches >= 1 )
+        {
+            zeroDistPoints_[bpI] = true;
+            layerScale_[bpI] = 0.02;
+            zeroPts[bpI] = true;
+            ++nTriple;
+        }
+    }
+    Info << "BL triple-junction stats: "
+         << "nPts2=" << nPts2
+         << " nPts3=" << nPts3
+         << " nPts4plus=" << nPts4plus
+         << " suppressed=" << nTriple << endl;
+
+    // BL/BL sharp-junction suppression:
+    // Points touching 2+ BL patches where normals diverge sharply
+    // (blade+hub, blade+shroud) create degenerate layer cells.
+    // Threshold: 40 degrees between patch normals.
+    {
+        const scalar cosThresh = Foam::cos(40.0 * M_PI / 180.0);
+        label nBLBL = 0;
+        const VRWGraph& ptFaces = mse.pointFaces();
+        forAll(bPoints, bpI)
+        {
+            if( zeroPts[bpI] ) continue;
+            if( !boundaryPointIsBL[bpI] ) continue;
+
+            // Collect unique BL patches at this point
+            DynList<label> blPatches;
+            forAllRow(pPatches, bpI, pI)
+            {
+                const label patchI = pPatches(bpI, pI);
+                if( patchI >= 0
+                 && patchI < label(nLayersForPatch_.size())
+                 && nLayersForPatch_[patchI] > 0 )
+                    blPatches.appendIfNotIn(patchI);
+            }
+            if( blPatches.size() < 2 ) continue;
+
+            // Compute average face normal per BL patch at this point
+            DynList<vector> avgNormals;
+            forAll(blPatches, i)
+            {
+                vector n = vector::zero;
+                label nf = 0;
+                forAllRow(ptFaces, bpI, pfI)
+                {
+                    const label faceI = ptFaces(bpI, pfI);
+                    if( boundaryFacePatches[faceI] != blPatches[i] )
+                        continue;
+                    const face& f = bFaces[faceI];
+                    vector fn = vector::zero;
+                    const point& fp0 = points[f[0]];
+                    for(label pi=1; pi<f.size()-1; ++pi)
+                        fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
+                    if( mag(fn) > VSMALL )
+                    {
+                        n += fn / mag(fn);
+                        ++nf;
+                    }
+                }
+                if( nf > 0 ) n /= scalar(nf);
+                if( mag(n) > VSMALL ) n /= mag(n);
+                avgNormals.append(n);
+            }
+
+            // Suppress if any pair of patch normals diverges sharply
+            bool sharpJunction = false;
+            for(label i=0; i<avgNormals.size()-1; ++i)
+                for(label j=i+1; j<avgNormals.size(); ++j)
+                    if( (avgNormals[i] & avgNormals[j]) < cosThresh )
+                        sharpJunction = true;
+
+            if( sharpJunction )
+            {
+                zeroDistPoints_[bpI] = true;
+                layerScale_[bpI] = 0.02;
+                zeroPts[bpI] = true;
+                ++nBLBL;
+                // TODO: two-pass candidate quality rollback (Phase 1 diagnostic)
+            }
+        }
+        Info << "BL/BL sharp-junction suppression: "
+             << nBLBL << " points suppressed" << endl;
     }
 
     // Ring 1: neighbors of zero points on BL patches -> 0.25
@@ -761,7 +876,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( zeroPts[nbpI] || ring1[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
             ring2[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.5));
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], scalar(0.50));
         }
     }
 

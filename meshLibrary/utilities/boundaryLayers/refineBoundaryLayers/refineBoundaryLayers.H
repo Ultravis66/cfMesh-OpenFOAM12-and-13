@@ -111,6 +111,9 @@ class refineBoundaryLayers
         //- a boundary face
         labelList nLayersAtBndFace_;
 
+        //- boundary faces forced to single layer treatment
+        labelHashSet forceSingleLayerFaces_;
+
         //- a list of edges which shall be refined
         LongList<edge> splitEdges_;
 
@@ -409,6 +412,9 @@ public:
     // Static member functions
         //- read the settings from dictionary
         static void readSettings(const dictionary&, refineBoundaryLayers&);
+
+        //- force single layer on mixed-displacement boundary faces
+        void forceSingleLayerAtFaces(const labelHashSet& faces);
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

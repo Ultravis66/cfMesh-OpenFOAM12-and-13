@@ -354,6 +354,7 @@ point boundaryLayers::createNewVertex
     # endif
 
     // Apply layerScale_ ramp at BL/no-BL transition zones
+    const scalar rawDist = dist;
     if( terminateLayersAtConcaveEdges_ && layerScale_.size() > bpI )
     {
         const scalar oldDist = dist;
@@ -371,6 +372,18 @@ point boundaryLayers::createNewVertex
     }
     if( dist > SMALL )
         dist = Foam::max(dist, VSMALL);
+    else if( terminateLayersAtConcaveEdges_
+          && layerScale_.size() > bpI
+          && layerScale_[bpI] > 0.01 )
+    {
+        // Geometry forced a nonzero-scale point to near-zero dist.
+        // Use rawDist-scaled floor to avoid collapsed layer cells.
+        dist = Foam::max
+        (
+            scalar(1e-6) * rawDist,
+            scalar(100) * VSMALL
+        );
+    }
     else
         dist = 0.0;
 

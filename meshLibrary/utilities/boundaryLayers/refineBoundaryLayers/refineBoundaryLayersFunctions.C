@@ -39,6 +39,8 @@ Description
 
 # ifdef USE_OMP
 #include <omp.h>
+#include <map>
+#include <utility>
 # endif
 
 //#define DEBUGLayer
@@ -308,6 +310,9 @@ bool refineBoundaryLayers::analyseLayers()
             }
         }
     }
+
+    // forceSingleLayerAtFaces: disabled pending two-pass quality rollback
+    // Architecture preserved - see feature/candidate-layer-quality-rollback
 
     # ifdef DEBUGLayer
     forAll(nLayersAtBndFace_, bfI)

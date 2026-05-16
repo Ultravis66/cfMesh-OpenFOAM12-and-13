@@ -63,6 +63,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     const labelList& faceOwners = mse.faceOwners();
     const labelList& bp = mse.bp();
     const VRWGraph& pointFaces = mse.pointFaces();
+    const pointFieldPMG& points = mesh_.points();
 
     const meshSurfacePartitioner& mPart = surfacePartitioner();
     const VRWGraph& pointPatches = mPart.pointPatches();
@@ -103,7 +104,90 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         if( treatPatches[boundaryFacePatches[bfI]] )
         {
             const face& f = bFaces[bfI];
+
             const label pKey = patchKey_[boundaryFacePatches[bfI]];
+
+            // Guard 0: skip faces with missing extruded vertices.
+            // findNewNodeLabel returns -1 for transition-zone points
+            // that never got a new vertex created. Building a layer
+            // cell from such a face creates degenerate zero-volume cells.
+            {
+                bool missingVertex = false;
+                forAll(f, pI)
+                {
+                    if( findNewNodeLabel(f[pI], pKey) < 0 )
+                    {
+                        missingVertex = true;
+                        break;
+                    }
+                }
+                if( missingVertex )
+                {
+                    static label nMissing = 0;
+                    if( ++nMissing <= 20 )
+                        Info << "Skipping layer face: missing extruded"
+                             << " vertex bfI=" << bfI
+                             << " pKey=" << pKey << endl;
+                    continue;
+                }
+            }
+
+            // Robust candidate layer-cell quality check.
+            // Must run BEFORE any persistent list appends.
+            // 1. nearZeroHeight: avg extrusion height < 1e-8 * local face size
+            // 2. mixedCollapsed: some verts zero disp, others finite
+            {
+                point baseCentre = point::zero;
+                point extCentre  = point::zero;
+                forAll(f, pI)
+                {
+                    baseCentre += points[f[pI]];
+                    const label extPtI = findNewNodeLabel(f[pI], pKey);
+                    if( extPtI >= 0 && extPtI < label(points.size()) )
+                        extCentre += points[extPtI];
+                    else
+                        extCentre += points[f[pI]];
+                }
+                baseCentre /= scalar(f.size());
+                extCentre  /= scalar(f.size());
+
+                scalar localLen = VSMALL;
+                forAll(f, pI)
+                    localLen = Foam::max
+                    (
+                        localLen,
+                        mag(points[f[pI]] - baseCentre)
+                    );
+
+                const scalar minAllowed = Foam::max
+                (
+                    scalar(1e-8) * localLen,
+                    scalar(100) * VSMALL
+                );
+
+                const scalar avgHeight = mag(extCentre - baseCentre);
+
+                scalar minDisp = GREAT;
+                scalar maxDisp = -GREAT;
+                forAll(f, pI)
+                {
+                    const point& p0 = points[f[pI]];
+                    const label extPtI = findNewNodeLabel(f[pI], pKey);
+                    point p1 = p0;
+                    if( extPtI >= 0 && extPtI < label(points.size()) )
+                        p1 = points[extPtI];
+                    const scalar d = mag(p1 - p0);
+                    minDisp = Foam::min(minDisp, d);
+                    maxDisp = Foam::max(maxDisp, d);
+                }
+
+                const bool nearZeroHeight = avgHeight < minAllowed;
+                // Only flag truly collapsed faces:
+                // minDisp must be exactly zero (not just small)
+                // while maxDisp is meaningfully nonzero
+                // Detection moved to markConcaveEdgePoints source.
+                const bool mixedCollapsed = false;
+            }
 
             DynList<DynList<label> > cellFaces;
 

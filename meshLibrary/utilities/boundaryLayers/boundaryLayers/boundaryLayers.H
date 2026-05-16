@@ -107,6 +107,10 @@ class boundaryLayers
         //- number of BL layers per patch (0 = no BL = termination patch)
         labelList nLayersForPatch_;
 
+        //- boundary faces with mixed zero/nonzero layer displacement
+        //- passed to refineBoundaryLayers for single-layer treatment
+        mutable labelHashSet mixedDisplacementFaces_;
+
         //- number of vertices in the mesh
         label nPoints_;
 
@@ -259,6 +263,12 @@ public:
 
     // Destructor
         ~boundaryLayers();
+
+        //- return faces with mixed zero/nonzero layer displacement
+        const labelHashSet& mixedDisplacementFaces() const
+        {
+            return mixedDisplacementFaces_;
+        }
 
     // Public member functions
         //- adds layer for a given patch
