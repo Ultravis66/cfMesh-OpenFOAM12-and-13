@@ -124,7 +124,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 if( missingVertex )
                 {
                     static label nMissing = 0;
-                    if( ++nMissing <= 20 )
+                    if( ++nMissing <= 100 )
                         Info << "Skipping layer face: missing extruded"
                              << " vertex bfI=" << bfI
                              << " pKey=" << pKey << endl;
@@ -132,62 +132,10 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
             }
 
-            // Robust candidate layer-cell quality check.
-            // Must run BEFORE any persistent list appends.
-            // 1. nearZeroHeight: avg extrusion height < 1e-8 * local face size
-            // 2. mixedCollapsed: some verts zero disp, others finite
-            {
-                point baseCentre = point::zero;
-                point extCentre  = point::zero;
-                forAll(f, pI)
-                {
-                    baseCentre += points[f[pI]];
-                    const label extPtI = findNewNodeLabel(f[pI], pKey);
-                    if( extPtI >= 0 && extPtI < label(points.size()) )
-                        extCentre += points[extPtI];
-                    else
-                        extCentre += points[f[pI]];
-                }
-                baseCentre /= scalar(f.size());
-                extCentre  /= scalar(f.size());
-
-                scalar localLen = VSMALL;
-                forAll(f, pI)
-                    localLen = Foam::max
-                    (
-                        localLen,
-                        mag(points[f[pI]] - baseCentre)
-                    );
-
-                const scalar minAllowed = Foam::max
-                (
-                    scalar(1e-8) * localLen,
-                    scalar(100) * VSMALL
-                );
-
-                const scalar avgHeight = mag(extCentre - baseCentre);
-
-                scalar minDisp = GREAT;
-                scalar maxDisp = -GREAT;
-                forAll(f, pI)
-                {
-                    const point& p0 = points[f[pI]];
-                    const label extPtI = findNewNodeLabel(f[pI], pKey);
-                    point p1 = p0;
-                    if( extPtI >= 0 && extPtI < label(points.size()) )
-                        p1 = points[extPtI];
-                    const scalar d = mag(p1 - p0);
-                    minDisp = Foam::min(minDisp, d);
-                    maxDisp = Foam::max(maxDisp, d);
-                }
-
-                const bool nearZeroHeight = avgHeight < minAllowed;
-                // Only flag truly collapsed faces:
-                // minDisp must be exactly zero (not just small)
-                // while maxDisp is meaningfully nonzero
-                // Detection moved to markConcaveEdgePoints source.
-                const bool mixedCollapsed = false;
-            }
+            // Candidate quality check placeholder.
+            // TODO: bl-junction-transition-topology branch
+            // will implement proper wedge/pyramid cells at
+            // sharp BL/BL feature curves instead of collapsed prisms.
 
             DynList<DynList<label> > cellFaces;
 

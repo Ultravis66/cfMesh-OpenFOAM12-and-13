@@ -1421,7 +1421,6 @@ void refineBoundaryLayers::generateNewCells()
             //- generate new cells from this prism refined in one direction
             DynList<DynList<DynList<label, 8>, 10>, 64> cellsFromCell;
             generateNewCellsPrism(cellI, cellsFromCell);
-
             forAll(cellsFromCell, cI)
             {
                 const DynList<DynList<label, 8>, 10>& nc = cellsFromCell[cI];

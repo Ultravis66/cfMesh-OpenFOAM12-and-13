@@ -36,6 +36,7 @@ SourceFiles
 #define cartesianMeshGenerator_H
 
 #include "polyMeshGen.H"
+#include "HashSet.H"
 #include "IOdictionary.H"
 #include "workflowControls.H"
 //#include "volFields.H"
@@ -68,6 +69,7 @@ class cartesianMeshGenerator
 
         //- IOdictionary containing information about cell sizes, etc..
         IOdictionary meshDict_;
+
 
         //- pointer to the octree
         meshOctree* octreePtr_;
