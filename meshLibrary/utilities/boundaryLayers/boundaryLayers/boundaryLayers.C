@@ -586,7 +586,6 @@ boundaryLayers::boundaryLayers
 
     // Per-patch nLayers: 0 means no BL (termination patch)
     nLayersForPatch_.setSize(boundaries.size(), 0);
-    Info << "boundaryLayers constructor: nPatches=" << boundaries.size() << endl;
     if( meshDict.isDict("boundaryLayers") )
     {
         const dictionary& bndLayers = meshDict.subDict("boundaryLayers");
@@ -612,10 +611,6 @@ boundaryLayers::boundaryLayers
             }
         }
     }
-    forAll(boundaries, patchI)
-        Info << "  nLayersForPatch[" << patchI << "] "
-             << boundaries[patchI].patchName()
-             << " = " << nLayersForPatch_[patchI] << endl;
 }
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
