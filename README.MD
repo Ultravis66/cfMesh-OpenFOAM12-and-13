@@ -1,8 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-> **WORK IN PROGRESS** — active development on OpenFOAM 13 only.
-> **Since this got complicated extremely fast, I will only be working on 13 going forward.
-> **If you would like to patch 12 with the changes I made to 13, feel free to do it.
+> **WORK IN PROGRESS** — active development on OpenFOAM 13 only. To keep development focused and maintainable, active development is now limited to OpenFOAM Foundation v13. If you would like to patch OF12 with the changes made here, feel free — the `openfoam12-archive` branch is preserved as-is.
 
 A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
@@ -19,28 +17,39 @@ Tested on **NASA Rotor 37** two-passage turbomachinery sector geometry with boun
 | `master` | OpenFOAM 13 | **Active development** |
 | `openfoam12-archive` | OpenFOAM 12 | Archived — no further updates |
 
-**OpenFOAM 12 support has been dropped.** All development is now on OpenFOAM 13. The OF12 branch is preserved as-is for reference.
-
 ---
 
-## What works
-- `cartesianMesh` — Cartesian hex-dominant mesher, tested on NASA Rotor 37
-- `tetMesh` — Tetrahedral mesher (experimental)
-- `pMesh` — Polyhedral mesher (experimental)
-- `libmeshLibrary.so` — Core mesh library
+## Quick start
 
----
-
-## Build instructions
+**Tested with:** OpenFOAM Foundation v13, Ubuntu 22.04 / WSL2
 
 ```bash
 source /opt/openfoam13/etc/bashrc
 git clone https://github.com/Ultravis66/cfMesh-OpenFOAM13.git cfMesh
-cd cfMesh/meshLibrary && wmake libso
-cd ../executables/cartesianMesh && wmake
-cd ../executables/tetMesh && wmake
-cd ../executables/pMesh && wmake
+cd cfMesh
+./Allwclean
+./Allwmake
 ```
+
+Verify the build:
+```bash
+ls $FOAM_USER_APPBIN | grep -E "cartesianMesh|tetMesh|pMesh"
+```
+
+Run the validation case:
+```bash
+cd tutorials/cartesianMesh/unitCube
+cartesianMesh
+checkMesh
+```
+
+---
+
+## What works
+- `cartesianMesh` — Cartesian hex-dominant mesher, primary supported executable, tested on NASA Rotor 37
+- `tetMesh` — Builds successfully, experimental, not fully validated
+- `pMesh` — Builds successfully, experimental, not fully validated
+- `libmeshLibrary.so` — Core mesh library
 
 ---
 
@@ -108,15 +117,15 @@ Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are 
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
 
-### Two-pass candidate quality rollback (infrastructure complete, detection pending)
-Architecture for detecting degenerate layer cells and forcing single-layer treatment at source boundary faces:
+### Two-pass candidate quality rollback (experimental infrastructure)
+Initial infrastructure exists for detecting degenerate layer-cell candidates and reducing local layer complexity, but the detection/rollback policy is still under development:
 - `mixedDisplacementFaces_` member on `boundaryLayers`
 - `forceSingleLayerFaces_` + `forceSingleLayerAtFaces()` on `refineBoundaryLayers`
 - Layer count smoothing on boundary-face adjacency graph (max jump of 1 between neighbors)
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issue
-13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These are at blade+hub and blade+shroud geometric singularities where simple prism extrusion is topologically unsolvable without butterfly/O-grid topology. Two-pass quality rollback is the planned fix.
+13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where simple prism extrusion can become topologically ill-conditioned without specialized transition topology such as butterfly/O-grid treatment. Two-pass quality rollback is the planned fix.
 
 ---
 
@@ -131,8 +140,18 @@ Architecture for detecting degenerate layer cells and forcing single-layer treat
 
 ---
 
+## Troubleshooting
+
+**Build fails with missing header:** Make sure OpenFOAM 13 is sourced before building. Run `echo $WM_PROJECT_VERSION` — should return `13`.
+
+**`cartesianMesh` not found after build:** Check `$FOAM_USER_APPBIN` is in your PATH. Run `source /opt/openfoam13/etc/bashrc` again.
+
+**Mesh hangs:** cfMesh uses OpenMP. Set `OMP_NUM_THREADS=4` (or your core count) before running.
+
+---
+
 ## Tested on
-- Ubuntu 22.04 WSL2, OpenFOAM 13
+- Ubuntu 22.04 WSL2, OpenFOAM Foundation v13
 - NASA Rotor 37 two-passage turbomachinery sector with boundary layers
 
 ---
