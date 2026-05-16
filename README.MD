@@ -154,6 +154,22 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Ubuntu 22.04 WSL2, OpenFOAM Foundation v13
 - NASA Rotor 37 two-passage turbomachinery sector with boundary layers
 
+## NASA Rotor 37 boundary-layer mesh preview
+
+<p align="center">
+  <img src="NASA_Rotor_37_1.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 1" width="48%">
+  <img src="NASA_Rotor_37_2.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 2" width="48%">
+</p>
+
+<p align="center">
+  <img src="NASA_Rotor_37_3.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 3" width="48%">
+  <img src="NASA_Rotor_37_4.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 4" width="48%">
+</p>
+
+<p align="center">
+  <em>NASA Rotor 37 two-passage turbomachinery sector generated with the OpenFOAM 13 cfMesh port.</em>
+</p>
+
 ---
 
 ## Original cfMesh
