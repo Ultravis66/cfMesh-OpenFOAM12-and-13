@@ -515,15 +515,10 @@ void refineBoundaryLayers::readSettings
 
 void refineBoundaryLayers::forceSingleLayerAtFaces
 (
-    const labelHashSet& faces
+    const labelHashSet&
 )
 {
-    forceSingleLayerFaces_.clear();
-    forAllConstIter(labelHashSet, faces, it)
-        forceSingleLayerFaces_.insert(it.key());
-    Info << "refineBoundaryLayers: registered "
-         << forceSingleLayerFaces_.size()
-         << " faces for single-layer treatment" << endl;
+    // disabled - two-pass rollback pending
 }
 
 } // End namespace Foam

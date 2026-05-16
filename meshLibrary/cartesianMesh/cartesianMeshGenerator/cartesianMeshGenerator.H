@@ -69,10 +69,6 @@ class cartesianMeshGenerator
         //- IOdictionary containing information about cell sizes, etc..
         IOdictionary meshDict_;
 
-        //- boundary faces with mixed zero/nonzero BL displacement
-        //- passed from boundaryLayers to refineBoundaryLayers
-        labelHashSet mixedDisplacementFaces_;
-
         //- pointer to the octree
         meshOctree* octreePtr_;
 
