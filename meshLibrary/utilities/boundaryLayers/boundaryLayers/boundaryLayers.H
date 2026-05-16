@@ -113,7 +113,7 @@ class boundaryLayers
 
         //- boundary points on sharp BL/BL junction feature curves
         //- populated by markConcaveEdgePoints, consumed by C2/C3
-        mutable labelHashSet junctionPoints_;
+        mutable labelHashSet blblJunctionPoints_;
 
         //- number of vertices in the mesh
         label nPoints_;
@@ -277,7 +277,7 @@ public:
         //- return boundary points on sharp BL/BL junction curves
         const labelHashSet& junctionEdgePoints() const
         {
-            return junctionPoints_;
+            return blblJunctionPoints_;
         }
 
     // Public member functions
