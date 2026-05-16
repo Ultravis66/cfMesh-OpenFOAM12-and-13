@@ -841,11 +841,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 layerScale_[bpI] = 0.02;
                 zeroPts[bpI] = true;
                 ++nBLBL;
-                // TODO: two-pass candidate quality rollback (Phase 1 diagnostic)
+                // C1: persist junction point for topology fix in C2/C3
+                junctionPoints_.insert(bpI);
             }
         }
         Info << "BL/BL sharp-junction suppression: "
-             << nBLBL << " points suppressed" << endl;
+             << nBLBL << " points suppressed, "
+             << junctionPoints_.size() << " junction points captured" << endl;
     }
 
     // Ring 1: neighbors of zero points on BL patches -> 0.25

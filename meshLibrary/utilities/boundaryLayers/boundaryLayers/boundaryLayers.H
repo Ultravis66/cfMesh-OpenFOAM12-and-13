@@ -111,6 +111,10 @@ class boundaryLayers
         //- passed to refineBoundaryLayers for single-layer treatment
         mutable labelHashSet mixedDisplacementFaces_;
 
+        //- boundary points on sharp BL/BL junction feature curves
+        //- populated by markConcaveEdgePoints, consumed by C2/C3
+        mutable labelHashSet junctionPoints_;
+
         //- number of vertices in the mesh
         label nPoints_;
 
@@ -268,6 +272,12 @@ public:
         const labelHashSet& mixedDisplacementFaces() const
         {
             return mixedDisplacementFaces_;
+        }
+
+        //- return boundary points on sharp BL/BL junction curves
+        const labelHashSet& junctionEdgePoints() const
+        {
+            return junctionPoints_;
         }
 
     // Public member functions
