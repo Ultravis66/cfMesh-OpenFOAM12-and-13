@@ -170,6 +170,16 @@ void refineBoundaryLayers::generateNewCellsPrism
             cf.append(newVerticesForSplitEdge_(seI, layerI));
         }
 
+        // C3: skip degenerate intermediate face where all vertices are
+        // the same point (zero-length hair edge at BL/BL junction).
+        // This produces correct wedge topology instead of zero-volume cells.
+        bool degenerateFace = true;
+        for(label pI=1;pI<cf.size();++pI)
+            if( cf[pI] != cf[0] )
+            { degenerateFace = false; break; }
+        if( degenerateFace )
+            continue;
+
         //- add faces to cells
         cellsFromCell[nLayers-layerI].append(cf);
         cellsFromCell[nLayers-1-layerI].append(cf);

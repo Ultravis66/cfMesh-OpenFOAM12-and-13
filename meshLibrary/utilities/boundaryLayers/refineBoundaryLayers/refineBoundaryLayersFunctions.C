@@ -705,6 +705,17 @@ void refineBoundaryLayers::generateNewVertices()
             //- generate vertices for this edge
             newVerticesForSplitEdge_(seI, 0) = e.start();
 
+            // C3: degenerate hair edge (zero-length, BL/BL junction point)
+            // Force all intermediate vertices to surface point to produce
+            // clean zero-height wedge topology instead of machine-epsilon cells
+            if( magv < 1000.0*SMALL )
+            {
+                for(label pI=1;pI<nLayers;++pI)
+                    newVerticesForSplitEdge_(seI, pI) = e.start();
+                newVerticesForSplitEdge_(seI, nLayers) = e.start();
+                continue;
+            }
+
             scalar param = firstThickness;
             const vector vec = v / (magv + VSMALL);
 
