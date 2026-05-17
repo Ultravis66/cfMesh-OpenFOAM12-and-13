@@ -195,6 +195,14 @@ point boundaryLayers::createNewVertex
             const scalar magN = mag(normal) + VSMALL;
             normal /= magN;
 
+            // Geometry preservation: skip neighbor dist clamping for
+            // BL ramp zone points. layerScale_ already handles reduction.
+            // The neighbor loop pulls dist to near-zero for transition
+            // points near flat inlet/outlet/periodic faces causing warts.
+            if( !terminateLayersAtConcaveEdges_
+             || layerScale_.size() <= bpI
+             || layerScale_[bpI] >= 0.99 )
+            {
             forAllRow(pointPoints, bpI, ppI)
             {
                 if( patchVertex[pointPoints(bpI, ppI)] )
@@ -205,6 +213,7 @@ point boundaryLayers::createNewVertex
 
                 if( prod < dist )
                     dist = prod;
+            }
             }
             }  // closes zero-dist else block
         }

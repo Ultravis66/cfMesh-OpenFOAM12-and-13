@@ -42,6 +42,11 @@ namespace Foam
 void meshSurfaceEdgeExtractorNonTopo::decomposeBoundaryFaces()
 {
     correctEdgesBetweenPatches featureEdges(mesh_);
+    // GeomFix: store new centroid points for targeted projection
+    patchCorrectionPoints_ = featureEdges.patchCorrectionPoints();
+    Info << "[GeomFix] patchCorrection created "
+         << patchCorrectionPoints_.size()
+         << " new centroid points" << endl;
 }
 
 void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints()
@@ -50,6 +55,27 @@ void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints()
     meshSurfaceMapper mapper(mse, meshOctree_);
 
     mapper.mapVerticesOntoSurfacePatches();
+
+    // GeomFix: project new centroid points onto STL
+    if( patchCorrectionPoints_.size() > 0 )
+    {
+        const labelList& bPoints = mse.boundaryPoints();
+        labelList meshToBnd(mesh_.points().size(), -1);
+        forAll(bPoints, bpI)
+            meshToBnd[bPoints[bpI]] = bpI;
+        labelLongList bpToProject;
+        forAll(patchCorrectionPoints_, i)
+        {
+            const label ptI = patchCorrectionPoints_[i];
+            if( ptI < meshToBnd.size() && meshToBnd[ptI] >= 0 )
+                bpToProject.append(meshToBnd[ptI]);
+        }
+        Info << "[GeomFix] projecting "
+             << bpToProject.size()
+             << " centroid points onto STL" << endl;
+        if( bpToProject.size() > 0 )
+            mapper.mapVerticesOntoSurface(bpToProject);
+    }
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

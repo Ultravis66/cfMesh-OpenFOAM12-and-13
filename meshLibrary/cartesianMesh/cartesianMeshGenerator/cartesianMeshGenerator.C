@@ -110,6 +110,10 @@ void cartesianMeshGenerator::mapMeshToSurface()
     //- map mesh surface on the geometry surface
     mapper.mapVerticesOntoSurface();
 
+    //- snap corner and edge vertices onto feature curves
+    //- prevents mesh protrusion at patch intersection edges
+    mapper.mapCornersAndEdges();
+
     //- untangle surface faces
     meshSurfaceOptimizer(mse, *octreePtr_).untangleSurface();
 }
@@ -159,12 +163,14 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         refLayers.refineLayers();
 
-        labelLongList pointsInLayer;
-        refLayers.pointsInBndLayer(pointsInLayer);
+             refLayers.pointsInBndLayer(blPoints_);
 
         meshOptimizer mOpt(mesh_);
-        mOpt.lockPoints(pointsInLayer);
+        mOpt.lockPoints(blPoints_);
         mOpt.untangleBoundaryLayer();
+        Info << "refBoundaryLayers: stored "
+             << blPoints_.size()
+             << " BL interior points" << endl;
     }
 }
 
@@ -280,6 +286,7 @@ void cartesianMeshGenerator::generateMesh()
             mapEdgesAndCorners();
 
             optimiseMeshSurface();
+
         }
 
         if( controller_.runCurrentStep("boundaryLayerGeneration") )
@@ -297,6 +304,38 @@ void cartesianMeshGenerator::generateMesh()
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
             refBoundaryLayers();
+        }
+
+        // Post-BL geometry snap - optional, controlled by meshDict
+        {
+            bool doSnap(false);
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndL.found("postBLSnap") )
+                    doSnap = Switch(bndL.lookup("postBLSnap"));
+            }
+            if( doSnap )
+            {
+                Info << "Post-BL snap: excluded "
+                     << blPoints_.size()
+                     << " BL interior points" << endl;
+                meshSurfaceEngine mse(mesh_);
+                meshSurfaceMapper mapper(mse, *octreePtr_);
+                const labelList& bPoints = mse.boundaryPoints();
+                boolList isBLPoint(mesh_.points().size(), false);
+                forAll(blPoints_, i)
+                    isBLPoint[blPoints_[i]] = true;
+                labelLongList outerBndPoints;
+                forAll(bPoints, bpI)
+                    if( !isBLPoint[bPoints[bpI]] )
+                        outerBndPoints.append(bpI);
+                Info << "Post-BL snap: projecting "
+                     << outerBndPoints.size()
+                     << " outer boundary points onto STL" << endl;
+                mapper.mapVerticesOntoSurface(outerBndPoints);
+            }
         }
 
         renumberMesh();

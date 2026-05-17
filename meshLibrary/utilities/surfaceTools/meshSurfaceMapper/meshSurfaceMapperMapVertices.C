@@ -224,6 +224,11 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
     LongList<parMapperHelper> parallelBndNodes;
 
+    // Store old positions for validity-check revert
+    pointField oldPositions(nodesToMap.size());
+    forAll(nodesToMap, i)
+        oldPositions[i] = points[boundaryPoints[nodesToMap[i]]];
+
     # ifdef USE_OMP
     const label size = nodesToMap.size();
     # pragma omp parallel for if( size > 1000 ) shared(parallelBndNodes) \
@@ -277,6 +282,60 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
 
     //- make sure that the points are at the nearest location on the surface
     mapToSmallestDistance(parallelBndNodes);
+
+    // Validity check: serial pass after all moves complete
+    // surfaceEngine_ data accessed outside OMP - thread safe
+    {
+        const VRWGraph& pFaces = surfaceEngine_.pointFaces();
+        const faceList::subList& bFaces = surfaceEngine_.boundaryFaces();
+        const labelList& faceOwners = surfaceEngine_.faceOwners();
+        const pointFieldPMG& pts = surfaceEngine_.points();
+        const cellListPMG& cells = surfaceEngine_.mesh().cells();
+        const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
+        label nInvalid = 0;
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+            bool validMove = true;
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label bfI = pFaces(bpI, pfI);
+                const face& f = bFaces[bfI];
+                point fc = point::zero;
+                forAll(f, fpI) fc += pts[f[fpI]];
+                fc /= scalar(f.size());
+                vector fn = vector::zero;
+                const point& p0 = pts[f[0]];
+                for(label fpI=1; fpI<f.size()-1; ++fpI)
+                    fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
+                const label cellI = faceOwners[bfI];
+                point cc = point::zero;
+                const cell& cll = cells[cellI];
+                forAll(cll, cfI)
+                {
+                    const face& cf = allFaces[cll[cfI]];
+                    point cfc = point::zero;
+                    forAll(cf, cpI) cfc += pts[cf[cpI]];
+                    cc += cfc / scalar(cf.size());
+                }
+                cc /= scalar(cll.size());
+                if( (fn & (fc - cc)) <= SMALL )
+                { validMove = false; break; }
+            }
+            if( !validMove )
+            {
+                surfaceModifier.moveBoundaryVertexNoUpdate
+                (
+                    bpI,
+                    oldPositions[i]
+                );
+                ++nInvalid;
+            }
+        }
+        if( nInvalid > 0 )
+            Info << "[ValidityCheck] reverted " << nInvalid
+                 << " invalid surface moves" << endl;
+    }
 
     //- re-calculate face normals, point normals, etc.
     surfaceModifier.updateGeometry(nodesToMap);

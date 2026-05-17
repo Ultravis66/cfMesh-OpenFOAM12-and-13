@@ -58,6 +58,9 @@ class meshSurfaceEdgeExtractorNonTopo
         //- reference to meshOctree
         const meshOctree& meshOctree_;
 
+        //- new points created by patch correction, projected after remapping
+        labelLongList patchCorrectionPoints_;
+
     // Private member functions
 
         //- decompose faces with more than one edge at the same feature edge

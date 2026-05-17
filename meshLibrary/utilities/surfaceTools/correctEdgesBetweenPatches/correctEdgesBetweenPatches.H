@@ -69,9 +69,19 @@ class correctEdgesBetweenPatches
         labelLongList newBoundaryOwners_;
         labelLongList newBoundaryPatches_;
 
+        //- new mesh points created during polygon decomposition
+        labelLongList newPatchCorrectionPoints_;
+
         //- holds data which cells have to be decomposed
         boolList decomposeCell_;
         bool decompose_;
+
+public:
+        //- return new points created by patch correction
+        const labelLongList& patchCorrectionPoints() const
+        {
+            return newPatchCorrectionPoints_;
+        }
 
     // Private member functions
 

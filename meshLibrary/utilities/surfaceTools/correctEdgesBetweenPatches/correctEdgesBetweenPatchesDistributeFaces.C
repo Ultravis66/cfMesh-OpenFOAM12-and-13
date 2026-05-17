@@ -439,6 +439,7 @@ void correctEdgesBetweenPatches::decomposeConcaveFaces()
 void correctEdgesBetweenPatches::patchCorrection()
 {
     Info << "Performing patch correction" << endl;
+    newPatchCorrectionPoints_.clear();
 
     const meshSurfaceEngine& mse = meshSurface();
 
@@ -522,6 +523,14 @@ void correctEdgesBetweenPatches::patchCorrection()
                     const point p = bf.centre(mesh_.points());
                     triF[2] = mesh_.points().size();
                     mesh_.points().append(p);
+                    // GeomFix diagnostic: record new centroid point
+                    newPatchCorrectionPoints_.append(triF[2]);
+                    static label nCentroid = 0;
+                    if( ++nCentroid <= 10 )
+                        Info << "[GeomFix] new centroid point "
+                             << triF[2] << " at " << p
+                             << " patch=" << facePatches[bfI]
+                             << endl;
 
                     forAll(bf, j)
                     {

@@ -83,6 +83,10 @@ class cartesianMeshGenerator
         //- BL/BL junction points passed from boundaryLayers to refineBoundaryLayers
         labelHashSet blblJunctionPoints_;
 
+        //- mesh points inside the boundary layer (from refineBoundaryLayers)
+        labelLongList blPoints_;
+
+        //- mesh points inside the boundary layer (from refineBoundaryLayers)
     // Private member functions
         //- create cartesian mesh
         void createCartesianMesh();
