@@ -72,6 +72,7 @@ meshSurfaceMapper::meshSurfaceMapper
     surfaceEnginePartitionerPtr_(NULL),
     deletePartitioner_(true),
     surfPartitionerPtr_(NULL),
+    snapMinPyramidHeight_(1e-10),
     cornerSnapRelaxation_(0.25)
 {
     if( Pstream::parRun() )

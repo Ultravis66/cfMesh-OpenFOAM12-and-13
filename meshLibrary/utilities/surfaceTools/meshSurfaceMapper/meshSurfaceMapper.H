@@ -76,6 +76,9 @@ class meshSurfaceMapper
         //- triSurface partitioner
         mutable triSurfacePartitioner* surfPartitionerPtr_;
 
+        //- minimum pyramid height for validity check (default 1e-10)
+        scalar snapMinPyramidHeight_;
+
     // Private member functions
         //- create and return mesh surface partitioner
         void createMeshSurfacePartitioner() const;

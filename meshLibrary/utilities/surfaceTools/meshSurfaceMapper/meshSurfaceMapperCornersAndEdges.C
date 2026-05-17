@@ -396,6 +396,10 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
     forAll(nodesToMap, i)
         oldPositions[i] = points[bPoints[nodesToMap[i]]];
 
+    // Deterministic storage - OMP loop computes only, no mesh mutation
+    pointField projectedPoints(nodesToMap.size(), point::zero);
+    scalarList projectedDistSq(nodesToMap.size(), scalar(-1));
+
     //- map point to the nearest vertex on the surface mesh
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
@@ -466,32 +470,41 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
             mapPoint = f * (mapPoint - p) + p;
         }
 
-        //- move the point to the nearest edge vertex
-        sMod.moveBoundaryVertexNoUpdate(bpI, mapPoint);
-
-        if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
-        {
-            # ifdef USE_OMP
-            # pragma omp critical
-            # endif
-            {
-                parallelBndNodes.append
-                (
-                    parMapperHelper
-                    (
-                        mapPoint,
-                        distSq,
-                        bpI,
-                        -1
-                    )
-                );
-            }
-        }
+                //- store only - no mesh mutation in parallel
+        projectedPoints[i] = mapPoint;
+        projectedDistSq[i] = distSq;
     }
 
+    // Serial move pass - deterministic order, no validity check
+    // Edge nodes must reach feature curve - validity check inappropriate
+    forAll(nodesToMap, i)
+    {
+        const label bpI = nodesToMap[i];
+        if( projectedDistSq[i] < scalar(0) ) continue;
+        sMod.moveBoundaryVertexNoUpdate(bpI, projectedPoints[i]);
+    }
+
+    // Build parallelBndNodes deterministically - only accepted points
+    forAll(nodesToMap, i)
+    {
+        const label bpI = nodesToMap[i];
+        if( projectedDistSq[i] < scalar(0) ) continue;
+        if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
+            parallelBndNodes.append
+            (
+                parMapperHelper
+                (
+                    projectedPoints[i],
+                    projectedDistSq[i],
+                    bpI,
+                    -1
+                )
+            );
+    }
     mapToSmallestDistance(parallelBndNodes);
 
-    // Validity check: serial revert of invalid edge moves
+    // Old validity check replaced by serial pass above
+    if( false )
     {
         const VRWGraph& pFaces = surfaceEngine_.pointFaces();
         const faceList::subList& bFaces = surfaceEngine_.boundaryFaces();
