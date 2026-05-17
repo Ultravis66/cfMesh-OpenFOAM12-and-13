@@ -287,6 +287,25 @@ void cartesianMeshGenerator::generateMesh()
 
             optimiseMeshSurface();
 
+            // Snap non-corner edge points with validity check
+            {
+                meshSurfaceEngine mse(mesh_);
+                meshSurfacePartitioner mPart(mse);
+                meshSurfaceMapper mapper(mse, *octreePtr_);
+                const labelHashSet& edgePoints = mPart.edgePoints();
+                const labelHashSet& corners = mPart.corners();
+                labelLongList edgePts;
+                forAllConstIter(labelHashSet, edgePoints, it)
+                {
+                    const label bpI = it.key();
+                    if( !corners.found(bpI) )
+                        edgePts.append(bpI);
+                }
+                Info << "Ordered snap: snapping "
+                     << edgePts.size()
+                     << " non-corner edge points" << endl;
+                mapper.mapEdgeNodes(edgePts);
+            }
         }
 
         if( controller_.runCurrentStep("boundaryLayerGeneration") )

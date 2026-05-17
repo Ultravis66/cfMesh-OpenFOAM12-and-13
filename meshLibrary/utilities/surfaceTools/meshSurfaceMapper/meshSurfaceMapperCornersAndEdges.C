@@ -331,6 +331,11 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
 
     meshSurfaceEngineModifier sMod(surfaceEngine_);
 
+    // Store old positions for validity-check revert
+    pointField oldPositions(nodesToMap.size());
+    forAll(nodesToMap, i)
+        oldPositions[i] = points[bPoints[nodesToMap[i]]];
+
     //- map point to the nearest vertex on the surface mesh
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
@@ -424,9 +429,58 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         }
     }
 
-    sMod.updateGeometry(nodesToMap);
-
     mapToSmallestDistance(parallelBndNodes);
+
+    // Validity check: serial revert of invalid edge moves
+    {
+        const VRWGraph& pFaces = surfaceEngine_.pointFaces();
+        const faceList::subList& bFaces = surfaceEngine_.boundaryFaces();
+        const labelList& faceOwners = surfaceEngine_.faceOwners();
+        const pointFieldPMG& pts = surfaceEngine_.points();
+        const cellListPMG& cells = surfaceEngine_.mesh().cells();
+        const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
+        label nReverted = 0;
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+            bool validMove = true;
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label bfI = pFaces(bpI, pfI);
+                const face& f = bFaces[bfI];
+                point fc = point::zero;
+                forAll(f, fpI) fc += pts[f[fpI]];
+                fc /= scalar(f.size());
+                vector fn = vector::zero;
+                const point& p0 = pts[f[0]];
+                for(label fpI=1; fpI<f.size()-1; ++fpI)
+                    fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
+                const label cellI = faceOwners[bfI];
+                point cc = point::zero;
+                const cell& cll = cells[cellI];
+                forAll(cll, cfI)
+                {
+                    const face& cf = allFaces[cll[cfI]];
+                    point cfc = point::zero;
+                    forAll(cf, cpI) cfc += pts[cf[cpI]];
+                    cc += cfc / scalar(cf.size());
+                }
+                cc /= scalar(cll.size());
+                if( (fn & (fc - cc)) <= SMALL )
+                { validMove = false; break; }
+            }
+            if( !validMove )
+            {
+                sMod.moveBoundaryVertexNoUpdate(bpI, oldPositions[i]);
+                ++nReverted;
+            }
+        }
+        if( nReverted > 0 )
+            Info << "[EdgeValidity] reverted " << nReverted
+                 << " invalid edge moves" << endl;
+    }
+
+    sMod.updateGeometry(nodesToMap);
 }
 
 void meshSurfaceMapper::mapCornersAndEdges()
