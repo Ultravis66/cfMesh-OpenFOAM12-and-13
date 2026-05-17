@@ -90,6 +90,8 @@ checkMesh
 | `meshSurfaceMapperCornersAndEdges` 20-iteration hang | Reduce to 5 iterations |
 | `surfaceOptimizer` 100-iteration hang | Reduce to 10 iterations |
 | `addLayerForAllPatches` O(n²) BL quality rollback hangs | Removed |
+| `mapEdgeNodes` OMP nondeterminism — intermittent hangs and bad face explosions at full thread count | 
+| `Deterministic `parallelBndNodes` build: compute projected points in parallel, move and sync in serial — eliminates race condition |
 
 ---
 
@@ -132,6 +134,10 @@ Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient th
 | `layerScaleRing4` | 1.00 | BL scale at ring 4 (full BL thickness) |
 | `cornerSnapRelaxation` | 0.25 | Corner vertex snap damping (0=locked, 1=full snap) |
 | `postBLSnap` | false | Post-BL surface re-projection (experimental) |
+| `gapDetection` | false | Enable gap detection pre-pass (diagnostic only) |
+| `gapSuppression` | false | Suppress BL at detected gap-risk points |
+| `gapDetectionDistance` | 1e-4 | Absolute gap width threshold for detection |
+| `gapProbeDistance` | 1e-6 | Inward normal probe distance for gap measurement |
 
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
@@ -142,7 +148,7 @@ Commercial-mesher-style surface projection with validity checking:
 - **Targeted centroid point projection** — `correctEdgesBetweenPatches::patchCorrection()` creates new centroid points when decomposing boundary faces at feature edges. These 89 points are now tracked and projected onto the STL surface immediately after creation.
 - **Validity-checked surface projection** — `mapVerticesOntoSurface()` now stores old vertex positions before each projection pass and runs a serial validity check afterward. Any move that inverts an adjacent face pyramid is reverted. ~8000 invalid moves reverted per run.
 
-- **Validity-checked edge snapping** — `mapEdgeNodes()` stores old positions and runs a serial validity check after projection. Invalid moves (130+ per run) are reverted before geometry update.
+- **Deterministic edge snapping** — `mapEdgeNodes()` now computes projected points in parallel but performs all mesh mutation and `parallelBndNodes` construction serially in deterministic `nodesToMap` order. Eliminates OMP race conditions that caused intermittent hangs and bad face explosions at full thread count.
 - **Corner-aware projection** — `mapCorners()` snaps 3+ patch intersection vertices toward the nearest STL corner using a damped relaxation factor (default 0.25, tunable via `cornerSnapRelaxation` in meshDict). A 1e-10 pyramid height threshold catches near-degenerate faces that SMALL misses. 20 invalid corner moves reverted per run.
 - **Ordered snap sequence** — corners → edges → surface, each with validity rollback. Corners are processed first as the most constrained vertices, followed by two-patch edge points, then surface vertices.
 - **`blblJunctionPoints_` wiring** — Junction point metadata flows end-to-end from `boundaryLayers` → `cartesianMeshGenerator` → `refineBoundaryLayers`, enabling future wedge topology emission.
@@ -157,6 +163,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - `forceSingleLayerFaces_` + `forceSingleLayerAtFaces()` on `refineBoundaryLayers`
 - Layer count smoothing on boundary-face adjacency graph (max jump of 1 between neighbors)
 - Phase 1 non-mutating diagnostic in progress
+
 
 ### Known remaining issue
 2 high-aspect-ratio cells at blade-endwall junctions (reduced from 13 via geometry preservation pipeline). (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
@@ -211,7 +218,7 @@ Run this after any code change to catch regressions before committing.
 
 **`cartesianMesh` not found after build:** Check `$FOAM_USER_APPBIN` is in your PATH. Run `source /opt/openfoam13/etc/bashrc` again.
 
-**Mesh hangs:** cfMesh uses OpenMP. Set `OMP_NUM_THREADS=4` (or your core count) before running.
+**Mesh hangs:** Should not occur in current version — OMP nondeterminism in `mapEdgeNodes` was fixed in this port. If you encounter a hang, please open a GitHub issue with your STL and meshDict.
 
 ---
 
