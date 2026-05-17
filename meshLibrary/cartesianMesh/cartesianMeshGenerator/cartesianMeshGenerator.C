@@ -346,14 +346,33 @@ void cartesianMeshGenerator::generateMesh()
                 boolList isBLPoint(mesh_.points().size(), false);
                 forAll(blPoints_, i)
                     isBLPoint[blPoints_[i]] = true;
+                const boundBox& octreeBB = octreePtr_->rootBox();
+                Info << "Post-BL snap: octree BB min=" << octreeBB.min()
+                     << " max=" << octreeBB.max() << endl;
+                Info << "Post-BL snap: total boundary points "
+                     << bPoints.size() << endl;
+                label nCandidates = 0;
                 labelLongList outerBndPoints;
+                label nSkipped = 0;
                 forAll(bPoints, bpI)
-                    if( !isBLPoint[bPoints[bpI]] )
-                        outerBndPoints.append(bpI);
-                Info << "Post-BL snap: projecting "
+                {
+                    if( isBLPoint[bPoints[bpI]] ) continue;
+                    ++nCandidates;
+                    if( !octreeBB.contains(mesh_.points()[bPoints[bpI]]) )
+                    {
+                        ++nSkipped;
+                        continue;
+                    }
+                    outerBndPoints.append(bpI);
+                }
+                Info << "Post-BL snap: candidates before bounds check "
+                     << nCandidates << endl;
+                Info << "Post-BL snap: inside octree "
                      << outerBndPoints.size()
-                     << " outer boundary points onto STL" << endl;
-                mapper.mapVerticesOntoSurface(outerBndPoints);
+                     << ", outside octree " << nSkipped << endl;
+                if( outerBndPoints.size() > 0 )
+                    mapper.mapVerticesOntoSurface(outerBndPoints);
+                deleteDemandDrivenData(snapOctreePtr);
             }
         }
 
