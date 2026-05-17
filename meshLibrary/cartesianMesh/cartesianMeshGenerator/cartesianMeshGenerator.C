@@ -340,8 +340,15 @@ void cartesianMeshGenerator::generateMesh()
                 Info << "Post-BL snap: excluded "
                      << blPoints_.size()
                      << " BL interior points" << endl;
+                // Rebuild local octree - global octreePtr_ deleted by optimiseFinalMesh
+                meshOctree* snapOctreePtr = new meshOctree(*surfacePtr_);
+                meshOctreeCreator
+                (
+                    *snapOctreePtr,
+                    meshDict_
+                ).createOctreeWithRefinedBoundary(20, 30);
                 meshSurfaceEngine mse(mesh_);
-                meshSurfaceMapper mapper(mse, *octreePtr_);
+                meshSurfaceMapper mapper(mse, *snapOctreePtr);
                 const labelList& bPoints = mse.boundaryPoints();
                 boolList isBLPoint(mesh_.points().size(), false);
                 forAll(blPoints_, i)
