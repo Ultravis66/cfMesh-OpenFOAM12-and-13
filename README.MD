@@ -124,6 +124,14 @@ Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient th
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
 
+### Geometry preservation pipeline
+Commercial-mesher-style surface projection with validity checking:
+
+- **Targeted centroid point projection** — `correctEdgesBetweenPatches::patchCorrection()` creates new centroid points when decomposing boundary faces at feature edges. These 89 points are now tracked and projected onto the STL surface immediately after creation.
+- **Validity-checked surface projection** — `mapVerticesOntoSurface()` now stores old vertex positions before each projection pass and runs a serial validity check afterward. Any move that inverts an adjacent face pyramid is reverted. ~8000 invalid moves reverted per run.
+- **Non-corner edge snapping** — After patch assignment and edge extraction, two-patch boundary edge vertices are snapped onto feature curves. Corner vertices (3+ patches) are intentionally locked as overconstrained.
+- **`blblJunctionPoints_` wiring** — Junction point metadata flows end-to-end from `boundaryLayers` → `cartesianMeshGenerator` → `refineBoundaryLayers`, enabling future wedge topology emission.
+
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
 
@@ -135,7 +143,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issue
-13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
+8 high-aspect-ratio cells at blade-endwall junctions (reduced from 13 via geometry preservation pipeline) (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
 
 ---
 
@@ -145,8 +153,11 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 |--------|-------|
 | Cells | ~2.1M |
 | Average non-orthogonality | 10.5° |
+| High aspect ratio cells | 8 (down from 13) |
+| Negative volume cells | 3 (down from 7) |
+| Failed mesh checks | 4 (down from 5) |
 | Bad faces after untangling | 0 |
-| Runtime | ~60s |
+| Runtime | ~85s |
 | Regression test | 6/6 PASS |
 ---
 ## Running the regression test
@@ -168,8 +179,8 @@ PASS: Bad faces after untangling: 0 (limit: 10)
 [ 2/3 ] Running checkMesh...
 PASS: Cell count: ~2.0M (baseline: 2100000 +/-10%)
 PASS: Average non-orthogonality: ~10deg (limit: 15deg)
-PASS: High aspect ratio cells: 13 (known limit: 13)
-PASS: Negative volume cells: 7 (known limit: 7)
+PASS: High aspect ratio cells: 8 (known limit: 13)
+PASS: Negative volume cells: 3 (known limit: 10)
 [ 3/3 ] Summary
 PASSED: 6
 FAILED: 0
@@ -259,9 +270,9 @@ checkMesh -case ~/rotor37_mesh 2>&1 | grep -E "cells:|average non-orth|Failed|as
 Expected output:
 cells:            ~2.1M
 Mesh non-orthogonality Max: ~100 degrees  average: 10.5 degrees
-***High aspect ratio cells found, number of cells 13
-***Zero or negative cell volume detected, Number of negative volume cells: 7
-Failed 5 mesh checks.
+***High aspect ratio cells found, number of cells 8
+***Zero or negative cell volume detected, Number of negative volume cells: 3
+Failed 4 mesh checks.
 
 The 13 high-aspect and 7 negative-volume cells are a known limitation at blade+endwall geometric singularities (machine-epsilon volume, no effect on solver convergence). All other metrics are solver-ready.
 
