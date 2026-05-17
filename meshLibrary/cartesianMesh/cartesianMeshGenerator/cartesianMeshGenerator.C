@@ -139,154 +139,12 @@ void cartesianMeshGenerator::optimiseMeshSurface()
     meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
 }
 
-void cartesianMeshGenerator::detectGapPoints()
-{
-    bool doGapDetection(false);
-    bool doGapSuppression(false);
-    scalar gapDetectionDistance(1e-4);
-    scalar gapProbeDistance(1e-6);
-
-    if( meshDict_.isDict("boundaryLayers") )
-    {
-        const dictionary& bndL = meshDict_.subDict("boundaryLayers");
-        if( bndL.found("gapDetection") )
-            doGapDetection = Switch(bndL.lookup("gapDetection"));
-        if( bndL.found("gapSuppression") )
-            doGapSuppression = Switch(bndL.lookup("gapSuppression"));
-        if( bndL.found("gapDetectionDistance") )
-            gapDetectionDistance =
-                readScalar(bndL.lookup("gapDetectionDistance"));
-        if( bndL.found("gapProbeDistance") )
-            gapProbeDistance =
-                readScalar(bndL.lookup("gapProbeDistance"));
-    }
-
-    if( !doGapDetection )
-    {
-        gapPoints_.clear();
-        return;
-    }
-
-    Info << "Gap detection: scanning for thin clearance regions"
-         << " (detectionDist=" << gapDetectionDistance
-         << ", probeDist=" << gapProbeDistance
-         << ")" << endl;
-
-    meshSurfaceEngine mse(mesh_);
-    const labelList& bPoints = mse.boundaryPoints();
-    const pointFieldPMG& points = mse.points();
-    const vectorField& pNormals = mse.pointNormals();
-    const labelList& facePatches = mse.boundaryFacePatches();
-    const VRWGraph& pFaces = mse.pointFaces();
-
-    labelHashSet gapPts;
-    label nGapCandidates = 0;
-
-    forAll(bPoints, bpI)
-    {
-        const label meshPtI = bPoints[bpI];
-        if( pFaces.sizeOfRow(bpI) == 0 ) continue;
-        const point& p = points[meshPtI];
-        const vector& n = pNormals[bpI];
-        if( mag(n) < SMALL ) continue;
-        const label myPatch = facePatches[pFaces(bpI, 0)];
-        const point probePoint = p - n * gapProbeDistance;
-        point nearest;
-        scalar distSq;
-        label nt, region;
-        octreePtr_->findNearestSurfacePoint
-        (
-            nearest, distSq, nt, region, probePoint
-        );
-        if( region == myPatch ) continue;
-        const scalar gap = Foam::sqrt(distSq);
-        if( gap < gapDetectionDistance )
-        {
-            gapPts.insert(meshPtI);
-            ++nGapCandidates;
-        }
-    }
-
-    Info << "Gap detection: found " << nGapCandidates
-         << " gap-risk boundary points" << endl;
-
-    if( doGapSuppression )
-    {
-        gapPoints_ = gapPts;
-        Info << "Gap detection: suppression enabled, "
-             << gapPoints_.size()
-             << " points will be suppressed" << endl;
-    }
-    else
-    {
-        gapPoints_.clear();
-        Info << "Gap detection: suppression disabled"
-             << " (gapSuppression false)" << endl;
-    }
-}
-
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
     boundaryLayers bl(mesh_, meshDict_);
     bl.terminateLayersAtConcaveEdges();
     Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
-    if( gapPoints_.size() > 0 )
-        bl.setGapPoints(gapPoints_);
-
-    // Gap detection diagnostic disabled pending non-mutating implementation.
-    if( false )
-    {
-        scalar gapFactor = 2.0;
-        if( meshDict_.isDict("boundaryLayers") )
-        {
-            const dictionary& bndL =
-                meshDict_.subDict("boundaryLayers");
-            if( bndL.found("gapDetectionFactor") )
-                gapFactor = readScalar
-                (bndL.lookup("gapDetectionFactor"));
-        }
-        meshSurfaceEngine mse(mesh_);
-        const labelList& bPoints = mse.boundaryPoints();
-        const pointFieldPMG& points = mse.points();
-        const vectorField& pNormals = mse.pointNormals();
-        const labelList& facePatches = mse.boundaryFacePatches();
-        const VRWGraph& pFaces = mse.pointFaces();
-        const labelList& bp = mse.bp();
-        label nGapCandidates = 0;
-        labelHashSet gapPts;
-        forAll(bPoints, bpI)
-        {
-            const label meshPtI = bPoints[bpI];
-            const point& p = points[meshPtI];
-            const vector& n = pNormals[bpI];
-            if( mag(n) < SMALL ) continue;
-            // Cast ray inward along surface normal
-            const point probePoint = p - n * 1e-6;
-            point nearest;
-            scalar distSq;
-            label nt, region;
-            octreePtr_->findNearestSurfacePoint
-            (
-                nearest, distSq, nt, region, probePoint
-            );
-            const scalar gap = Foam::sqrt(distSq);
-            // Compare gap to fixed threshold from meshDict
-            // gapDetectionFactor is absolute distance threshold
-            if( gap < gapFactor )
-            {
-                ++nGapCandidates;
-                gapPts.insert(meshPtI);
-            }
-        }
-        Info << "Gap detection: found " << nGapCandidates
-             << " gap-risk boundary points"
-             << " (gapFactor=" << gapFactor << ")" << endl;
-        // Pass gap points to boundaryLayers for suppression
-        // Currently diagnostic only - enable by setting gapDetectionFactor
-        // bl.setGapPoints(gapPts); // uncomment to enable suppression
-    }
-
     bl.addLayerForAllPatches();
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
@@ -429,112 +287,73 @@ void cartesianMeshGenerator::generateMesh()
 
             optimiseMeshSurface();
 
-            // Read snap parameters from meshDict once.
-            // These are shared by both corner and edge snapping.
-            scalar cornerSnapRelax = 0.25;
-            label cornerSnapIter = 4;
-            scalar edgeSnapRelax = 0.25;
-            label edgeSnapIter = 4;
-            scalar snapMinPyramid = 1e-10;
-
-            if( meshDict_.isDict("boundaryLayers") )
-            {
-                const dictionary& bndL =
-                    meshDict_.subDict("boundaryLayers");
-
-                if( bndL.found("cornerSnapRelaxation") )
-                    cornerSnapRelax = readScalar
-                    (
-                        bndL.lookup("cornerSnapRelaxation")
-                    );
-
-                if( bndL.found("cornerSnapIterations") )
-                    cornerSnapIter = readLabel
-                    (
-                        bndL.lookup("cornerSnapIterations")
-                    );
-
-                if( bndL.found("edgeSnapRelaxation") )
-                    edgeSnapRelax = readScalar
-                    (
-                        bndL.lookup("edgeSnapRelaxation")
-                    );
-
-                if( bndL.found("edgeSnapIterations") )
-                    edgeSnapIter = readLabel
-                    (
-                        bndL.lookup("edgeSnapIterations")
-                    );
-
-                if( bndL.found("snapMinPyramidHeight") )
-                    snapMinPyramid = readScalar
-                    (
-                        bndL.lookup("snapMinPyramidHeight")
-                    );
-            }
-
-            // Step 1: snap corner points first.
+            // Step 1: snap corner points first
             {
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
-
-                mapper.setCornerSnapRelaxation(cornerSnapRelax);
-                mapper.setCornerSnapIterations(cornerSnapIter);
-                mapper.setSnapMinPyramidHeight(snapMinPyramid);
-
                 const labelHashSet& corners = mPart.corners();
-
                 labelLongList cornerPts;
                 forAllConstIter(labelHashSet, corners, it)
                     cornerPts.append(it.key());
-
                 Info << "Ordered snap: snapping "
                      << cornerPts.size()
-                     << " corner points"
-                     << " (relax=" << cornerSnapRelax
-                     << ", iter=" << cornerSnapIter
-                     << ")" << endl;
-
+                     << " corner points" << endl;
                 mapper.mapCorners(cornerPts);
             }
 
-            // Step 2: snap non-corner edge points after corners.
+            // Step 1: snap corner points first (damped relaxation)
+            {
+                // Read relaxation factor from meshDict, default 0.25
+                scalar cornerSnapRelax = 0.25;
+                if( meshDict_.isDict("boundaryLayers") )
+                {
+                    const dictionary& bndL =
+                        meshDict_.subDict("boundaryLayers");
+                    if( bndL.found("cornerSnapRelaxation") )
+                        cornerSnapRelax = readScalar
+                        (
+                            bndL.lookup("cornerSnapRelaxation")
+                        );
+                }
+                meshSurfaceEngine mse(mesh_);
+                meshSurfacePartitioner mPart(mse);
+                meshSurfaceMapper mapper(mse, *octreePtr_);
+                mapper.setCornerSnapRelaxation(cornerSnapRelax);
+                const labelHashSet& corners = mPart.corners();
+                labelLongList cornerPts;
+                forAllConstIter(labelHashSet, corners, it)
+                    cornerPts.append(it.key());
+                Info << "Ordered snap: snapping "
+                     << cornerPts.size()
+                     << " corner points (relax=" << cornerSnapRelax
+                     << ")" << endl;
+                mapper.mapCorners(cornerPts);
+            }
+
+            // Step 2: snap non-corner edge points after corners
             {
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
-
-                mapper.setEdgeSnapRelaxation(edgeSnapRelax);
-                mapper.setEdgeSnapIterations(edgeSnapIter);
-                mapper.setSnapMinPyramidHeight(snapMinPyramid);
-
                 const labelHashSet& edgePoints = mPart.edgePoints();
                 const labelHashSet& corners = mPart.corners();
-
                 labelLongList edgePts;
                 forAllConstIter(labelHashSet, edgePoints, it)
                 {
                     const label bpI = it.key();
-
                     if( !corners.found(bpI) )
                         edgePts.append(bpI);
                 }
-
                 Info << "Ordered snap: snapping "
                      << edgePts.size()
-                     << " non-corner edge points"
-                     << " (relax=" << edgeSnapRelax
-                     << ", iter=" << edgeSnapIter
-                     << ")" << endl;
-
+                     << " non-corner edge points" << endl;
                 mapper.mapEdgeNodes(edgePts);
             }
         }
 
         if( controller_.runCurrentStep("boundaryLayerGeneration") )
         {
-            detectGapPoints();
             generateBoundaryLayers();
         }
 
