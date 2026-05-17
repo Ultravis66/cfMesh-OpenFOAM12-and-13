@@ -16,7 +16,7 @@ NONORTHO_MAX=15.0
 
 BAD_FACES_MAX=10
 
-KNOWN_BAD_CELLS=13
+KNOWN_BAD_CELLS=13       # baseline was 13, geometry fixes reducing to 8-13
 KNOWN_NEG_VOL=10       # non-deterministic, allow small variance
 
 PASS=0
