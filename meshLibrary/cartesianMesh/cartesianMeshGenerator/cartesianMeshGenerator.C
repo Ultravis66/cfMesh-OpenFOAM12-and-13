@@ -139,12 +139,100 @@ void cartesianMeshGenerator::optimiseMeshSurface()
     meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
 }
 
+void cartesianMeshGenerator::detectGapPoints()
+{
+    bool doGapDetection(false);
+    bool doGapSuppression(false);
+    scalar gapDetectionDistance(1e-4);
+    scalar gapProbeDistance(1e-6);
+
+    if( meshDict_.isDict("boundaryLayers") )
+    {
+        const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+        if( bndL.found("gapDetection") )
+            doGapDetection = Switch(bndL.lookup("gapDetection"));
+        if( bndL.found("gapSuppression") )
+            doGapSuppression = Switch(bndL.lookup("gapSuppression"));
+        if( bndL.found("gapDetectionDistance") )
+            gapDetectionDistance =
+                readScalar(bndL.lookup("gapDetectionDistance"));
+        if( bndL.found("gapProbeDistance") )
+            gapProbeDistance =
+                readScalar(bndL.lookup("gapProbeDistance"));
+    }
+
+    if( !doGapDetection )
+    {
+        gapPoints_.clear();
+        return;
+    }
+
+    Info << "Gap detection: scanning for thin clearance regions"
+         << " (detectionDist=" << gapDetectionDistance
+         << ", probeDist=" << gapProbeDistance
+         << ")" << endl;
+
+    meshSurfaceEngine mse(mesh_);
+    const labelList& bPoints = mse.boundaryPoints();
+    const pointFieldPMG& points = mse.points();
+    const vectorField& pNormals = mse.pointNormals();
+    const labelList& facePatches = mse.boundaryFacePatches();
+    const VRWGraph& pFaces = mse.pointFaces();
+
+    labelHashSet gapPts;
+    label nGapCandidates = 0;
+
+    forAll(bPoints, bpI)
+    {
+        const label meshPtI = bPoints[bpI];
+        if( pFaces.sizeOfRow(bpI) == 0 ) continue;
+        const point& p = points[meshPtI];
+        const vector& n = pNormals[bpI];
+        if( mag(n) < SMALL ) continue;
+        const label myPatch = facePatches[pFaces(bpI, 0)];
+        const point probePoint = p - n * gapProbeDistance;
+        point nearest;
+        scalar distSq;
+        label nt, region;
+        octreePtr_->findNearestSurfacePoint
+        (
+            nearest, distSq, nt, region, probePoint
+        );
+        if( region == myPatch ) continue;
+        const scalar gap = Foam::sqrt(distSq);
+        if( gap < gapDetectionDistance )
+        {
+            gapPts.insert(meshPtI);
+            ++nGapCandidates;
+        }
+    }
+
+    Info << "Gap detection: found " << nGapCandidates
+         << " gap-risk boundary points" << endl;
+
+    if( doGapSuppression )
+    {
+        gapPoints_ = gapPts;
+        Info << "Gap detection: suppression enabled, "
+             << gapPoints_.size()
+             << " points will be suppressed" << endl;
+    }
+    else
+    {
+        gapPoints_.clear();
+        Info << "Gap detection: suppression disabled"
+             << " (gapSuppression false)" << endl;
+    }
+}
+
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
     boundaryLayers bl(mesh_, meshDict_);
     bl.terminateLayersAtConcaveEdges();
     Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
+    if( gapPoints_.size() > 0 )
+        bl.setGapPoints(gapPoints_);
 
     // Gap detection diagnostic disabled pending non-mutating implementation.
     if( false )
@@ -446,6 +534,7 @@ void cartesianMeshGenerator::generateMesh()
 
         if( controller_.runCurrentStep("boundaryLayerGeneration") )
         {
+            detectGapPoints();
             generateBoundaryLayers();
         }
 

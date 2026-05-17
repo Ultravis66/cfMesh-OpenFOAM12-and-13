@@ -83,6 +83,9 @@ class cartesianMeshGenerator
         //- BL/BL junction points passed from boundaryLayers to refineBoundaryLayers
         labelHashSet blblJunctionPoints_;
 
+        //- gap points detected for BL suppression
+        labelHashSet gapPoints_;
+
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
         labelLongList blPoints_;
 
@@ -107,6 +110,9 @@ class cartesianMeshGenerator
         void optimiseMeshSurface();
 
         //- add boundary layers
+        //- detect gap-risk points before BL generation
+        void detectGapPoints();
+
         void generateBoundaryLayers();
 
         //- refine boundary layers
