@@ -521,6 +521,17 @@ void refineBoundaryLayers::forceSingleLayerAtFaces
     // disabled - two-pass rollback pending
 }
 
+void refineBoundaryLayers::setBlblJunctionPoints
+(
+    const labelHashSet& pts
+)
+{
+    blblJunctionPoints_ = pts;
+    Info << "refineBoundaryLayers: received "
+         << blblJunctionPoints_.size()
+         << " BL/BL junction points" << endl;
+}
+
 } // End namespace Foam
 
 // ************************************************************************* //

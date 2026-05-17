@@ -44,7 +44,7 @@ void generateLayer
     const bool layers2D
 )
 {
-    boundaryLayers bl(mesh);
+    boundaryLayers bl(mesh, meshDict);
 
     if( layers2D )
         bl.activate2DMode();

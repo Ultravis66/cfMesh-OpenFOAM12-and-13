@@ -114,6 +114,9 @@ class refineBoundaryLayers
         //- boundary faces forced to single layer treatment
         labelHashSet forceSingleLayerFaces_;
 
+        //- BL/BL junction points from boundaryLayers - used for wedge topology
+        labelHashSet blblJunctionPoints_;
+
         //- a list of edges which shall be refined
         LongList<edge> splitEdges_;
 
@@ -415,6 +418,9 @@ public:
 
         //- force single layer on mixed-displacement boundary faces
         void forceSingleLayerAtFaces(const labelHashSet& faces);
+
+        //- set BL/BL junction points for wedge topology emission
+        void setBlblJunctionPoints(const labelHashSet& pts);
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

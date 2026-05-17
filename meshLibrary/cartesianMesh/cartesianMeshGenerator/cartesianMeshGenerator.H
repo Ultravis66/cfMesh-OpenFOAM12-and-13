@@ -80,6 +80,9 @@ class cartesianMeshGenerator
         //- workflow controller
         workflowControls controller_;
 
+        //- BL/BL junction points passed from boundaryLayers to refineBoundaryLayers
+        labelHashSet blblJunctionPoints_;
+
     // Private member functions
         //- create cartesian mesh
         void createCartesianMesh();

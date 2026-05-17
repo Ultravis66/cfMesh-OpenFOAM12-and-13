@@ -142,7 +142,8 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.terminateLayersAtConcaveEdges();
     Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
     bl.addLayerForAllPatches();
-    // mixedDisplacementFaces_ handoff disabled - threshold tuning
+    // Capture junction points for handoff to refineBoundaryLayers
+    blblJunctionPoints_ = bl.junctionEdgePoints();
 }
 
 void cartesianMeshGenerator::refBoundaryLayers()
@@ -153,7 +154,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         refineBoundaryLayers::readSettings(meshDict_, refLayers);
 
-        // forceSingleLayerAtFaces disabled - threshold tuning
+        // Pass BL/BL junction points for wedge topology
+        refLayers.setBlblJunctionPoints(blblJunctionPoints_);
 
         refLayers.refineLayers();
 
