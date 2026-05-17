@@ -1403,24 +1403,6 @@ void refineBoundaryLayers::generateNewCells()
     VRWGraph pointNewFaces;
     pointNewFaces.reverseAddressing(newFaces_);
 
-    // WedgeClassifier: refType distribution
-    {
-        label nType0=0, nType1=0, nType2=0, nType3=0;
-        forAll(refType, cI)
-        {
-            if( refType[cI]==0 ) ++nType0;
-            else if( refType[cI]==1 ) ++nType1;
-            else if( refType[cI]==2 ) ++nType2;
-            else if( refType[cI]==3 ) ++nType3;
-        }
-        Info << "[WedgeClassifier] refType: "
-             << "type0=" << nType0
-             << " type1(prism)=" << nType1
-             << " type2(edgeHex)=" << nType2
-             << " type3(cornerHex)=" << nType3
-             << endl;
-    }
-
     forAll(nCellsFromCell, cellI)
     {
         if( refType[cellI] == 0 )
@@ -1431,32 +1413,6 @@ void refineBoundaryLayers::generateNewCells()
 
             cell& c = cells[cellI];
 
-            // WedgeClassifier: type0 cell min-edge diagnostic
-            {
-                const pointFieldPMG& pts = mesh_.points();
-                scalar minEdge = GREAT;
-                forAll(c, fI)
-                {
-                    const face& f = mesh_.faces()[c[fI]];
-                    forAll(f, pI)
-                    {
-                        const label p0 = f[pI];
-                        const label p1 = f[f.fcIndex(pI)];
-                        const scalar elen = mag(pts[p1] - pts[p0]);
-                        minEdge = Foam::min(minEdge, elen);
-                    }
-                }
-                static label nDegen0 = 0;
-                if( minEdge < scalar(1e-10) )
-                {
-                    ++nDegen0;
-                    if( nDegen0 <= 20 )
-                        Info << "[WedgeClassifier] type0 degen cellI=" << cellI
-                             << " minEdge=" << minEdge
-                             << " nFaces=" << c.size()
-                             << endl;
-                }
-            }
             //- copy the new faces of this cell
             DynList<label, 64> newC;
             forAll(c, fI)
@@ -1472,78 +1428,6 @@ void refineBoundaryLayers::generateNewCells()
         }
         else if( refType[cellI] == 1 )
         {
-            // Phase 1 classifier: detect collapsed prism cells at BL/BL junctions
-            // A collapsed prism has one or more zero-length hair edges on its base face.
-            // These are the source of the 13 degenerate cells. Diagnostic only - no mesh changes.
-            {
-                const pointFieldPMG& pts = mesh_.points();
-                const label startBnd = mesh_.boundaries()[0].patchStart();
-                const cell& cc = mesh_.cells()[cellI];
-
-                // Find base face (the boundary face with nLayers > 1)
-                label bfaceI = -1;
-                forAll(cc, fI)
-                {
-                    const label bfI = cc[fI] - startBnd;
-                    if( bfI >= 0 && bfI < nLayersAtBndFace_.size()
-                     && nLayersAtBndFace_[bfI] > 1 )
-                    {
-                        bfaceI = cc[fI];
-                        break;
-                    }
-                }
-
-                if( bfaceI >= 0 )
-                {
-                    const face& bf = mesh_.faces()[bfaceI];
-                    label nDegen = 0;
-                    label nEdgesChecked = 0;
-
-                    forAll(bf, pI)
-                    {
-                        const label pointI = bf[pI];
-                        forAllRow(splitEdgesAtPoint_, pointI, seI)
-                        {
-                            const edge& se = splitEdges_[splitEdgesAtPoint_(pointI, seI)];
-                            if( se.start() == pointI || se.end() == pointI )
-                            {
-                                ++nEdgesChecked;
-                                const scalar len = mag(pts[se.end()] - pts[se.start()]);
-                                // Multi-threshold diagnostic
-                                if( len < 1000.0*SMALL ) ++nDegen;
-                                else if( len < 1e-6 )
-                                {
-                                    static label nShort = 0;
-                                    if( ++nShort <= 10 )
-                                        Info << "[WedgeClassifier] short edge len=" << len
-                                             << " cellI=" << cellI << endl;
-                                }
-                            }
-                        }
-                    }
-
-                    static label nCollapsed = 0;
-                    static label nChecked = 0;
-                    ++nChecked;
-                    if( nDegen > 0 )
-                    {
-                        ++nCollapsed;
-                        if( nCollapsed <= 20 )
-                            Info << "[WedgeClassifier] cellI=" << cellI
-                                 << " baseFace=" << bfaceI
-                                 << " faceSize=" << bf.size()
-                                 << " degenHairEdges=" << nDegen
-                                 << "/" << nEdgesChecked
-                                 << " -> COLLAPSED PRISM"
-                                 << endl;
-                    }
-                    if( nChecked % 100000 == 0 )
-                        Info << "[WedgeClassifier] scanned " << nChecked
-                             << " prism cells, " << nCollapsed
-                             << " collapsed" << endl;
-                }
-            }
-
             //- generate new cells from this prism refined in one direction
             DynList<DynList<DynList<label, 8>, 10>, 64> cellsFromCell;
             generateNewCellsPrism(cellI, cellsFromCell);
@@ -1590,72 +1474,10 @@ void refineBoundaryLayers::generateNewCells()
         {
             //- generate new cell from a hex cell where two layers intersect
             //- generate mostly hex cells;
-            // WedgeClassifier: check input cell geometry before edgeHex refinement
-            {
-                const pointFieldPMG& pts = mesh_.points();
-                const cell& cc = mesh_.cells()[cellI];
-                scalar minEdge = GREAT;
-                forAll(cc, fI)
-                {
-                    const face& f = mesh_.faces()[cc[fI]];
-                    forAll(f, pI)
-                    {
-                        const label p0 = f[pI];
-                        const label p1 = f[f.fcIndex(pI)];
-                        minEdge = Foam::min(minEdge, mag(pts[p1]-pts[p0]));
-                    }
-                }
-                static label nDegen2 = 0;
-                static label nTotal2 = 0;
-                ++nTotal2;
-                if( minEdge < scalar(1e-10) )
-                {
-                    ++nDegen2;
-                    if( nDegen2 <= 20 )
-                        Info << "[WedgeClassifier] type2 degen cellI=" << cellI
-                             << " minEdge=" << minEdge
-                             << " nFaces=" << cc.size()
-                             << endl;
-                }
-                if( nTotal2 == 1696 )
-                    Info << "[WedgeClassifier] type2 total=" << nTotal2
-                         << " degen=" << nDegen2 << endl;
-            }
             refineEdgeHexCell refEdgeHex(cellI, *this);
             const DynList<DynList<DynList<label, 4>, 6>, 256>& cellsFromCell =
                 refEdgeHex.newCells();
 
-            // WedgeClassifier: check OUTPUT cells from edgeHex refinement
-            {
-                const pointFieldPMG& pts = mesh_.points();
-                forAll(cellsFromCell, cI)
-                {
-                    const DynList<DynList<label, 4>, 6>& nc = cellsFromCell[cI];
-                    scalar minEdge = GREAT;
-                    forAll(nc, fI)
-                    {
-                        const DynList<label, 4>& nf = nc[fI];
-                        forAll(nf, pI)
-                        {
-                            const label p0 = nf[pI];
-                            const label p1 = nf[(pI+1)%nf.size()];
-                            minEdge = Foam::min(minEdge, mag(pts[p1]-pts[p0]));
-                        }
-                    }
-                    static label nDegenOut2 = 0;
-                    if( minEdge < scalar(1e-10) )
-                    {
-                        ++nDegenOut2;
-                        if( nDegenOut2 <= 20 )
-                            Info << "[WedgeClassifier] type2 OUTPUT degen"
-                                 << " parentCellI=" << cellI
-                                 << " subCellI=" << cI
-                                 << " minEdge=" << minEdge
-                                 << " nFaces=" << nc.size()
-                                 << endl;
-                    }
-                }
-            }
             forAll(cellsFromCell, cI)
             {
                 const DynList<DynList<label, 4>, 6>& nc = cellsFromCell[cI];
