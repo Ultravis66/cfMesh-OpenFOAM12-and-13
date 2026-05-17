@@ -33,6 +33,7 @@ boundaryLayers
 
     // BL/BL sharp feature detection
     blblFeatureAngleDeg 40;
+    cornerSnapRelaxation 0.25;
 
     // BL/no-BL and BL/BL transition ramp
     layerScaleRing1 0.25;

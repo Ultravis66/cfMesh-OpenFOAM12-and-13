@@ -71,7 +71,8 @@ meshSurfaceMapper::meshSurfaceMapper
     meshOctree_(octree),
     surfaceEnginePartitionerPtr_(NULL),
     deletePartitioner_(true),
-    surfPartitionerPtr_(NULL)
+    surfPartitionerPtr_(NULL),
+    cornerSnapRelaxation_(0.25)
 {
     if( Pstream::parRun() )
     {

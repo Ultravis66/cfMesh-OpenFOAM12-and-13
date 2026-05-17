@@ -66,6 +66,9 @@ class meshSurfaceMapper
         //- reference to the octree
         const meshOctree& meshOctree_;
 
+        //- relaxation factor for corner snapping (0=no move, 1=full)
+        scalar cornerSnapRelaxation_;
+
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
         const bool deletePartitioner_;
@@ -99,7 +102,7 @@ class meshSurfaceMapper
 
     // Private member functions
         //- map corner nodes to the boundary
-        void mapCorners(const labelLongList& nodesToMap);
+
 
         //- find mapping distance for selected points
         void findMappingDistance
@@ -156,6 +159,15 @@ public:
         //- projects corner and edge vertices onto their nearest location
         //- on the surface mesh
         void mapCornersAndEdges();
+
+        //- set corner snap relaxation factor (0=no move, 1=full snap)
+        void setCornerSnapRelaxation(const scalar relax)
+        {
+            cornerSnapRelaxation_ = relax;
+        }
+
+        //- projects corner vertices onto the nearest corner on the surface
+        void mapCorners(const labelLongList& nodesToMap);
 
         //- projects selected edge vertices onto their nearest
         //- locations on the surface mesh

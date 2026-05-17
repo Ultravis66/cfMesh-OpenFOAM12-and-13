@@ -287,7 +287,51 @@ void cartesianMeshGenerator::generateMesh()
 
             optimiseMeshSurface();
 
-            // Snap non-corner edge points with validity check
+            // Step 1: snap corner points first
+            {
+                meshSurfaceEngine mse(mesh_);
+                meshSurfacePartitioner mPart(mse);
+                meshSurfaceMapper mapper(mse, *octreePtr_);
+                const labelHashSet& corners = mPart.corners();
+                labelLongList cornerPts;
+                forAllConstIter(labelHashSet, corners, it)
+                    cornerPts.append(it.key());
+                Info << "Ordered snap: snapping "
+                     << cornerPts.size()
+                     << " corner points" << endl;
+                mapper.mapCorners(cornerPts);
+            }
+
+            // Step 1: snap corner points first (damped relaxation)
+            {
+                // Read relaxation factor from meshDict, default 0.25
+                scalar cornerSnapRelax = 0.25;
+                if( meshDict_.isDict("boundaryLayers") )
+                {
+                    const dictionary& bndL =
+                        meshDict_.subDict("boundaryLayers");
+                    if( bndL.found("cornerSnapRelaxation") )
+                        cornerSnapRelax = readScalar
+                        (
+                            bndL.lookup("cornerSnapRelaxation")
+                        );
+                }
+                meshSurfaceEngine mse(mesh_);
+                meshSurfacePartitioner mPart(mse);
+                meshSurfaceMapper mapper(mse, *octreePtr_);
+                mapper.setCornerSnapRelaxation(cornerSnapRelax);
+                const labelHashSet& corners = mPart.corners();
+                labelLongList cornerPts;
+                forAllConstIter(labelHashSet, corners, it)
+                    cornerPts.append(it.key());
+                Info << "Ordered snap: snapping "
+                     << cornerPts.size()
+                     << " corner points (relax=" << cornerSnapRelax
+                     << ")" << endl;
+                mapper.mapCorners(cornerPts);
+            }
+
+            // Step 2: snap non-corner edge points after corners
             {
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);

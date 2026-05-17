@@ -216,6 +216,10 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
     //- triSurface
     meshSurfaceEngineModifier sMod(surfaceEngine_);
 
+    // Store old positions for validity-check revert
+    pointField oldPositions(nodesToMap.size());
+    forAll(nodesToMap, i)
+        oldPositions[i] = points[bPoints[nodesToMap[i]]];
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif
@@ -301,8 +305,64 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
             mapPoint = mapPointApprox;
         }
 
-        //- move the point to the nearest corner
-        sMod.moveBoundaryVertexNoUpdate(bpI, mapPoint);
+        //- move the point toward the nearest corner using damped move.
+        //- Full corner snaps can invert faces at 3+ patch junctions.
+        const vector delta = mapPoint - p;
+        const point relaxedPoint = p + cornerSnapRelaxation_ * delta;
+        sMod.moveBoundaryVertexNoUpdate(bpI, relaxedPoint);
+    }
+
+    // Validity check: serial revert of invalid corner moves
+    {
+        const VRWGraph& pFaces = surfaceEngine_.pointFaces();
+        const faceList::subList& bFaces = surfaceEngine_.boundaryFaces();
+        const labelList& faceOwners = surfaceEngine_.faceOwners();
+        const pointFieldPMG& pts = surfaceEngine_.points();
+        const cellListPMG& cells = surfaceEngine_.mesh().cells();
+        const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
+        label nReverted = 0;
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+            bool validMove = true;
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label bfI = pFaces(bpI, pfI);
+                const face& f = bFaces[bfI];
+                point fc = point::zero;
+                forAll(f, fpI) fc += pts[f[fpI]];
+                fc /= scalar(f.size());
+                vector fn = vector::zero;
+                const point& p0 = pts[f[0]];
+                for(label fpI=1; fpI<f.size()-1; ++fpI)
+                    fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
+                const label cellI = faceOwners[bfI];
+                point cc = point::zero;
+                const cell& cll = cells[cellI];
+                forAll(cll, cfI)
+                {
+                    const face& cf = allFaces[cll[cfI]];
+                    point cfc = point::zero;
+                    forAll(cf, cpI) cfc += pts[cf[cpI]];
+                    cc += cfc / scalar(cf.size());
+                }
+                cc /= scalar(cll.size());
+                const scalar h = fn & (fc - cc);
+                // Use scaled threshold - corner faces can have tiny
+                // but positive pyramid heights that flip later.
+                // Threshold tuned from diagnostic: h values 1e-13 to 1e-10
+                if( h <= scalar(1e-10) )
+                { validMove = false; break; }
+            }
+            if( !validMove )
+            {
+                sMod.moveBoundaryVertexNoUpdate(bpI, oldPositions[i]);
+                ++nReverted;
+            }
+        }
+        if( nReverted > 0 )
+            Info << "[CornerValidity] reverted " << nReverted
+                 << " invalid corner moves" << endl;
     }
 
     sMod.updateGeometry(nodesToMap);
