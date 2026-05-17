@@ -216,6 +216,9 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
     //- triSurface
     meshSurfaceEngineModifier sMod(surfaceEngine_);
 
+    // Iterative damped corner snapping
+    for(label snapIter = 0; snapIter < cornerSnapIterations_; ++snapIter)
+    {
     // Store old positions for validity-check revert
     pointField oldPositions(nodesToMap.size());
     forAll(nodesToMap, i)
@@ -351,7 +354,7 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
                 // Use scaled threshold - corner faces can have tiny
                 // but positive pyramid heights that flip later.
                 // Threshold tuned from diagnostic: h values 1e-13 to 1e-10
-                if( h <= scalar(1e-10) )
+                if( h <= snapMinPyramidHeight_ )
                 { validMove = false; break; }
             }
             if( !validMove )
@@ -361,11 +364,13 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
             }
         }
         if( nReverted > 0 )
-            Info << "[CornerValidity] reverted " << nReverted
+            Info << "[CornerValidity] iter=" << snapIter
+                 << " reverted " << nReverted
                  << " invalid corner moves" << endl;
     }
 
     sMod.updateGeometry(nodesToMap);
+    } // end cornerSnapIter loop
 }
 
 void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
@@ -526,7 +531,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
                     cc += cfc / scalar(cf.size());
                 }
                 cc /= scalar(cll.size());
-                if( (fn & (fc - cc)) <= SMALL )
+                if( (fn & (fc - cc)) <= snapMinPyramidHeight_ )
                 { validMove = false; break; }
             }
             if( !validMove )

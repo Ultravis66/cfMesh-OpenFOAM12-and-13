@@ -68,6 +68,10 @@ class meshSurfaceMapper
 
         //- relaxation factor for corner snapping (0=no move, 1=full)
         scalar cornerSnapRelaxation_;
+        label cornerSnapIterations_;
+        scalar edgeSnapRelaxation_;
+        label edgeSnapIterations_;
+        scalar snapMinPyramidHeight_;
 
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
@@ -165,6 +169,14 @@ public:
         {
             cornerSnapRelaxation_ = relax;
         }
+        void setCornerSnapIterations(const label n)
+        { cornerSnapIterations_ = n; }
+        void setEdgeSnapRelaxation(const scalar relax)
+        { edgeSnapRelaxation_ = relax; }
+        void setEdgeSnapIterations(const label n)
+        { edgeSnapIterations_ = n; }
+        void setSnapMinPyramidHeight(const scalar h)
+        { snapMinPyramidHeight_ = h; }
 
         //- projects corner vertices onto the nearest corner on the surface
         void mapCorners(const labelLongList& nodesToMap);

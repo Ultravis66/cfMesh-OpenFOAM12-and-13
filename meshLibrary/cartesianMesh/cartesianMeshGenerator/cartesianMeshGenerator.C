@@ -287,67 +287,105 @@ void cartesianMeshGenerator::generateMesh()
 
             optimiseMeshSurface();
 
-            // Step 1: snap corner points first
+            // Read snap parameters from meshDict once.
+            // These are shared by both corner and edge snapping.
+            scalar cornerSnapRelax = 0.25;
+            label cornerSnapIter = 4;
+            scalar edgeSnapRelax = 0.25;
+            label edgeSnapIter = 4;
+            scalar snapMinPyramid = 1e-10;
+
+            if( meshDict_.isDict("boundaryLayers") )
             {
-                meshSurfaceEngine mse(mesh_);
-                meshSurfacePartitioner mPart(mse);
-                meshSurfaceMapper mapper(mse, *octreePtr_);
-                const labelHashSet& corners = mPart.corners();
-                labelLongList cornerPts;
-                forAllConstIter(labelHashSet, corners, it)
-                    cornerPts.append(it.key());
-                Info << "Ordered snap: snapping "
-                     << cornerPts.size()
-                     << " corner points" << endl;
-                mapper.mapCorners(cornerPts);
+                const dictionary& bndL =
+                    meshDict_.subDict("boundaryLayers");
+
+                if( bndL.found("cornerSnapRelaxation") )
+                    cornerSnapRelax = readScalar
+                    (
+                        bndL.lookup("cornerSnapRelaxation")
+                    );
+
+                if( bndL.found("cornerSnapIterations") )
+                    cornerSnapIter = readLabel
+                    (
+                        bndL.lookup("cornerSnapIterations")
+                    );
+
+                if( bndL.found("edgeSnapRelaxation") )
+                    edgeSnapRelax = readScalar
+                    (
+                        bndL.lookup("edgeSnapRelaxation")
+                    );
+
+                if( bndL.found("edgeSnapIterations") )
+                    edgeSnapIter = readLabel
+                    (
+                        bndL.lookup("edgeSnapIterations")
+                    );
+
+                if( bndL.found("snapMinPyramidHeight") )
+                    snapMinPyramid = readScalar
+                    (
+                        bndL.lookup("snapMinPyramidHeight")
+                    );
             }
 
-            // Step 1: snap corner points first (damped relaxation)
+            // Step 1: snap corner points first.
             {
-                // Read relaxation factor from meshDict, default 0.25
-                scalar cornerSnapRelax = 0.25;
-                if( meshDict_.isDict("boundaryLayers") )
-                {
-                    const dictionary& bndL =
-                        meshDict_.subDict("boundaryLayers");
-                    if( bndL.found("cornerSnapRelaxation") )
-                        cornerSnapRelax = readScalar
-                        (
-                            bndL.lookup("cornerSnapRelaxation")
-                        );
-                }
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
+
                 mapper.setCornerSnapRelaxation(cornerSnapRelax);
+                mapper.setCornerSnapIterations(cornerSnapIter);
+                mapper.setSnapMinPyramidHeight(snapMinPyramid);
+
                 const labelHashSet& corners = mPart.corners();
+
                 labelLongList cornerPts;
                 forAllConstIter(labelHashSet, corners, it)
                     cornerPts.append(it.key());
+
                 Info << "Ordered snap: snapping "
                      << cornerPts.size()
-                     << " corner points (relax=" << cornerSnapRelax
+                     << " corner points"
+                     << " (relax=" << cornerSnapRelax
+                     << ", iter=" << cornerSnapIter
                      << ")" << endl;
+
                 mapper.mapCorners(cornerPts);
             }
 
-            // Step 2: snap non-corner edge points after corners
+            // Step 2: snap non-corner edge points after corners.
             {
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
+
+                mapper.setEdgeSnapRelaxation(edgeSnapRelax);
+                mapper.setEdgeSnapIterations(edgeSnapIter);
+                mapper.setSnapMinPyramidHeight(snapMinPyramid);
+
                 const labelHashSet& edgePoints = mPart.edgePoints();
                 const labelHashSet& corners = mPart.corners();
+
                 labelLongList edgePts;
                 forAllConstIter(labelHashSet, edgePoints, it)
                 {
                     const label bpI = it.key();
+
                     if( !corners.found(bpI) )
                         edgePts.append(bpI);
                 }
+
                 Info << "Ordered snap: snapping "
                      << edgePts.size()
-                     << " non-corner edge points" << endl;
+                     << " non-corner edge points"
+                     << " (relax=" << edgeSnapRelax
+                     << ", iter=" << edgeSnapIter
+                     << ")" << endl;
+
                 mapper.mapEdgeNodes(edgePts);
             }
         }
