@@ -718,6 +718,31 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     zeroDistPoints_.setSize(bPoints.size(), false);
     boolList zeroPts(bPoints.size(), false);
 
+    // Inject externally detected gap points (mesh point labels) into zeroPts.
+    if( gapPoints_.size() > 0 )
+    {
+        labelList meshToBnd(mesh_.points().size(), -1);
+        forAll(bPoints, bpI)
+            meshToBnd[bPoints[bpI]] = bpI;
+        label nGapSuppressed = 0;
+        forAllConstIter(labelHashSet, gapPoints_, it)
+        {
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < label(bPoints.size()) )
+            {
+                zeroDistPoints_[bpI] = true;
+                zeroPts[bpI] = true;
+                layerScale_[bpI] = 0.0;
+                ++nGapSuppressed;
+            }
+        }
+        Info << "Gap detection: suppressed "
+             << nGapSuppressed
+             << " BL points in thin clearance regions" << endl;
+    }
+
     // Mark exact transition edge points
     label nTransitionEdges = 0;
     forAll(edges, edgeI)

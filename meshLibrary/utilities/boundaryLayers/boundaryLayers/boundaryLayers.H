@@ -122,6 +122,9 @@ class boundaryLayers
         //- populated by markConcaveEdgePoints, consumed by C2/C3
         mutable labelHashSet blblJunctionPoints_;
 
+        //- gap points for BL suppression in thin clearance regions
+        labelHashSet gapPoints_;
+
         //- number of vertices in the mesh
         label nPoints_;
 
@@ -285,6 +288,12 @@ public:
         const labelHashSet& junctionEdgePoints() const
         {
             return blblJunctionPoints_;
+        }
+
+        //- set gap points for BL suppression in thin clearance regions
+        void setGapPoints(const labelHashSet& gpts)
+        {
+            gapPoints_ = gpts;
         }
 
     // Public member functions
