@@ -123,6 +123,20 @@ Smooth suppression zone at BL/no-BL patch boundaries:
 
 Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient that caused warts at patch junctions.
 
+### BL/no-BL transition edge constraint system
+
+Generic protection system for points where BL patches meet no-BL patches (wall meets inlet/outlet/periodic). Fully geometry-agnostic — driven entirely by `nLayersForPatch_` from meshDict, no patch names hardcoded.
+
+| Component | Description |
+|-----------|-------------|
+| `detectBLNoBlTransitionEdges()` | Lightweight pre-detection before edge extraction. Runs before any surface projection. No mesh modification. |
+| `blNoBlEdgePoints_` / `blNoBlEdges_` | Generic layer-termination edge and point sets |
+| `blNoBlPointPatch_` | BL-side patch ownership per interface point |
+| `protectedPoints_` + `protectedPointPatches_` | Per-mapper protection: interface points redirected to `findNearestSurfacePointInRegion` on their own patch only, preventing projection across feature curves onto the wrong patch |
+| Guards | `mapEdgeNodes`, `mapCorners`, `mapVerticesOntoSurface`, `mapVerticesOntoSurfacePatches` |
+| `meshSurfaceEdgeExtractorNonTopo` | Overloaded constructor accepts and passes through protected point sets |
+
+
 ### meshDict geometry controls
 
 | Parameter | Default | Description |
@@ -164,9 +178,13 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Layer count smoothing on boundary-face adjacency graph (max jump of 1 between neighbors)
 - Phase 1 non-mutating diagnostic in progress
 
+### Known remaining issues
 
-### Known remaining issue
-2 high-aspect-ratio cells at blade-endwall junctions (reduced from 13 via geometry preservation pipeline). (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
+**BL/no-BL interface protrusions** — BL prism cells extrude through adjacent no-BL patch surfaces (inlet, outlet, periodic) at corner junctions (shroud/inlet, blade/periodic). Root cause: `pointNormals` at interface points averages face normals from both BL and no-BL adjacent faces, tilting the extrusion direction through the no-BL surface. Fix in progress: clamp extrusion normals at `blNoBlEdgePoints_` to BL-side faces only in `boundaryLayersCreateVertices.C`.
+
+**2 high-aspect-ratio cells at blade-endwall junctions** (reduced from 13 via geometry preservation pipeline). (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
+
+> **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
 ---
 
@@ -178,10 +196,11 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 | Average non-orthogonality | 10.5° |
 | High aspect ratio cells | 2 (down from 13) |
 | Negative volume cells | 2 (down from 7) |
-| Failed mesh checks | 5 |
 | Runtime | ~75s |
 | Bad faces after untangling | 0 |
 | Regression test | 6/6 PASS |
+| Bad pyramid faces | 5 (down from 13–32 before constraint system) |
+| Failed mesh checks | 5 |
 ---
 ## Running the regression test
 
