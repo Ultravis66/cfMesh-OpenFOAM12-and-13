@@ -368,16 +368,6 @@ point boundaryLayers::createNewVertex
     {
         const scalar oldDist = dist;
         dist *= layerScale_[bpI];
-        static label nS0=0, nS25=0, nS50=0, nS75=0;
-        const scalar sc = layerScale_[bpI];
-        if( sc < 0.01 && ++nS0 <= 5 )
-            Info << "scale=0 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
-        else if( sc < 0.3 && ++nS25 <= 5 )
-            Info << "scale=0.25 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
-        else if( sc < 0.6 && ++nS50 <= 5 )
-            Info << "scale=0.5 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
-        else if( sc < 0.9 && ++nS75 <= 5 )
-            Info << "scale=0.75 p=" << p << " normal=" << normal << " newP=" << (p-dist*normal) << endl;
     }
     if( dist > SMALL )
         dist = Foam::max(dist, VSMALL);
@@ -400,6 +390,10 @@ point boundaryLayers::createNewVertex
     if( help::isnan(newP) || help::isinf(newP) )
         return p;
     // Robust candidate-point clamping near BL/no-BL termination patches
+    // Check ALL no-BL faces — use most restrictive constraint.
+    // A point must not move further from any no-BL face than its
+    // original position. This prevents BL extrusion through inlet,
+    // outlet, and periodic surfaces at corner junctions.
     if( terminateLayersAtConcaveEdges_
      && layerScale_.size() > bpI
      && layerScale_[bpI] < 0.99 )
@@ -420,16 +414,19 @@ point boundaryLayers::createNewVertex
             point fc = point::zero;
             forAll(f, fi) fc += points[f[fi]];
             fc /= scalar(f.size());
-            const scalar s0 = mag((p - fc) & fn);
-            const scalar s1 = mag((newP - fc) & fn);
-            if( s1 > s0 + SMALL )
+            // Signed distance from no-BL face plane
+            // fn points outward from no-BL patch into the domain
+            // p should be on the positive side (inside domain)
+            // If newP goes to negative side, it crossed through the surface
+            const scalar s0 = (p - fc) & fn;
+            const scalar s1 = (newP - fc) & fn;
+            // Only clamp if point actually crossed the face plane
+            // s0 > 0 means original point is on correct side
+            // s1 < 0 means extruded point crossed to wrong side
+            if( s0 > SMALL && s1 < SMALL )
             {
-                point candidate = p - 0.25*dist*normal;
-                const scalar s2 = mag((candidate - fc) & fn);
-                if( s2 <= s0 + SMALL )
-                    newP = candidate;
-                else
-                    newP = p;
+                // Extruded point crossed no-BL surface — clamp to original
+                newP = p;
                 break;
             }
         }
@@ -897,7 +894,48 @@ void boundaryLayers::createNewPartitionVerticesParallel
     }
 
     //- Finally, create the points
-    const vectorField& pNormals = mse.pointNormals();
+    // Override point normals at BL/no-BL interface points to use
+    // BL-side faces only. The global pointNormals() averages all
+    // adjacent faces including no-BL patch faces, which tilts the
+    // extrusion normal toward the no-BL surface and causes protrusions.
+    vectorField pNormals = mse.pointNormals();
+    if( !blNoBlEdgePoints_.empty() )
+    {
+        const VRWGraph& pFaces = mse.pointFaces();
+        const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+        const faceList::subList& bFaces = mse.boundaryFaces();
+        const pointFieldPMG& pts = mesh_.points();
+        const labelList& bPoints = mse.boundaryPoints();
+
+        forAllConstIter(labelHashSet, blNoBlEdgePoints_, iter)
+        {
+            const label bpI = iter.key();
+
+            // Find the BL-side patch for this point
+            Map<label>::const_iterator patchIt = blNoBlPointPatch_.find(bpI);
+            if( patchIt == blNoBlPointPatch_.end() || patchIt() < 0 )
+                continue;
+            const label blPatch = patchIt();
+
+            // Recompute normal using only BL-side faces
+            vector blNormal(vector::zero);
+            forAllRow(pFaces, bpI, pfI)
+            {
+                if( boundaryFacePatches[pFaces(bpI, pfI)] != blPatch )
+                    continue;
+                const face& f = bFaces[pFaces(bpI, pfI)];
+                vector fn = vector::zero;
+                const point& p0 = pts[f[0]];
+                for(label pi=1; pi<f.size()-1; ++pi)
+                    fn += (pts[f[pi]]-p0)^(pts[f[pi+1]]-p0);
+                blNormal += fn;
+            }
+            const scalar magN = mag(blNormal);
+            if( magN > VSMALL )
+                pNormals[bpI] = blNormal / magN;
+        }
+    }
+
     forAll(procPoints, pointI)
     {
         const label bpI = procPoints[pointI];
