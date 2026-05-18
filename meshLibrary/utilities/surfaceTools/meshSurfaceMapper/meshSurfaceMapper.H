@@ -38,6 +38,8 @@ SourceFiles
 #include "labelList.H"
 #include "pointField.H"
 #include "labelLongList.H"
+#include "HashSet.H"
+#include "Map.H"
 #include "parMapperHelper.H"
 
 #include <map>
@@ -78,6 +80,15 @@ class meshSurfaceMapper
 
         //- minimum pyramid height for validity check (default 1e-10)
         scalar snapMinPyramidHeight_;
+
+        //- boundary-point indices excluded from generic surface projection
+        //- set via setProtectedPoints(); empty by default (no exclusion)
+        labelHashSet protectedPoints_;
+
+        //- BL-side patch index per protected boundary point
+        //- used for patch-constrained projection instead of global search
+        //- set via setProtectedPointPatches(); empty by default
+        Map<label> protectedPointPatches_;
 
     // Private member functions
         //- create and return mesh surface partitioner
@@ -167,6 +178,22 @@ public:
         void setCornerSnapRelaxation(const scalar relax)
         {
             cornerSnapRelaxation_ = relax;
+        }
+
+        //- set boundary-point indices that must not be moved
+        //- by generic nearest-surface projection.
+        //- label space: boundary-point indices (into surfaceEngine_.boundaryPoints())
+        //- defaults to empty — no effect unless explicitly set
+        void setProtectedPoints(const labelHashSet& pts)
+        {
+            protectedPoints_ = pts;
+        }
+
+        //- set patch index map for patch-constrained projection
+        //- of BL/no-BL interface points
+        void setProtectedPointPatches(const Map<label>& patches)
+        {
+            protectedPointPatches_ = patches;
         }
 
         //- projects corner vertices onto the nearest corner on the surface

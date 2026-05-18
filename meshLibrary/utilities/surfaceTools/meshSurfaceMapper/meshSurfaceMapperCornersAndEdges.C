@@ -220,12 +220,16 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
     pointField oldPositions(nodesToMap.size());
     forAll(nodesToMap, i)
         oldPositions[i] = points[bPoints[nodesToMap[i]]];
+
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif
     forAll(nodesToMap, cornerI)
     {
         const label bpI = nodesToMap[cornerI];
+        // Skip BL/no-BL interface points - must stay on feature curve
+        if( !protectedPoints_.empty() && protectedPoints_.found(bpI) )
+            continue;
         if( !corners.found(bpI) )
             FatalErrorIn
             (
@@ -400,12 +404,28 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
     pointField projectedPoints(nodesToMap.size(), point::zero);
     scalarList projectedDistSq(nodesToMap.size(), scalar(-1));
 
+    // Mark protected indices so OMP loop can skip them
+    // BL/no-BL interface points must stay on feature curve
+    boolList isProtected(nodesToMap.size(), false);
+    if( !protectedPoints_.empty() )
+    {
+        label nProt = 0;
+        forAll(nodesToMap, i)
+            if( protectedPoints_.found(nodesToMap[i]) )
+            { isProtected[i] = true; ++nProt; }
+        if( nProt > 0 )
+            Info << "mapEdgeNodes: excluding "
+                 << nProt << " protected BL/no-BL interface points" << endl;
+    }
+
     //- map point to the nearest vertex on the surface mesh
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif
     forAll(nodesToMap, i)
     {
+        // Skip BL/no-BL interface points - must stay on feature curve
+        if( isProtected[i] ) continue;
         const label bpI = nodesToMap[i];
         const point& p = points[bPoints[bpI]];
 

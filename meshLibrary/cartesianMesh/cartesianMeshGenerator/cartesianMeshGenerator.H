@@ -36,6 +36,7 @@ SourceFiles
 #define cartesianMeshGenerator_H
 
 #include "polyMeshGen.H"
+#include "Map.H"
 #include "HashSet.H"
 #include "IOdictionary.H"
 #include "workflowControls.H"
@@ -82,6 +83,15 @@ class cartesianMeshGenerator
 
         //- BL/BL junction points passed from boundaryLayers to refineBoundaryLayers
         labelHashSet blblJunctionPoints_;
+
+        //- BL/no-BL transition edge points (boundary-point indices)
+        //- passed from boundaryLayers to post-BL mapper instances
+        //- to exclude from generic nearest-surface projection
+        labelHashSet blNoBlEdgePoints_;
+
+        //- BL-side patch index per interface point
+        //- used for patch-constrained projection instead of global search
+        Map<label> blNoBlPointPatch_;
 
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
         labelLongList blPoints_;

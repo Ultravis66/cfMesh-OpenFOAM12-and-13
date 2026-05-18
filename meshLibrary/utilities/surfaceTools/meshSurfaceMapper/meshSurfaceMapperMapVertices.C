@@ -229,14 +229,39 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
     forAll(nodesToMap, i)
         oldPositions[i] = points[boundaryPoints[nodesToMap[i]]];
 
+    // Build filtered node list excluding BL/no-BL protected points.
+    // Protected points (boundary-point indices) must not be moved by
+    // generic nearest-surface projection — they are constrained to
+    // their feature curve by the BL/no-BL transition system.
+    // If protectedPoints_ is empty this is a no-op (default behaviour).
+    labelLongList filteredNodes;
+    if( protectedPoints_.empty() )
+    {
+        filteredNodes = nodesToMap;
+    }
+    else
+    {
+        filteredNodes.setSize(nodesToMap.size());
+        label nFiltered = 0;
+        forAll(nodesToMap, i)
+        {
+            if( !protectedPoints_.found(nodesToMap[i]) )
+                filteredNodes[nFiltered++] = nodesToMap[i];
+        }
+        filteredNodes.setSize(nFiltered);
+        Info << "mapVerticesOntoSurface: excluded "
+             << (nodesToMap.size() - nFiltered)
+             << " protected BL/no-BL interface points" << endl;
+    }
+
     # ifdef USE_OMP
-    const label size = nodesToMap.size();
+    const label size = filteredNodes.size();
     # pragma omp parallel for if( size > 1000 ) shared(parallelBndNodes) \
     schedule(dynamic, Foam::max(1, size / (3 * omp_get_max_threads())))
     # endif
-    forAll(nodesToMap, i)
+    forAll(filteredNodes, i)
     {
-        const label bpI = nodesToMap[i];
+        const label bpI = filteredNodes[i];
 
         # ifdef DEBUGMapping
         Info << nl << "Mapping vertex " << bpI << " with coordinates "
@@ -409,12 +434,23 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         point mapPoint;
         scalar dSq;
         label nt;
+
+        // For BL/no-BL interface points use patch-constrained projection
+        // onto the BL-side patch only, preventing projection across
+        // the feature curve onto the wrong patch.
+        Map<label>::const_iterator protIt =
+            protectedPointPatches_.find(bpI);
+        const label projPatch =
+            (protIt != protectedPointPatches_.end() && protIt() >= 0)
+            ? protIt()
+            : pointPatches(bpI, 0);
+
         meshOctree_.findNearestSurfacePointInRegion
         (
             mapPoint,
             dSq,
             nt,
-            pointPatches(bpI, 0),
+            projPatch,
             p
         );
 

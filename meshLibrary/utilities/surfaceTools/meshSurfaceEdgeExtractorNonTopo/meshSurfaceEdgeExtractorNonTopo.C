@@ -53,6 +53,24 @@ meshSurfaceEdgeExtractorNonTopo::meshSurfaceEdgeExtractorNonTopo
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
 
+meshSurfaceEdgeExtractorNonTopo::meshSurfaceEdgeExtractorNonTopo
+(
+    polyMeshGen& mesh,
+    const meshOctree& octree,
+    const labelHashSet& protectedPoints,
+    const Map<label>& protectedPointPatches
+)
+:
+    mesh_(mesh),
+    meshOctree_(octree),
+    protectedPoints_(protectedPoints),
+    protectedPointPatches_(protectedPointPatches)
+{
+    decomposeBoundaryFaces();
+
+    remapBoundaryPoints();
+}
+
 meshSurfaceEdgeExtractorNonTopo::~meshSurfaceEdgeExtractorNonTopo()
 {}
 

@@ -125,6 +125,18 @@ class boundaryLayers
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
 
+        //- edges where at least one adjacent patch requests BL and
+        //- at least one adjacent patch requests zero layers.
+        //- populated by markConcaveEdgePoints, consumed by surface mapper.
+        mutable labelHashSet blNoBlEdges_;
+
+        //- boundary points on BL/no-BL transition edges
+        mutable labelHashSet blNoBlEdgePoints_;
+
+        //- patch index for each BL/no-BL interface point
+        //- stores the BL-side patch index for patch-constrained projection
+        mutable Map<label> blNoBlPointPatch_;
+
         //- number of vertices in the mesh
         label nPoints_;
 
@@ -288,6 +300,29 @@ public:
         const labelHashSet& junctionEdgePoints() const
         {
             return blblJunctionPoints_;
+        }
+
+        //- return edges where BL and no-BL patches meet
+        const labelHashSet& blNoBlEdges() const
+        {
+            return blNoBlEdges_;
+        }
+
+        //- detect BL/no-BL transition edges and populate blNoBlEdgePoints_
+        //- lightweight: reads meshDict + mesh surface only, no mesh modification
+        //- safe to call before addLayerForAllPatches()
+        void detectBLNoBlTransitionEdges() const;
+
+        //- return boundary points on BL/no-BL transition edges
+        const labelHashSet& blNoBlEdgePoints() const
+        {
+            return blNoBlEdgePoints_;
+        }
+
+        //- return patch index map for BL/no-BL interface points
+        const Map<label>& blNoBlPointPatch() const
+        {
+            return blNoBlPointPatch_;
         }
 
         //- set gap points for BL suppression in thin clearance regions

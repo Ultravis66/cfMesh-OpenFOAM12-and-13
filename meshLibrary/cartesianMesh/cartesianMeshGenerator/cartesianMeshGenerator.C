@@ -130,7 +130,20 @@ void cartesianMeshGenerator::extractPatches()
 
 void cartesianMeshGenerator::mapEdgesAndCorners()
 {
-    meshSurfaceEdgeExtractorNonTopo(mesh_, *octreePtr_);
+    if( !blNoBlEdgePoints_.empty() )
+    {
+        meshSurfaceEdgeExtractorNonTopo
+        (
+            mesh_,
+            *octreePtr_,
+            blNoBlEdgePoints_,
+            blNoBlPointPatch_
+        );
+    }
+    else
+    {
+        meshSurfaceEdgeExtractorNonTopo(mesh_, *octreePtr_);
+    }
 }
 
 void cartesianMeshGenerator::optimiseMeshSurface()
@@ -148,6 +161,13 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.addLayerForAllPatches();
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
+
+    // Capture BL/no-BL transition edge points (boundary-point indices)
+    // for handoff to post-BL mapper instances
+    blNoBlEdgePoints_ = bl.blNoBlEdgePoints();
+    blNoBlPointPatch_ = bl.blNoBlPointPatch();
+    Info << "BL/no-BL edge points captured for mapper exclusion: "
+         << blNoBlEdgePoints_.size() << endl;
 }
 
 void cartesianMeshGenerator::refBoundaryLayers()
@@ -283,15 +303,34 @@ void cartesianMeshGenerator::generateMesh()
 
         if( controller_.runCurrentStep("edgeExtraction") )
         {
+            // Detect BL/no-BL transition edge points before any snapping
+            // so all mapper instances in this block can exclude them
+            // from generic nearest-surface projection.
+            // Uses meshDict nLayersForPatch only — no mesh modification.
+            {
+                boundaryLayers blDetect(mesh_, meshDict_);
+                blDetect.detectBLNoBlTransitionEdges();
+                blNoBlEdgePoints_ = blDetect.blNoBlEdgePoints();
+                blNoBlPointPatch_ = blDetect.blNoBlPointPatch();
+                Info << "Edge extraction: BL/no-BL interface points protected: "
+                     << blNoBlEdgePoints_.size() << endl;
+            }
+
             mapEdgesAndCorners();
 
             optimiseMeshSurface();
+
 
             // Step 1: snap corner points first
             {
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
+                if( !blNoBlEdgePoints_.empty() )
+                {
+                    mapper.setProtectedPoints(blNoBlEdgePoints_);
+                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
                 const labelHashSet& corners = mPart.corners();
                 labelLongList cornerPts;
                 forAllConstIter(labelHashSet, corners, it)
@@ -336,6 +375,11 @@ void cartesianMeshGenerator::generateMesh()
                 meshSurfaceEngine mse(mesh_);
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
+                if( !blNoBlEdgePoints_.empty() )
+                {
+                    mapper.setProtectedPoints(blNoBlEdgePoints_);
+                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
                 const labelHashSet& edgePoints = mPart.edgePoints();
                 const labelHashSet& corners = mPart.corners();
                 labelLongList edgePts;
@@ -393,6 +437,14 @@ void cartesianMeshGenerator::generateMesh()
                 ).createOctreeWithRefinedBoundary(20, 30);
                 meshSurfaceEngine mse(mesh_);
                 meshSurfaceMapper mapper(mse, *snapOctreePtr);
+                // Exclude BL/no-BL interface points from generic snapping
+                // These points are constrained to their feature curve
+                // and must not be moved by nearest-surface projection
+                if( !blNoBlEdgePoints_.empty() )
+                {
+                    mapper.setProtectedPoints(blNoBlEdgePoints_);
+                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
                 const labelList& bPoints = mse.boundaryPoints();
                 boolList isBLPoint(mesh_.points().size(), false);
                 forAll(blPoints_, i)

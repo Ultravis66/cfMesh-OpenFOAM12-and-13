@@ -54,6 +54,16 @@ void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints()
     meshSurfaceEngine mse(mesh_);
     meshSurfaceMapper mapper(mse, meshOctree_);
 
+    // Pass BL/no-BL protected points if provided
+    if( !protectedPoints_.empty() )
+    {
+        mapper.setProtectedPoints(protectedPoints_);
+        mapper.setProtectedPointPatches(protectedPointPatches_);
+        Info << "remapBoundaryPoints: protecting "
+             << protectedPoints_.size()
+             << " BL/no-BL interface points" << endl;
+    }
+
     mapper.mapVerticesOntoSurfacePatches();
 
     // GeomFix: project new centroid points onto STL

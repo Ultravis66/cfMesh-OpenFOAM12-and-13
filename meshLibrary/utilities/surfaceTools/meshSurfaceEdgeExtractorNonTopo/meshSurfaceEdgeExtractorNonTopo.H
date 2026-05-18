@@ -36,6 +36,8 @@ SourceFiles
 #define meshSurfaceEdgeExtractorNonTopo_H
 
 #include "polyMeshGenModifier.H"
+#include "HashSet.H"
+#include "Map.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -61,6 +63,13 @@ class meshSurfaceEdgeExtractorNonTopo
         //- new points created by patch correction, projected after remapping
         labelLongList patchCorrectionPoints_;
 
+        //- boundary-point indices excluded from generic surface projection
+        //- passed through to meshSurfaceMapper::setProtectedPoints()
+        labelHashSet protectedPoints_;
+
+        //- BL-side patch index per protected point
+        Map<label> protectedPointPatches_;
+
     // Private member functions
 
         //- decompose faces with more than one edge at the same feature edge
@@ -84,6 +93,15 @@ public:
         (
             polyMeshGen& mesh,
             const meshOctree& octree
+        );
+
+        //- Construct with protected points (BL/no-BL interface constraint)
+        meshSurfaceEdgeExtractorNonTopo
+        (
+            polyMeshGen& mesh,
+            const meshOctree& octree,
+            const labelHashSet& protectedPoints,
+            const Map<label>& protectedPointPatches
         );
 
     // Destructor

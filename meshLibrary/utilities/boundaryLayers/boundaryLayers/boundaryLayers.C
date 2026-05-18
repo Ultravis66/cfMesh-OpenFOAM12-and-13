@@ -669,6 +669,74 @@ void boundaryLayers::terminateLayersAtConcaveEdges()
     terminateLayersAtConcaveEdges_ = true;
 }
 
+void boundaryLayers::detectBLNoBlTransitionEdges() const
+{
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const VRWGraph& edgeFaces = mse.edgeFaces();
+    const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+    const edgeList& edges = mse.edges();
+    const labelList& bPoints = mse.boundaryPoints();
+
+    // Classify patches from nLayersForPatch_
+    boolList isBLPatch(patchNames_.size(), false);
+    forAll(patchNames_, patchI)
+        if( nLayersForPatch_[patchI] > 0 )
+            isBLPatch[patchI] = true;
+
+    // Build global-to-boundary-point reverse map once, O(N)
+    Map<label> globalToBP;
+    forAll(bPoints, bpI)
+        globalToBP.insert(bPoints[bpI], bpI);
+
+    blNoBlEdges_.clear();
+    blNoBlEdgePoints_.clear();
+    blNoBlPointPatch_.clear();
+
+    forAll(edges, eI)
+    {
+        bool hasBL   = false;
+        bool hasNoBL = false;
+        label blPatchI = -1;
+
+        forAllRow(edgeFaces, eI, efI)
+        {
+            const label faceI  = edgeFaces(eI, efI);
+            const label patchI = boundaryFacePatches[faceI];
+            if( patchI < 0 || patchI >= label(isBLPatch.size()) )
+                continue;
+            if( isBLPatch[patchI] )
+            {
+                hasBL = true;
+                blPatchI = patchI;
+            }
+            else
+                hasNoBL = true;
+        }
+
+        if( !hasBL || !hasNoBL ) continue;
+
+        blNoBlEdges_.insert(eI);
+
+        const edge& e = edges[eI];
+        for( label ei = 0; ei < 2; ++ei )
+        {
+            const label gp = (ei == 0) ? e[0] : e[1];
+            Map<label>::const_iterator it = globalToBP.find(gp);
+            if( it == globalToBP.end() ) continue;
+            const label bpI = it();
+            blNoBlEdgePoints_.insert(bpI);
+            // Store BL-side patch for patch-constrained projection
+            // Only insert if not already stored (first BL patch wins)
+            if( !blNoBlPointPatch_.found(bpI) )
+                blNoBlPointPatch_.insert(bpI, blPatchI);
+        }
+    }
+
+    Info << "BL/no-BL transition edge pre-detection: "
+         << blNoBlEdges_.size() << " transition edges, "
+         << blNoBlEdgePoints_.size() << " interface points" << endl;
+}
+
 void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 {
     const meshSurfaceEngine& mse = surfaceEngine();
@@ -895,6 +963,72 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         Info << "BL/BL sharp-junction suppression: "
              << nBLBL << " points suppressed, "
              << blblJunctionPoints_.size() << " junction points captured" << endl;
+    }
+
+    // Detect generic layer-termination edges where at least one adjacent
+    // patch requests boundary layers and at least one adjacent patch requests
+    // zero layers. These edges are protected because unconstrained extrusion
+    // across mixed layer/no-layer patch junctions creates invalid cells.
+    // Fully general: no patch names, no face-count assumptions.
+    // Works for manifold, non-manifold, open, and multi-region edges.
+    {
+        blNoBlEdges_.clear();
+        blNoBlEdgePoints_.clear();
+        blNoBlPointPatch_.clear();
+
+        // Build global-to-boundary-point reverse map once, O(N)
+        Map<label> globalToBP;
+        forAll(bPoints, bpI)
+            globalToBP.insert(bPoints[bpI], bpI);
+
+        forAll(edges, eI)
+        {
+            // Collect all patch IDs adjacent to this edge
+            bool hasBL   = false;
+            bool hasNoBL = false;
+            label blPatchI = -1;
+
+            forAllRow(edgeFaces, eI, efI)
+            {
+                const label faceI  = edgeFaces(eI, efI);
+                const label patchI = boundaryFacePatches[faceI];
+                if( patchI < 0 || patchI >= label(nLayersForPatch_.size()) )
+                    continue;
+                if( nLayersForPatch_[patchI] > 0 )
+                {
+                    hasBL = true;
+                    blPatchI = patchI;
+                }
+                else
+                    hasNoBL = true;
+            }
+
+            if( !hasBL || !hasNoBL ) continue;
+
+            blNoBlEdges_.insert(eI);
+
+            const edge& e = edges[eI];
+            for( label ei = 0; ei < 2; ++ei )
+            {
+                const label gp = (ei == 0) ? e[0] : e[1];
+                Map<label>::const_iterator it = globalToBP.find(gp);
+                if( it == globalToBP.end() ) continue;
+                const label bpI = it();
+                if( blNoBlEdgePoints_.insert(bpI) )
+                {
+                    zeroDistPoints_[bpI] = true;
+                    layerScale_[bpI] = 0.0;
+                    zeroPts[bpI] = true;
+                }
+                // Store BL-side patch for patch-constrained projection
+                if( !blNoBlPointPatch_.found(bpI) )
+                    blNoBlPointPatch_.insert(bpI, blPatchI);
+            }
+        }
+
+        Info << "BL/no-BL transition edge detection: "
+             << blNoBlEdges_.size() << " transition edges, "
+             << blNoBlEdgePoints_.size() << " interface points locked" << endl;
     }
 
     // Ring 1: neighbors of zero points on BL patches -> 0.25
