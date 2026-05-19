@@ -33,6 +33,7 @@ Description
 #include "triSurf.H"
 #include "helperFunctionsPar.H"
 #include "helperFunctions.H"
+#include "OFstream.H"
 
 #include <map>
 
@@ -391,6 +392,322 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
     boolList treatedPoint(surfaceEngine_.boundaryPoints().size(), false);
 
+    // ---------------------------------------------------------------
+    // Phase 1: boundary point topology classification
+    // Diagnostics only — do not change projection behavior here.
+    //   0 = single-patch surface point
+    //   1 = two-patch feature-edge point
+    //   2 = multi-patch corner/junction point
+    //   3 = BL/no-BL transition point
+    //   4 = non-manifold / unclassified point
+    // ---------------------------------------------------------------
+    const label CLS_SINGLE   = 0;
+    const label CLS_TWOPATCH = 1;
+    const label CLS_CORNER   = 2;
+    const label CLS_BLNOBL   = 3;
+    const label CLS_NONMANIF = 4;
+
+    labelList pointClass(surfaceEngine_.boundaryPoints().size(), CLS_SINGLE);
+
+    label nSingle = 0;
+    label nTwoPatch = 0;
+    label nCorner = 0;
+    label nBlNoBl = 0;
+    label nNonManif = 0;
+
+    forAll(nodesToMap, i)
+    {
+        const label bpI = nodesToMap[i];
+        const label nPatches = pointPatches.sizeOfRow(bpI);
+
+        if( protectedPoints_.found(bpI) )
+        {
+            pointClass[bpI] = CLS_BLNOBL;
+            ++nBlNoBl;
+        }
+        else if( nPatches == 0 )
+        {
+            pointClass[bpI] = CLS_NONMANIF;
+            ++nNonManif;
+        }
+        else if( nPatches == 1 )
+        {
+            pointClass[bpI] = CLS_SINGLE;
+            ++nSingle;
+        }
+        else if( nPatches == 2 )
+        {
+            pointClass[bpI] = CLS_TWOPATCH;
+            ++nTwoPatch;
+        }
+        else
+        {
+            pointClass[bpI] = CLS_CORNER;
+            ++nCorner;
+        }
+    }
+
+    Info << "BoundaryPointClassifier: "
+         << nSingle   << " single-patch, "
+         << nTwoPatch << " two-patch-edge, "
+         << nCorner   << " multi-patch-corner, "
+         << nBlNoBl   << " BL/no-BL transition, "
+         << nNonManif << " non-manifold" << endl;
+
+    // Phase 2: VTK diagnostic output for topology classes.
+    // Diagnostics only — no movement or projection behavior changes.
+    if( nCorner > 0 || nTwoPatch > 0 || nBlNoBl > 0 || nNonManif > 0 )
+    {
+        static label callCount = 0;
+        ++callCount;
+
+        const labelList& bPts = surfaceEngine_.boundaryPoints();
+        const pointFieldPMG& allPts = surfaceEngine_.points();
+
+        auto writePointClassVTK =
+        [&](const word& name, const label cls, const label count)
+        {
+            if( count <= 0 ) return;
+            fileName fName(name + word("_call") + Foam::name(callCount) + word(".vtk"));
+            OFstream os(fName);
+            os << "# vtk DataFile Version 2.0\n";
+            os << name << "\n";
+            os << "ASCII\n";
+            os << "DATASET POLYDATA\n";
+            os << "POINTS " << count << " float\n";
+            forAll(nodesToMap, i)
+            {
+                const label bpI = nodesToMap[i];
+                if( pointClass[bpI] != cls ) continue;
+                const point& p = allPts[bPts[bpI]];
+                os << p.x() << " " << p.y() << " " << p.z() << "\n";
+            }
+            os << "VERTICES " << count << " " << 2*count << "\n";
+            for(label k = 0; k < count; ++k)
+                os << "1 " << k << "\n";
+            Info << "Wrote " << count << " " << name
+                 << " points to " << fName << endl;
+        };
+
+        writePointClassVTK("twoPatchEdgePoints", CLS_TWOPATCH, nTwoPatch);
+        writePointClassVTK("multiPatchCornerPoints", CLS_CORNER, nCorner);
+        writePointClassVTK("blNoBlTransitionPoints", CLS_BLNOBL, nBlNoBl);
+        writePointClassVTK("nonManifoldPoints", CLS_NONMANIF, nNonManif);
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 2: Feature curve extraction
+    // Build list of feature edge segments — boundary edges where
+    // adjacent faces belong to different patches.
+    // ---------------------------------------------------------------
+    const edgeList& meshEdges = surfaceEngine_.edges();
+    const VRWGraph& edgeFaces = surfaceEngine_.edgeFaces();
+    const labelList& facePatch = surfaceEngine_.boundaryFacePatches();
+    const pointFieldPMG& allPoints = surfaceEngine_.points();
+
+    // Compute patch diversity immediately after facePatch is available
+    label nPatchedFaces2 = 0;
+    label nUniquePatchVals = 0;
+    {
+        labelHashSet seen;
+        forAll(facePatch, fI)
+        {
+            if( facePatch[fI] >= 0 ) ++nPatchedFaces2;
+            seen.insert(facePatch[fI]);
+        }
+        nUniquePatchVals = seen.size();
+    }
+
+    struct FeatureSeg
+    {
+        point p0, p1;
+        label patchA, patchB;
+    };
+    DynList<FeatureSeg> featureSegs;
+
+    if( nUniquePatchVals > 1 )
+    {
+        // Phase 2A: face-patch data available — extract from edgeFaces
+        forAll(meshEdges, eI)
+        {
+            if( edgeFaces.sizeOfRow(eI) != 2 ) continue;
+            const label fA = edgeFaces(eI, 0);
+            const label fB = edgeFaces(eI, 1);
+            const label pA = facePatch[fA];
+            const label pB = facePatch[fB];
+            if( pA == pB ) continue;
+            FeatureSeg seg;
+            seg.p0 = allPoints[meshEdges[eI][0]];
+            seg.p1 = allPoints[meshEdges[eI][1]];
+            seg.patchA = pA;
+            seg.patchB = pB;
+            featureSegs.append(seg);
+        }
+    }
+    else
+    {
+        // Phase 2B: face-patch data unavailable — extract from pointPatches
+        // An edge is a feature edge if both endpoints share exactly the
+        // same set of 2 patch IDs in their pointPatches.
+        // Build global-point to boundary-point reverse map
+        const labelList& bp = surfaceEngine_.boundaryPoints();
+        Map<label> globalToBP;
+        forAll(bp, bpI)
+            globalToBP.insert(bp[bpI], bpI);
+
+        forAll(meshEdges, eI)
+        {
+            const label gp0 = meshEdges[eI][0];
+            const label gp1 = meshEdges[eI][1];
+            Map<label>::const_iterator it0 = globalToBP.find(gp0);
+            Map<label>::const_iterator it1 = globalToBP.find(gp1);
+            if( it0 == globalToBP.end() || it1 == globalToBP.end() ) continue;
+            const label bpI0 = it0();
+            const label bpI1 = it1();
+            if( pointPatches.sizeOfRow(bpI0) != 2 ) continue;
+            if( pointPatches.sizeOfRow(bpI1) != 2 ) continue;
+            // Check both endpoints share the same two patches
+            const label p0a = pointPatches(bpI0, 0);
+            const label p0b = pointPatches(bpI0, 1);
+            const label p1a = pointPatches(bpI1, 0);
+            const label p1b = pointPatches(bpI1, 1);
+            bool match =
+                (p0a==p1a && p0b==p1b) ||
+                (p0a==p1b && p0b==p1a);
+            if( !match ) continue;
+            FeatureSeg seg;
+            seg.p0 = allPoints[gp0];
+            seg.p1 = allPoints[gp1];
+            seg.patchA = p0a;
+            seg.patchB = p0b;
+            featureSegs.append(seg);
+        }
+    }
+
+    Info << "Feature curve extraction: "
+         << featureSegs.size() << " feature edge segments"
+         << " (patched faces: " << nPatchedFaces2
+         << ", unique patch IDs: " << nUniquePatchVals << ")" << endl;
+
+    // Helper: project point p onto nearest point on segment (a,b)
+    auto projectOntoSegment = [](const point& p, const point& a, const point& b) -> point
+    {
+        const vector ab = b - a;
+        const scalar len2 = magSqr(ab);
+        if( len2 < VSMALL ) return a;
+        const scalar tRaw = ((p-a) & ab) / len2;
+        const scalar t = Foam::max(scalar(0), Foam::min(scalar(1), tRaw));
+        return a + t*ab;
+    };
+
+    // ---------------------------------------------------------------
+    // Phase 3 dry-run: feature curve projection statistics
+    // For every TWO_PATCH_EDGE point, find nearest feature segment
+    // matching its patch pair. Report distance stats. No movement.
+    // ---------------------------------------------------------------
+    if( featureSegs.size() > 0 && nTwoPatch > 0 )
+    {
+        const labelList& bp2 = surfaceEngine_.boundaryPoints();
+        const pointFieldPMG& pts2 = surfaceEngine_.points();
+        label nMatched = 0, nMissed = 0;
+        scalar sumDist = 0, maxDist = 0;
+        label nLargeMoves = 0;
+
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+            if( pointClass[bpI] != CLS_TWOPATCH ) continue;
+
+            const point& p = pts2[bp2[bpI]];
+            const label pA = pointPatches(bpI, 0);
+            const label pB = pointPatches(bpI, 1);
+
+            // Find nearest feature segment matching this patch pair
+            scalar bestDSq(GREAT);
+            point bestProj(p);
+            bool found = false;
+
+            forAll(featureSegs, sI)
+            {
+                const FeatureSeg& seg = featureSegs[sI];
+                bool match =
+                    (seg.patchA==pA && seg.patchB==pB) ||
+                    (seg.patchA==pB && seg.patchB==pA);
+                if( !match ) continue;
+                const point proj = projectOntoSegment(p, seg.p0, seg.p1);
+                const scalar dSq2 = magSqr(proj - p);
+                if( dSq2 < bestDSq )
+                { bestDSq = dSq2; bestProj = proj; found = true; }
+            }
+
+            if( found )
+            {
+                ++nMatched;
+                const scalar d = Foam::sqrt(bestDSq);
+                sumDist += d;
+                if( d > maxDist ) maxDist = d;
+                if( d > 0.001 ) ++nLargeMoves;
+            }
+            else
+                ++nMissed;
+        }
+
+        Info << "FeatureProjectionDryRun:"
+             << " two-patch checked=" << (nMatched+nMissed)
+             << " matched=" << nMatched
+             << " missed=" << nMissed
+             << " avgDist=" << (nMatched>0 ? sumDist/nMatched : 0)
+             << " maxDist=" << maxDist
+             << " largeMoves(>1mm)=" << nLargeMoves << endl;
+
+        // Corner dry-run: inspect multi-patch corner relation to
+        // incident feature-curve endpoints. No movement.
+        if( nCorner > 0 )
+        {
+            Info << "CornerDryRun:" << endl;
+            forAll(nodesToMap, i)
+            {
+                const label bpI = nodesToMap[i];
+                if( pointClass[bpI] != CLS_CORNER ) continue;
+                const point& p = pts2[bp2[bpI]];
+                scalar bestSegDSq(GREAT);
+                point bestSegProj(p);
+                scalar bestEndDSq(GREAT);
+                point bestEndPoint(p);
+                label nIncidentSegs = 0;
+                Info << "  corner bpI=" << bpI << " p=" << p << " patches=(";
+                forAllRow(pointPatches, bpI, ppI)
+                    Info << pointPatches(bpI, ppI)
+                         << (ppI+1<pointPatches.sizeOfRow(bpI) ? "," : "");
+                Info << ")" << endl;
+                forAll(featureSegs, sI)
+                {
+                    const FeatureSeg& seg = featureSegs[sI];
+                    bool hasA=false, hasB=false;
+                    forAllRow(pointPatches, bpI, ppI)
+                    {
+                        const label pI = pointPatches(bpI, ppI);
+                        if( pI==seg.patchA ) hasA=true;
+                        if( pI==seg.patchB ) hasB=true;
+                    }
+                    if( !hasA || !hasB ) continue;
+                    ++nIncidentSegs;
+                    const point proj = projectOntoSegment(p, seg.p0, seg.p1);
+                    const scalar dSqSeg = magSqr(proj - p);
+                    if( dSqSeg < bestSegDSq ) { bestSegDSq=dSqSeg; bestSegProj=proj; }
+                    const scalar dSq0 = magSqr(seg.p0 - p);
+                    const scalar dSq1 = magSqr(seg.p1 - p);
+                    if( dSq0 < bestEndDSq ) { bestEndDSq=dSq0; bestEndPoint=seg.p0; }
+                    if( dSq1 < bestEndDSq ) { bestEndDSq=dSq1; bestEndPoint=seg.p1; }
+                }
+                Info << "    incidentSegs=" << nIncidentSegs
+                     << " nearestSegDist=" << Foam::sqrt(bestSegDSq)
+                     << " nearestEndDist=" << Foam::sqrt(bestEndDSq)
+                     << " nearestEndpoint=" << bestEndPoint << endl;
+            }
+        }
+    }
+
     //- find corner and edge points
     labelLongList selectedCorners, selectedEdges;
     forAll(nodesToMap, i)
@@ -434,6 +751,79 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         point mapPoint;
         scalar dSq;
         label nt;
+
+        // Multi-patch corner: snap to nearest incident feature endpoint.
+        // Constrained topology motion — not nearest-patch projection.
+        if( pointClass[bpI] == CLS_CORNER && featureSegs.size() > 0 )
+        {
+            const VRWGraph& ppGraph = surfaceEngine_.pointPoints();
+            scalar localLen(GREAT);
+            forAllRow(ppGraph, bpI, ppI)
+            {
+                const label nbpI = ppGraph(bpI, ppI);
+                localLen = Foam::min(localLen, mag(points[bPoints[nbpI]] - p));
+            }
+            scalar bestEndDSq(GREAT);
+            point bestEndPt(p);
+
+            // Pass 1: strict — both segment patches in corner patch set
+            scalar strictEndDSq(GREAT);
+            point strictEndPt(p);
+            forAll(featureSegs, sI)
+            {
+                const FeatureSeg& seg = featureSegs[sI];
+                bool hasA=false, hasB=false;
+                forAllRow(pointPatches, bpI, ppI)
+                {
+                    const label pI = pointPatches(bpI, ppI);
+                    if( pI==seg.patchA ) hasA=true;
+                    if( pI==seg.patchB ) hasB=true;
+                }
+                if( !hasA || !hasB ) continue;
+                const scalar d0 = magSqr(seg.p0 - p);
+                const scalar d1 = magSqr(seg.p1 - p);
+                if( d0 < strictEndDSq ) { strictEndDSq=d0; strictEndPt=seg.p0; }
+                if( d1 < strictEndDSq ) { strictEndDSq=d1; strictEndPt=seg.p1; }
+            }
+            if( strictEndDSq < GREAT/2.0 )
+            { bestEndDSq=strictEndDSq; bestEndPt=strictEndPt; }
+            else
+            {
+                // Pass 2: relaxed — one patch matches, tight distance cap
+                const scalar relaxedCap = 0.1*localLen;
+                forAll(featureSegs, sI)
+                {
+                    const FeatureSeg& seg = featureSegs[sI];
+                    bool hasAny=false;
+                    forAllRow(pointPatches, bpI, ppI)
+                    {
+                        const label pI = pointPatches(bpI, ppI);
+                        if( pI==seg.patchA || pI==seg.patchB ) hasAny=true;
+                    }
+                    if( !hasAny ) continue;
+                    const scalar d0 = magSqr(seg.p0 - p);
+                    const scalar d1 = magSqr(seg.p1 - p);
+                    if( d0 < bestEndDSq && Foam::sqrt(d0) <= relaxedCap )
+                    { bestEndDSq=d0; bestEndPt=seg.p0; }
+                    if( d1 < bestEndDSq && Foam::sqrt(d1) <= relaxedCap )
+                    { bestEndDSq=d1; bestEndPt=seg.p1; }
+                }
+            }
+            const scalar snapDist = Foam::sqrt(bestEndDSq);
+            // Cap at 2x local edge length — dry-run showed snap distances
+            // are 0.0002-0.0004m, well within typical cell size of 0.001-0.003m
+            const scalar maxSnap = (localLen < GREAT/2.0) ? 2.0*localLen : GREAT;
+            Info << "  CornerSnapDebug bpI=" << bpI
+                 << " snapDist=" << snapDist
+                 << " maxSnap=" << maxSnap
+                 << " localLen=" << localLen << endl;
+            if( snapDist <= maxSnap )
+            {
+                surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
+                treatedPoint[bpI] = true;
+                continue;
+            }
+        }
 
         // For BL/no-BL interface points use patch-constrained projection
         // onto the BL-side patch only, preventing projection across
@@ -489,6 +879,115 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
     //- map edge nodes
     mapEdgeNodes(selectedEdges);
+
+    // Phase 3: corner snap — project CLS_CORNER points to nearest
+    // incident feature curve endpoint before mapCorners runs.
+    // Points successfully snapped are removed from selectedCorners.
+    if( featureSegs.size() > 0 )
+    {
+        const VRWGraph& ppGraph2 = surfaceEngine_.pointPoints();
+        labelLongList remainingCorners;
+        label nSnapped = 0;
+        forAll(selectedCorners, cI)
+        {
+            const label bpI = selectedCorners[cI];
+            Info << "  selCorner bpI=" << bpI
+                 << " cls=" << pointClass[bpI]
+                 << " CLS_CORNER=" << CLS_CORNER << endl;
+            if( pointClass[bpI] != CLS_CORNER )
+            { remainingCorners.append(bpI); continue; }
+            const point& cp = points[bPoints[bpI]];
+            scalar localLen(GREAT);
+            forAllRow(ppGraph2, bpI, ppI)
+            {
+                const label nbpI = ppGraph2(bpI, ppI);
+                localLen = Foam::min(localLen, mag(points[bPoints[nbpI]] - cp));
+            }
+            scalar bestEndDSq(GREAT);
+            point bestEndPt(cp);
+            forAll(featureSegs, sI)
+            {
+                const FeatureSeg& seg = featureSegs[sI];
+                bool hasA=false, hasB=false;
+                forAllRow(pointPatches, bpI, ppI)
+                {
+                    const label pI = pointPatches(bpI, ppI);
+                    if( pI==seg.patchA ) hasA=true;
+                    if( pI==seg.patchB ) hasB=true;
+                }
+                if( !hasA || !hasB ) continue;
+                const scalar d0 = magSqr(seg.p0 - cp);
+                const scalar d1 = magSqr(seg.p1 - cp);
+                if( d0 < bestEndDSq ) { bestEndDSq=d0; bestEndPt=seg.p0; }
+                if( d1 < bestEndDSq ) { bestEndDSq=d1; bestEndPt=seg.p1; }
+            }
+            const scalar snapDist = Foam::sqrt(bestEndDSq);
+            const scalar maxSnap = (localLen < GREAT/2.0) ? 2.0*localLen : GREAT;
+            Info << "  CornerSnapActive snapDist=" << snapDist
+                 << " maxSnap=" << maxSnap
+                 << " localLen=" << localLen
+                 << " bestEndDSq=" << bestEndDSq
+                 << " GREAT/2=" << GREAT/2.0 << endl;
+            const bool snapCondA = (snapDist <= maxSnap);
+            const bool snapCondB = (bestEndDSq < GREAT/2.0);
+            Info << "  SnapConditions: A=" << snapCondA << " B=" << snapCondB << endl;
+            if( snapCondA && snapCondB )
+            {
+                surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
+                ++nSnapped;
+                Info << "  SNAPPED bpI=" << bpI << endl;
+            }
+            else
+                remainingCorners.append(bpI);
+        }
+        // Debug: check why strict pass fails
+        if( nSnapped == 0 && selectedCorners.size() > 0 )
+        {
+            const label bpI0 = selectedCorners[0];
+            label nStrictCandidates = 0;
+            label nRelaxedCandidates = 0;
+            forAll(featureSegs, sI)
+            {
+                const FeatureSeg& seg = featureSegs[sI];
+                bool hasA=false, hasB=false, hasAny=false;
+                forAllRow(pointPatches, bpI0, ppI)
+                {
+                    const label pI = pointPatches(bpI0, ppI);
+                    if( pI==seg.patchA ) hasA=true;
+                    if( pI==seg.patchB ) hasB=true;
+                    if( pI==seg.patchA || pI==seg.patchB ) hasAny=true;
+                }
+                if( hasA && hasB ) ++nStrictCandidates;
+                if( hasAny ) ++nRelaxedCandidates;
+            }
+            Info << "  Debug corner bpI=" << bpI0
+                 << " patches=(";
+            forAllRow(pointPatches, bpI0, ppI)
+                Info << pointPatches(bpI0, ppI) << " ";
+            Info << ") strictCandidates=" << nStrictCandidates
+                 << " relaxedCandidates=" << nRelaxedCandidates
+                 << " totalSegs=" << featureSegs.size() << endl;
+        }
+        Info << "CornerSnap: snapped " << nSnapped
+             << " of " << selectedCorners.size()
+             << " corner points to feature endpoints" << endl;
+
+        // Diagnostic: show patch IDs for first corner and first few segs
+        if( selectedCorners.size() > 0 && featureSegs.size() > 0 )
+        {
+            const label bpI0 = selectedCorners[0];
+            Info << "  First corner bpI=" << bpI0 << " patches=(";
+            forAllRow(pointPatches, bpI0, ppI)
+                Info << pointPatches(bpI0, ppI) << " ";
+            Info << ")" << endl;
+            Info << "  First 3 featureSegs patchA/patchB: ";
+            for(label k=0; k<Foam::min(label(3),featureSegs.size()); ++k)
+                Info << featureSegs[k].patchA << "/" << featureSegs[k].patchB << " ";
+            Info << endl;
+        }
+
+        selectedCorners = remainingCorners;
+    }
 
     //- map corner vertices
     mapCorners(selectedCorners);
