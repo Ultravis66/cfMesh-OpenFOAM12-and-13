@@ -85,6 +85,10 @@ class meshSurfaceMapper
         //- set via setProtectedPoints(); empty by default (no exclusion)
         labelHashSet protectedPoints_;
 
+        //- Boundary points rejected by validity check in last
+        //- mapVerticesOntoSurface call — used by repairRejectedPoints
+        mutable DynamicList<label> rejectedBpI_;
+
         //- BL-side patch index per protected boundary point
         //- used for patch-constrained projection instead of global search
         //- set via setProtectedPointPatches(); empty by default
@@ -232,6 +236,13 @@ public:
         //- Feature-edge, corner, BL/no-BL, and non-manifold points
         //- are locked. Moves accepted only if proposedMoveIsValid.
         void smoothSinglePatchPoints(const label nIterations = 3);
+
+        //- Targeted repair of points rejected by mapVerticesOntoSurface.
+        //- Smooths rejected points + 2-ring neighbours, constrained by
+        //- proposedMoveIsValid. Single-patch: Laplacian + re-project.
+        //- Two-patch-edge: project to nearest feature curve point.
+        //- Corners/BL/nonmanifold: locked.
+        void repairRejectedPoints();
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

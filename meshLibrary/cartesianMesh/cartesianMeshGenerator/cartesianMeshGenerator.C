@@ -109,6 +109,8 @@ void cartesianMeshGenerator::mapMeshToSurface()
 
     //- map mesh surface on the geometry surface
     mapper.mapVerticesOntoSurface();
+    //- targeted repair of validity-rejected points before corner snap
+    mapper.repairRejectedPoints();
 
     //- snap corner and edge vertices onto feature curves
     //- prevents mesh protrusion at patch intersection edges

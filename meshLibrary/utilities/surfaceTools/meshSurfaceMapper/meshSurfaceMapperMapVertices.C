@@ -320,7 +320,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         const cellListPMG& cells = surfaceEngine_.mesh().cells();
         const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
         label nInvalid = 0;
-        DynamicList<label> rejectedBpI;
+        rejectedBpI_.clear();
         forAll(nodesToMap, i)
         {
             const label bpI = nodesToMap[i];
@@ -358,7 +358,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             }
             if( !validMove )
             {
-                rejectedBpI.append(bpI);
+                rejectedBpI_.append(bpI);
                 // EXPERIMENTAL: binary search backtracking.
                 // Gated off until proposedMoveIsValid includes
                 // skewness/non-ortho comparison against old position.
@@ -401,7 +401,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         // Write validity-rejected points to VTK (targeted diagnostic)
         // Gate: only write when processing full boundary (nodesToMap
         // size matches all boundary points = first global projection).
-        if( !rejectedBpI.empty() &&
+        if( !rejectedBpI_.empty() &&
             nodesToMap.size() ==
                 label(surfaceEngine_.boundaryPoints().size()) )
         {
@@ -411,11 +411,11 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             const pointFieldPMG& ptsR = surfaceEngine_.points();
             const VRWGraph& ptPtsR = surfaceEngine_.pointPoints();
             labelHashSet rejSet;
-            forAll(rejectedBpI, k) rejSet.insert(rejectedBpI[k]);
+            forAll(rejectedBpI_, k) rejSet.insert(rejectedBpI_[k]);
             labelHashSet ringSet(rejSet);
-            forAll(rejectedBpI, k)
-                forAllRow(ptPtsR, rejectedBpI[k], nI)
-                    ringSet.insert(ptPtsR(rejectedBpI[k], nI));
+            forAll(rejectedBpI_, k)
+                forAllRow(ptPtsR, rejectedBpI_[k], nI)
+                    ringSet.insert(ptPtsR(rejectedBpI_[k], nI));
             auto writeVTKCloud = [&](const word& name,
                 const DynamicList<label>& bpList)
             {
@@ -437,7 +437,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
                 Info<<"[Diag] "<<bpList.size()
                     <<" pts -> "<<fName<<endl;
             };
-            writeVTKCloud("validityRejectedPoints", rejectedBpI);
+            writeVTKCloud("validityRejectedPoints", rejectedBpI_);
             // Write ring as labelList
             DynamicList<label> ringList;
             forAllConstIter(labelHashSet, ringSet, it)
@@ -1078,6 +1078,115 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+void meshSurfaceMapper::repairRejectedPoints()
+{
+    if( rejectedBpI_.empty() ) return;
+
+    Info << "repairRejectedPoints: repairing "
+         << rejectedBpI_.size() << " rejected points" << endl;
+
+    const meshSurfacePartitioner& mPart = meshPartitioner();
+    const labelHashSet& cornerPts = mPart.corners();
+    const labelHashSet& edgePts   = mPart.edgePoints();
+    const VRWGraph& pPatches      = mPart.pointPatches();
+    const labelList& bPoints      = surfaceEngine_.boundaryPoints();
+    const pointFieldPMG& points   = surfaceEngine_.points();
+    const VRWGraph& pointPoints   = surfaceEngine_.pointPoints();
+    meshSurfaceEngineModifier sMod(surfaceEngine_);
+
+    // Build mapping distance for movement cap
+    labelLongList allBndPts(bPoints.size());
+    forAll(allBndPts, i) allBndPts[i] = i;
+    scalarList mappingDist;
+    findMappingDistance(allBndPts, mappingDist);
+
+    // Expand rejected set by 2 rings
+    labelHashSet repairSet;
+    forAll(rejectedBpI_, k) repairSet.insert(rejectedBpI_[k]);
+    labelHashSet ring1(repairSet);
+    forAllConstIter(labelHashSet, ring1, it)
+        forAllRow(pointPoints, it.key(), nI)
+            repairSet.insert(pointPoints(it.key(), nI));
+    labelHashSet ring2(repairSet);
+    forAllConstIter(labelHashSet, ring2, it)
+        forAllRow(pointPoints, it.key(), nI)
+            repairSet.insert(pointPoints(it.key(), nI));
+
+    Info << "repairRejectedPoints: repair neighbourhood = "
+         << repairSet.size() << " points" << endl;
+
+    label nMoved = 0;
+    label nSkipped = 0;
+
+    forAllConstIter(labelHashSet, repairSet, it)
+    {
+        const label bpI = it.key();
+
+        // Lock corners, BL/no-BL, non-manifold
+        if( cornerPts.found(bpI) ) { ++nSkipped; continue; }
+        if( !protectedPoints_.empty() &&
+             protectedPoints_.found(bpI) ) { ++nSkipped; continue; }
+
+        const point& oldPos = points[bPoints[bpI]];
+
+        if( edgePts.found(bpI) )
+        {
+            // TWO_PATCH_EDGE: project to nearest feature curve point
+            // Use both patches — try each, keep minimum distance
+            if( pPatches.sizeOfRow(bpI) < 2 ) continue;
+            point bestPt = oldPos;
+            scalar bestDSq = GREAT;
+            for(label pi=0; pi<pPatches.sizeOfRow(bpI); ++pi)
+            {
+                const label patch = pPatches(bpI, pi);
+                point candidate; scalar dSq; label nt;
+                meshOctree_.findNearestSurfacePointInRegion
+                    (candidate, dSq, nt, patch, oldPos);
+                if( dSq < bestDSq &&
+                    proposedMoveIsValid(bpI, candidate, oldPos,
+                        mappingDist[bpI]) )
+                { bestDSq = dSq; bestPt = candidate; }
+            }
+            if( bestPt != oldPos )
+            { sMod.moveBoundaryVertexNoUpdate(bpI, bestPt); ++nMoved; }
+        }
+        else if( pPatches.sizeOfRow(bpI) == 1 )
+        {
+            // SINGLE_PATCH: Laplacian smooth + re-project to own patch
+            const label myPatch = pPatches(bpI, 0);
+            point avg = point::zero;
+            label nNei = 0;
+            forAllRow(pointPoints, bpI, nI)
+            {
+                const label nbI = pointPoints(bpI, nI);
+                bool sameP = false;
+                forAllRow(pPatches, nbI, ppI)
+                    if( pPatches(nbI, ppI) == myPatch )
+                        { sameP = true; break; }
+                if( sameP )
+                    { avg += points[bPoints[nbI]]; ++nNei; }
+            }
+            if( nNei < 2 ) continue;
+            avg /= scalar(nNei);
+            point projected; scalar dSq; label nt;
+            meshOctree_.findNearestSurfacePointInRegion
+                (projected, dSq, nt, myPatch, avg);
+            if( proposedMoveIsValid(bpI, projected, oldPos,
+                    mappingDist[bpI]) )
+            { sMod.moveBoundaryVertexNoUpdate(bpI, projected); ++nMoved; }
+        }
+    }
+
+    // Update geometry for all repaired points
+    labelLongList repairList;
+    forAllConstIter(labelHashSet, repairSet, it)
+        repairList.append(it.key());
+    sMod.updateGeometry(repairList);
+
+    Info << "repairRejectedPoints: moved=" << nMoved
+         << " skipped=" << nSkipped << endl;
+}
 
 void meshSurfaceMapper::smoothSinglePatchPoints(const label nIterations)
 {
