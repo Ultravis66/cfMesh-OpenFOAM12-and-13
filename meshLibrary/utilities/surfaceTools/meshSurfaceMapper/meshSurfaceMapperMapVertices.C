@@ -357,11 +357,38 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             }
             if( !validMove )
             {
-                surfaceModifier.moveBoundaryVertexNoUpdate
-                (
-                    bpI,
-                    oldPositions[i]
-                );
+                // EXPERIMENTAL: binary search backtracking.
+                // Gated off until proposedMoveIsValid includes
+                // skewness/non-ortho comparison against old position.
+                // Enabling this improves visual spike removal but
+                // worsens skewness/non-ortho metrics until validator
+                // is strengthened. See feature/bisection-quality branch.
+                const bool useBisectionBacktracking = false;
+                if( useBisectionBacktracking )
+                {
+                    const point snapPos = pts[boundaryPoints[bpI]];
+                    const point& origPos = oldPositions[i];
+                    point bestPos = origPos;
+                    scalar alpha = 0.5;
+                    for( label bisI = 0; bisI < 6; ++bisI )
+                    {
+                        const point candidate =
+                            origPos + alpha*(snapPos - origPos);
+                        if( proposedMoveIsValid(bpI, candidate, origPos,
+                                scalar(4.0)*magSqr(snapPos - origPos)) )
+                        {
+                            bestPos = candidate;
+                            break;
+                        }
+                        alpha *= 0.5;
+                    }
+                    surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestPos);
+                }
+                else
+                {
+                    surfaceModifier.moveBoundaryVertexNoUpdate
+                        (bpI, oldPositions[i]);
+                }
                 ++nInvalid;
             }
         }
