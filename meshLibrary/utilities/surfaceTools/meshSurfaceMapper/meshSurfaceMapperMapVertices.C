@@ -320,6 +320,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         const cellListPMG& cells = surfaceEngine_.mesh().cells();
         const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
         label nInvalid = 0;
+        DynamicList<label> rejectedBpI;
         forAll(nodesToMap, i)
         {
             const label bpI = nodesToMap[i];
@@ -357,13 +358,14 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             }
             if( !validMove )
             {
+                rejectedBpI.append(bpI);
                 // EXPERIMENTAL: binary search backtracking.
                 // Gated off until proposedMoveIsValid includes
                 // skewness/non-ortho comparison against old position.
                 // Enabling this improves visual spike removal but
                 // worsens skewness/non-ortho metrics until validator
                 // is strengthened. See feature/bisection-quality branch.
-                const bool useBisectionBacktracking = true;
+                const bool useBisectionBacktracking = false;
                 if( useBisectionBacktracking )
                 {
                     const point snapPos = pts[boundaryPoints[bpI]];
@@ -395,6 +397,54 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         if( nInvalid > 0 )
             Info << "[ValidityCheck] reverted " << nInvalid
                  << " invalid surface moves" << endl;
+
+        // Write validity-rejected points to VTK (targeted diagnostic)
+        // Gate: only write when processing full boundary (nodesToMap
+        // size matches all boundary points = first global projection).
+        if( !rejectedBpI.empty() &&
+            nodesToMap.size() ==
+                label(surfaceEngine_.boundaryPoints().size()) )
+        {
+            static label rejCallCount = 0;
+            ++rejCallCount;
+            const labelList& bPtsR = surfaceEngine_.boundaryPoints();
+            const pointFieldPMG& ptsR = surfaceEngine_.points();
+            const VRWGraph& ptPtsR = surfaceEngine_.pointPoints();
+            labelHashSet rejSet;
+            forAll(rejectedBpI, k) rejSet.insert(rejectedBpI[k]);
+            labelHashSet ringSet(rejSet);
+            forAll(rejectedBpI, k)
+                forAllRow(ptPtsR, rejectedBpI[k], nI)
+                    ringSet.insert(ptPtsR(rejectedBpI[k], nI));
+            auto writeVTKCloud = [&](const word& name,
+                const DynamicList<label>& bpList)
+            {
+                fileName fName(name + word("_call")
+                    + Foam::name(rejCallCount) + word(".vtk"));
+                OFstream os(fName);
+                os<<"# vtk DataFile Version 2.0\n"<<name
+                  <<"\nASCII\nDATASET POLYDATA\n";
+                os<<"POINTS "<<bpList.size()<<" float\n";
+                forAll(bpList, k)
+                {
+                    const point& p = ptsR[bPtsR[bpList[k]]];
+                    os<<p.x()<<" "<<p.y()<<" "<<p.z()<<"\n";
+                }
+                os<<"VERTICES "<<bpList.size()
+                  <<" "<<2*bpList.size()<<"\n";
+                for(label k=0;k<bpList.size();++k)
+                    os<<"1 "<<k<<"\n";
+                Info<<"[Diag] "<<bpList.size()
+                    <<" pts -> "<<fName<<endl;
+            };
+            writeVTKCloud("validityRejectedPoints", rejectedBpI);
+            // Write ring as labelList
+            DynamicList<label> ringList;
+            forAllConstIter(labelHashSet, ringSet, it)
+                ringList.append(it.key());
+            writeVTKCloud("rejectedNeighbourhood", ringList);
+        }
+
     }
 
     //- re-calculate face normals, point normals, etc.
