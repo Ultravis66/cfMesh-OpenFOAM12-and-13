@@ -187,20 +187,25 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 > **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
 ---
+## Mesh quality on NASA Rotor 37 (v0.5)
 
-## Mesh quality on NASA Rotor 37
+Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
+Results shown as typical range across runs — residual variance from base cfMesh OMP scheduling.
 
-| Metric | Value |
-|--------|-------|
-| Cells | ~2.1M |
-| Average non-orthogonality | 10.5° |
-| High aspect ratio cells | 2 (down from 13) |
-| Negative volume cells | 2 (down from 7) |
-| Runtime | ~75s |
-| Bad faces after untangling | 0 |
-| Regression test | 6/6 PASS |
-| Bad pyramid faces | 5 (down from 13–32 before constraint system) |
-| Failed mesh checks | 5 |
+| Metric | v0.5 typical | Original cfMesh |
+|--------|-------------|-----------------|
+| Cells | ~2.1M | ~2.1M |
+| Average non-orthogonality | 10.6° | 10.5° |
+| Max non-orthogonality | 90–100° | 147° |
+| Non-orthogonality errors | 0–1 | 1+ |
+| Negative volume cells | 0–2 | 5–7 |
+| Bad pyramid faces | 1–9 | 13–32 |
+| Max skewness | 9.3–9.5 | 15.6+ |
+| Severely non-ortho faces (>70°) | 1,800–2,100 | 2,058 |
+| High aspect ratio cells | 3–5 | 13 |
+| Runtime | ~75–100s | ~75s |
+| Visible surface protrusions | Significantly reduced | Severe at patch junctions |
+
 ---
 ## Running the regression test
 
