@@ -72,11 +72,13 @@ bool meshSurfaceMapper::proposedMoveIsValid
     if( mappingDistSq > VSMALL && moveSq > mappingDistSq )
         return false;
 
-    // Temporarily move the point to evaluate quality.
-    // Use const_cast: evaluation is logically const (we restore after).
-    pointFieldPMG& ptsNC = const_cast<pointFieldPMG&>(pts);
-    const point savedPos = ptsNC[bPoints[bpI]];
-    ptsNC[bPoints[bpI]] = candidate;
+    // Pure geometric evaluation — no mesh mutation, thread-safe.
+    // Substitute candidate for bPoints[bpI] inline using lambda.
+    const label globalPtI = bPoints[bpI];
+    auto ptOf = [&](const label ptI) -> point
+    {
+        return (ptI == globalPtI) ? candidate : point(pts[ptI]);
+    };
 
     bool valid = true;
     forAllRow(pFaces, bpI, pfI)
@@ -84,20 +86,19 @@ bool meshSurfaceMapper::proposedMoveIsValid
         const label bfI = pFaces(bpI, pfI);
         const face& f = bFaces[bfI];
 
-        // Check 2: face area — reject near-zero area faces
+        // Check 2: face area
         point fc = point::zero;
-        forAll(f, fpI) fc += pts[f[fpI]];
+        forAll(f, fpI) fc += ptOf(f[fpI]);
         fc /= scalar(f.size());
-
         vector fn = vector::zero;
-        const point& p0 = pts[f[0]];
+        const point p0 = ptOf(f[0]);
         for(label fpI=1; fpI<f.size()-1; ++fpI)
-            fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
+            fn += (ptOf(f[fpI])-p0)^(ptOf(f[fpI+1])-p0);
         const scalar areaSq = magSqr(fn);
         if( areaSq < VSMALL )
         { valid = false; break; }
 
-        // Check 3: pyramid height — relative to face area
+        // Check 3: pyramid height
         const label cellI = faceOwners[bfI];
         point cc = point::zero;
         const cell& cll = cells[cellI];
@@ -115,44 +116,35 @@ bool meshSurfaceMapper::proposedMoveIsValid
         { valid = false; break; }
     }
 
-        // Check 4: skewness proxy — ratio of face-centre deviation
-        // to face-centre-to-cell-centre distance.
-        // Skew = |fc - interpolated_centre| / |fc - cc|
-        // interpolated_centre approximated as midpoint(fc, cc).
-        // Reject if skewness proxy exceeds commercial threshold (4.0).
-        if( valid )
+    // Check 4: skewness proxy using candidate position
+    if( valid )
+    {
+        forAllRow(pFaces, bpI, pfI)
         {
-            forAllRow(pFaces, bpI, pfI)
+            const label bfI = pFaces(bpI, pfI);
+            const face& f = bFaces[bfI];
+            point fc2 = point::zero;
+            forAll(f, fpI) fc2 += ptOf(f[fpI]);
+            fc2 /= scalar(f.size());
+            const label cellI = faceOwners[bfI];
+            point cc2 = point::zero;
+            const cell& cll = cells[cellI];
+            forAll(cll, cfI)
             {
-                const label bfI = pFaces(bpI, pfI);
-                const face& f = bFaces[bfI];
-                point fc2 = point::zero;
-                forAll(f, fpI) fc2 += pts[f[fpI]];
-                fc2 /= scalar(f.size());
-                const label cellI = faceOwners[bfI];
-                point cc2 = point::zero;
-                const cell& cll = cells[cellI];
-                forAll(cll, cfI)
-                {
-                    const face& cf = allFaces[cll[cfI]];
-                    point cfc = point::zero;
-                    forAll(cf, cpI) cfc += pts[cf[cpI]];
-                    cc2 += cfc / scalar(cf.size());
-                }
-                cc2 /= scalar(cll.size());
-                const scalar d = mag(fc2 - cc2);
-                if( d < VSMALL ) continue;
-                // Interpolated centre: weight by owner/neighbour
-                // For boundary faces owner only — use 0.5*d as ref
-                const point interpCentre = 0.5*(fc2 + cc2);
-                const scalar skewness = mag(fc2 - interpCentre) / d;
-                if( skewness > scalar(4.0) )
-                { valid = false; break; }
+                const face& cf = allFaces[cll[cfI]];
+                point cfc = point::zero;
+                forAll(cf, cpI) cfc += pts[cf[cpI]];
+                cc2 += cfc / scalar(cf.size());
             }
+            cc2 /= scalar(cll.size());
+            const scalar d = mag(fc2 - cc2);
+            if( d < VSMALL ) continue;
+            const scalar skewness = mag(fc2 - 0.5*(fc2+cc2)) / d;
+            if( skewness > scalar(4.0) )
+            { valid = false; break; }
         }
+    }
 
-    // Restore point position
-    ptsNC[bPoints[bpI]] = savedPos;
     return valid;
 }
 
