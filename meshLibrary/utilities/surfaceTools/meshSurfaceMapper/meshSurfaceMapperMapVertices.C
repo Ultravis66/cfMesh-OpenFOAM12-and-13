@@ -363,7 +363,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
                 // Enabling this improves visual spike removal but
                 // worsens skewness/non-ortho metrics until validator
                 // is strengthened. See feature/bisection-quality branch.
-                const bool useBisectionBacktracking = false;
+                const bool useBisectionBacktracking = true;
                 if( useBisectionBacktracking )
                 {
                     const point snapPos = pts[boundaryPoints[bpI]];

@@ -115,6 +115,42 @@ bool meshSurfaceMapper::proposedMoveIsValid
         { valid = false; break; }
     }
 
+        // Check 4: skewness proxy — ratio of face-centre deviation
+        // to face-centre-to-cell-centre distance.
+        // Skew = |fc - interpolated_centre| / |fc - cc|
+        // interpolated_centre approximated as midpoint(fc, cc).
+        // Reject if skewness proxy exceeds commercial threshold (4.0).
+        if( valid )
+        {
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label bfI = pFaces(bpI, pfI);
+                const face& f = bFaces[bfI];
+                point fc2 = point::zero;
+                forAll(f, fpI) fc2 += pts[f[fpI]];
+                fc2 /= scalar(f.size());
+                const label cellI = faceOwners[bfI];
+                point cc2 = point::zero;
+                const cell& cll = cells[cellI];
+                forAll(cll, cfI)
+                {
+                    const face& cf = allFaces[cll[cfI]];
+                    point cfc = point::zero;
+                    forAll(cf, cpI) cfc += pts[cf[cpI]];
+                    cc2 += cfc / scalar(cf.size());
+                }
+                cc2 /= scalar(cll.size());
+                const scalar d = mag(fc2 - cc2);
+                if( d < VSMALL ) continue;
+                // Interpolated centre: weight by owner/neighbour
+                // For boundary faces owner only — use 0.5*d as ref
+                const point interpCentre = 0.5*(fc2 + cc2);
+                const scalar skewness = mag(fc2 - interpCentre) / d;
+                if( skewness > scalar(4.0) )
+                { valid = false; break; }
+            }
+        }
+
     // Restore point position
     ptsNC[bPoints[bpI]] = savedPos;
     return valid;
