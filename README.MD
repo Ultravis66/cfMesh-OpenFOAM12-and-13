@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-> **WORK IN PROGRESS** — active development on OpenFOAM 13 only. To keep development focused and maintainable, active development is now limited to OpenFOAM Foundation v13. If you would like to patch OF12 with the changes made here, feel free — the `openfoam12-archive` branch is preserved as-is.
+> **USABLE BETA** — active development on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
 
 A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
@@ -90,8 +90,7 @@ checkMesh
 | `meshSurfaceMapperCornersAndEdges` 20-iteration hang | Reduce to 5 iterations |
 | `surfaceOptimizer` 100-iteration hang | Reduce to 10 iterations |
 | `addLayerForAllPatches` O(n²) BL quality rollback hangs | Removed |
-| `mapEdgeNodes` OMP nondeterminism — intermittent hangs and bad face explosions at full thread count | 
-| `Deterministic `parallelBndNodes` build: compute projected points in parallel, move and sync in serial — eliminates race condition |
+| `mapEdgeNodes` OMP nondeterminism — intermittent hangs and bad face explosions at full thread count | Deterministic `parallelBndNodes` build: compute in parallel, move and sync in serial |
 
 ---
 
@@ -122,6 +121,62 @@ Smooth suppression zone at BL/no-BL patch boundaries:
 | Ring 4 | 1.00 |
 
 Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient that caused warts at patch junctions.
+
+## Surface quality system (v0.1–v0.5)
+
+A commercial-mesher-style surface projection and repair pipeline, developed incrementally on top of the original cfMesh surface mapping code.
+
+### Architecture fix — patch-identity-first projection
+The original cfMesh pipeline ran `mapMeshToSurface` (global surface projection) before `extractPatches` (patch identity assignment). This meant every boundary point was projected using a global nearest-triangle search with no patch constraint — causing points near concave multi-patch corners to snap to the wrong patch surface, producing visible protrusions.
+
+Fix: `extractPatches` now runs before `mapMeshToSurface`, establishing patch identity on the raw Cartesian hex mesh before any projection occurs. A second `extractPatches` call after projection corrects any misassignments from the unprojected hex geometry. This is the primary fix for surface protrusions.
+
+### Boundary point topology classifier
+Every boundary point is classified into one of five topology classes before projection:
+
+| Class | Description |
+|-------|-------------|
+| `SINGLE_PATCH` | Interior surface point — standard projection |
+| `TWO_PATCH_EDGE` | Feature curve point — constrained to edge |
+| `MULTI_PATCH_CORNER` | 3+ patch junction — constrained to corner endpoint |
+| `BL_NOBL` | BL/no-BL transition — locked |
+| `NONMANIFOLD` | Non-manifold geometry — locked and reported |
+
+VTK diagnostic output available for each class for ParaView inspection.
+
+### Feature curve extraction and corner snap
+Dual-mode feature curve extraction (face-patch data when available, pointPatches fallback for early pipeline stages). Extracts ~10,260 feature edge segments. 24/24 multi-patch corner points snap correctly to nearest incident feature curve endpoint.
+
+### Pure quality evaluator — `proposedMoveIsValid`
+Reusable per-point quality gate used by all movement logic. Evaluates a proposed new position purely geometrically — no mesh mutation, no `const_cast`, thread-safe by construction.
+
+Checks per incident face:
+1. Movement distance cap (relative to local cell size)
+2. Face area (reject near-zero collapse)
+3. Pyramid height (relative to face area — scale-invariant)
+4. Skewness proxy (rejects moves that worsen local face skewness beyond threshold)
+
+### Constrained surface smoothing
+Patch-aware Laplacian smoothing pass after corner/edge snap. Two-phase update (compute from frozen geometry, apply in fixed order):
+- `SINGLE_PATCH` points: Laplacian average of same-patch neighbors → re-project to own patch → `proposedMoveIsValid` gate
+- `TWO_PATCH_EDGE` and `MULTI_PATCH_CORNER`: locked
+- `BL_NOBL`: locked
+
+### Targeted repair of validity-rejected points
+After global projection, points that failed the validity check are collected. Their 2-ring neighborhood is expanded, classified, and repaired using constrained patch-aware projection. Typically repairs ~1,250 of ~1,500 neighborhood points per run, targeting the blade/periodic junction regions where protrusions concentrate.
+
+### Bisection backtracking (experimental, gated off)
+Binary search along the snap vector for points that fail full projection. Gated behind `useBisectionBacktracking = false` pending stronger quality bundle (skewness + non-ortho comparison against old position required before enabling).
+
+### Version history
+
+| Tag | Description |
+|-----|-------------|
+| `v0.1-beta-stable` | Pipeline reorder + relative validity thresholds |
+| `v0.2` | Skewness proxy added to quality evaluator |
+| `v0.35` | Validity-rejected point VTK diagnostics |
+| `v0.4` | Targeted repair of validity-rejected points |
+| `v0.5` | Pure quality evaluator — no const_cast, thread-safe, tight variance |
 
 ### BL/no-BL transition edge constraint system
 
@@ -156,18 +211,6 @@ Generic protection system for points where BL patches meet no-BL patches (wall m
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
 
-### Geometry preservation pipeline
-Commercial-mesher-style surface projection with validity checking:
-
-- **Targeted centroid point projection** — `correctEdgesBetweenPatches::patchCorrection()` creates new centroid points when decomposing boundary faces at feature edges. These 89 points are now tracked and projected onto the STL surface immediately after creation.
-- **Validity-checked surface projection** — `mapVerticesOntoSurface()` now stores old vertex positions before each projection pass and runs a serial validity check afterward. Any move that inverts an adjacent face pyramid is reverted. ~8000 invalid moves reverted per run.
-
-- **Deterministic edge snapping** — `mapEdgeNodes()` now computes projected points in parallel but performs all mesh mutation and `parallelBndNodes` construction serially in deterministic `nodesToMap` order. Eliminates OMP race conditions that caused intermittent hangs and bad face explosions at full thread count.
-- **Corner-aware projection** — `mapCorners()` snaps 3+ patch intersection vertices toward the nearest STL corner using a damped relaxation factor (default 0.25, tunable via `cornerSnapRelaxation` in meshDict). A 1e-10 pyramid height threshold catches near-degenerate faces that SMALL misses. 20 invalid corner moves reverted per run.
-- **Ordered snap sequence** — corners → edges → surface, each with validity rollback. Corners are processed first as the most constrained vertices, followed by two-patch edge points, then surface vertices.
-- **`blblJunctionPoints_` wiring** — Junction point metadata flows end-to-end from `boundaryLayers` → `cartesianMeshGenerator` → `refineBoundaryLayers`, enabling future wedge topology emission.
-- **Post-BL snap infrastructure** — Local octree rebuild after BL generation for targeted outer boundary projection. Currently disabled pending tuning; controlled via `postBLSnap` in meshDict.
-
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
 
@@ -180,9 +223,13 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 
 ### Known remaining issues
 
-**BL/no-BL interface protrusions** — BL prism cells extrude through adjacent no-BL patch surfaces (inlet, outlet, periodic) at corner junctions (shroud/inlet, blade/periodic). Root cause: `pointNormals` at interface points averages face normals from both BL and no-BL adjacent faces, tilting the extrusion direction through the no-BL surface. Fix in progress: clamp extrusion normals at `blNoBlEdgePoints_` to BL-side faces only in `boundaryLayersCreateVertices.C`.
+**Residual OMP nondeterminism** — Run-to-run variance in mesh quality metrics (non-ortho errors, severely non-ortho face count) due to dynamic OMP scheduling in base cfMesh projection passes. Skewness is now stable (9.3–9.5). Non-ortho errors vary 0–1 typical. Being addressed incrementally by making projection passes fully deterministic.
 
-**2 high-aspect-ratio cells at blade-endwall junctions** (reduced from 13 via geometry preservation pipeline). (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These occur at blade+hub and blade+shroud geometric singularities where the BL/BL junction feature curve is physically singular. The planned fix is proper wedge/pyramid topology emission in `generateNewCellsPrism` at sharp BL/BL junctions — architectural groundwork (C1 detection, layerScale suppression, C3 degenerate edge handling) is already in place on the `openfoam13` branch.
+**Residual spikes at blade_4/periodic junction** — Small cluster of cells at the blade trailing edge / periodic boundary intersection still show elevated non-orthogonality. Root cause: points near this junction are reverted by the validity checker during projection and cannot be fully repaired in one pass. Targeted repair pass reduces but does not eliminate this.
+
+**BL/no-BL interface protrusions** — BL prism cells extrude through adjacent no-BL patch surfaces at corner junctions. Fix in progress: clamp extrusion normals at `blNoBlEdgePoints_` to BL-side faces only.
+
+**2 high-aspect-ratio cells at blade-endwall junctions** — Machine epsilon volume at geometric singularity. Planned fix: wedge/pyramid topology emission at sharp BL/BL junctions.
 
 > **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
@@ -226,8 +273,8 @@ PASS: Bad faces after untangling: 0 (limit: 10)
 [ 2/3 ] Running checkMesh...
 PASS: Cell count: ~2.0M (baseline: 2100000 +/-10%)
 PASS: Average non-orthogonality: ~10deg (limit: 15deg)
-PASS: High aspect ratio cells: 2 (known limit: 13)
-PASS: Negative volume cells: 2 (known limit: 10)
+PASS: High aspect ratio cells: 3-5 (known limit: 10)
+PASS: Negative volume cells: 0-2 (known limit: 5)
 [ 3/3 ] Summary
 PASSED: 6
 FAILED: 0
@@ -317,11 +364,9 @@ checkMesh -case ~/rotor37_mesh 2>&1 | grep -E "cells:|average non-orth|Failed|as
 Expected output:
 cells:            ~2.1M
 Mesh non-orthogonality Max: ~100 degrees  average: 10.5 degrees
-***High aspect ratio cells found, number of cells 2
-***Zero or negative cell volume detected, Number of negative volume cells: 2
-Failed 5 mesh checks.
-
-The 2 high-aspect and 2 negative-volume cells are a known limitation
+***High aspect ratio cells found, number of cells 3-5
+***Zero or negative cell volume detected, Number of negative volume cells: 0-2
+Failed 1-3 mesh checks.
 
 ### 5. Visualize in ParaView
 
