@@ -346,7 +346,13 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
                     cc += cfc / scalar(cf.size());
                 }
                 cc /= scalar(cll.size());
-                if( (fn & (fc - cc)) <= SMALL )
+                // Relative threshold: reject only if pyramid height is
+                // meaningfully negative relative to local face size.
+                // Fixed SMALL threshold rejects valid moves at small cells
+                // near patch boundaries. Scale by face normal magnitude
+                // (proportional to face area) for cell-size independence.
+                const scalar faceScale = Foam::mag(fn) * scalar(1e-6);
+                if( (fn & (fc - cc)) <= -faceScale )
                 { validMove = false; break; }
             }
             if( !validMove )

@@ -352,10 +352,15 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
                 }
                 cc /= scalar(cll.size());
                 const scalar h = fn & (fc - cc);
-                // Use scaled threshold - corner faces can have tiny
-                // but positive pyramid heights that flip later.
-                // Threshold tuned from diagnostic: h values 1e-13 to 1e-10
-                if( h <= scalar(1e-10) )
+                // Relative threshold: reject only if pyramid height is
+                // meaningfully negative relative to local cell size.
+                // mappingDistance[i] ~ (4 * max edge length)^2 at point.
+                // Tolerance of -1e-6 * sqrt(mappingDistance) matches
+                // commercial mesher behaviour: accepts flat-but-valid
+                // faces at tight concave junctions, rejects true inversions.
+                const scalar localLen =
+                    Foam::sqrt(mappingDistance[i]) * scalar(1e-6);
+                if( h <= -localLen )
                 { validMove = false; break; }
             }
             if( !validMove )

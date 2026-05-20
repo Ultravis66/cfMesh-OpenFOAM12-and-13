@@ -291,13 +291,20 @@ void cartesianMeshGenerator::generateMesh()
             surfacePreparation();
         }
 
+        if( controller_.runCurrentStep("patchAssignment") )
+        {
+            // Patch assignment moved before surface projection so that
+            // mapVerticesOntoSurface has valid patch identity available.
+            // edgeExtractor uses only mesh topology + octree — no
+            // dependency on projected surface positions.
+            extractPatches();
+        }
+
         if( controller_.runCurrentStep("surfaceProjection") )
         {
             mapMeshToSurface();
-        }
-
-        if( controller_.runCurrentStep("patchAssignment") )
-        {
+            // Re-run patch assignment after projection to correct any
+            // misassignments that occurred on the unprojected hex mesh.
             extractPatches();
         }
 
