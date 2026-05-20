@@ -282,6 +282,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             points[boundaryPoints[bpI]]
         );
 
+
         surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
 
         if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
