@@ -1002,6 +1002,97 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+void meshSurfaceMapper::smoothSinglePatchPoints(const label nIterations)
+{
+    Info << "smoothSinglePatchPoints: " << nIterations
+         << " iterations" << endl;
+
+    const meshSurfacePartitioner& mPart = meshPartitioner();
+    const labelHashSet& cornerPts = mPart.corners();
+    const labelHashSet& edgePts   = mPart.edgePoints();
+    const VRWGraph& pPatches      = mPart.pointPatches();
+    const labelList& bPoints      = surfaceEngine_.boundaryPoints();
+    const pointFieldPMG& points   = surfaceEngine_.points();
+    const VRWGraph& pointPoints   = surfaceEngine_.pointPoints();
+
+    meshSurfaceEngineModifier sMod(surfaceEngine_);
+
+    // Build mapping distance for movement cap
+    labelLongList allBndPts(bPoints.size());
+    forAll(allBndPts, i) allBndPts[i] = i;
+    scalarList mappingDist;
+    findMappingDistance(allBndPts, mappingDist);
+
+    label nMoved = 0;
+    label nRejected = 0;
+
+    for(label iter = 0; iter < nIterations; ++iter)
+    {
+        nMoved = 0; nRejected = 0;
+        forAll(bPoints, bpI)
+        {
+            // Lock: corners, edge points, BL/no-BL, non-manifold
+            if( cornerPts.found(bpI) ) continue;
+            if( edgePts.found(bpI)   ) continue;
+            if( !protectedPoints_.empty() &&
+                 protectedPoints_.found(bpI) ) continue;
+            // Only smooth single-patch points
+            if( pPatches.sizeOfRow(bpI) != 1 ) continue;
+            const label myPatch = pPatches(bpI, 0);
+
+            // Laplacian: average of same-patch neighbors
+            point avg = point::zero;
+            label nNei = 0;
+            forAllRow(pointPoints, bpI, nI)
+            {
+                const label nbI = pointPoints(bpI, nI);
+                // Only include neighbors on same patch
+                bool sameP = false;
+                forAllRow(pPatches, nbI, ppI)
+                    if( pPatches(nbI, ppI) == myPatch )
+                        { sameP = true; break; }
+                if( sameP )
+                {
+                    avg += points[bPoints[nbI]];
+                    ++nNei;
+                }
+            }
+            if( nNei < 2 ) continue;
+            avg /= scalar(nNei);
+
+            // Project averaged position back onto own patch
+            point projected;
+            scalar dSq;
+            label nt;
+            meshOctree_.findNearestSurfacePointInRegion
+            (
+                projected, dSq, nt, myPatch,
+                avg
+            );
+
+            // Accept only if quality valid
+            const point& oldPos = points[bPoints[bpI]];
+            if( proposedMoveIsValid(bpI, projected, oldPos,
+                                    mappingDist[bpI]) )
+            {
+                sMod.moveBoundaryVertexNoUpdate(bpI, projected);
+                ++nMoved;
+            }
+            else
+            {
+                ++nRejected;
+            }
+        }
+        sMod.updateGeometry(allBndPts);
+        Info << "  smoothSinglePatchPoints iter " << iter
+             << ": moved=" << nMoved
+             << " rejected=" << nRejected << endl;
+        if( nMoved == 0 ) break;
+    }
+}
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
 } // End namespace Foam
 
 // ************************************************************************* //

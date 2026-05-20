@@ -49,6 +49,77 @@ namespace Foam
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+bool meshSurfaceMapper::proposedMoveIsValid
+(
+    const label bpI,
+    const point& candidate,
+    const point& oldPosition,
+    const scalar mappingDistSq
+) const
+{
+    const meshSurfaceEngine& mse = surfaceEngine_;
+    const VRWGraph& pFaces = mse.pointFaces();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const labelList& faceOwners = mse.faceOwners();
+    const pointFieldPMG& pts = mse.points();
+    const cellListPMG& cells = mse.mesh().cells();
+    const faceListPMG& allFaces = mse.mesh().faces();
+    const labelList& bPoints = mse.boundaryPoints();
+
+    // Check 1: movement cap — reject if candidate is further from
+    // old position than the local mapping distance allows.
+    const scalar moveSq = magSqr(candidate - oldPosition);
+    if( mappingDistSq > VSMALL && moveSq > mappingDistSq )
+        return false;
+
+    // Temporarily move the point to evaluate quality.
+    // Use const_cast: evaluation is logically const (we restore after).
+    pointFieldPMG& ptsNC = const_cast<pointFieldPMG&>(pts);
+    const point savedPos = ptsNC[bPoints[bpI]];
+    ptsNC[bPoints[bpI]] = candidate;
+
+    bool valid = true;
+    forAllRow(pFaces, bpI, pfI)
+    {
+        const label bfI = pFaces(bpI, pfI);
+        const face& f = bFaces[bfI];
+
+        // Check 2: face area — reject near-zero area faces
+        point fc = point::zero;
+        forAll(f, fpI) fc += pts[f[fpI]];
+        fc /= scalar(f.size());
+
+        vector fn = vector::zero;
+        const point& p0 = pts[f[0]];
+        for(label fpI=1; fpI<f.size()-1; ++fpI)
+            fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
+        const scalar areaSq = magSqr(fn);
+        if( areaSq < VSMALL )
+        { valid = false; break; }
+
+        // Check 3: pyramid height — relative to face area
+        const label cellI = faceOwners[bfI];
+        point cc = point::zero;
+        const cell& cll = cells[cellI];
+        forAll(cll, cfI)
+        {
+            const face& cf = allFaces[cll[cfI]];
+            point cfc = point::zero;
+            forAll(cf, cpI) cfc += pts[cf[cpI]];
+            cc += cfc / scalar(cf.size());
+        }
+        cc /= scalar(cll.size());
+        const scalar h = fn & (fc - cc);
+        const scalar faceScale = Foam::sqrt(areaSq) * scalar(1e-6);
+        if( h <= -faceScale )
+        { valid = false; break; }
+    }
+
+    // Restore point position
+    ptsNC[bPoints[bpI]] = savedPos;
+    return valid;
+}
+
 void meshSurfaceMapper::findMappingDistance
 (
     const labelLongList& nodesToMap,

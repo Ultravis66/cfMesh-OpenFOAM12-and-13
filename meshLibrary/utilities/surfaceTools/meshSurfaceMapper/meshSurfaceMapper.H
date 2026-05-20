@@ -128,6 +128,18 @@ class meshSurfaceMapper
         //- calculate face metric
         scalar faceMetricInPatch(const label bfI, const label patchI) const;
 
+        //- Quality evaluator: returns true if moving boundary point bpI
+        //- to candidate leaves all incident faces valid.
+        //- Checks: pyramid height, face area, movement cap.
+        //- Used by smoothing, bisection, and corner snap.
+        bool proposedMoveIsValid
+        (
+            const label bpI,
+            const point& candidate,
+            const point& oldPosition,
+            const scalar mappingDistSq
+        ) const;
+
     // Private member functions needed for parallel execution
 
         //- check if nodes at parallel boundaries are selected at all processors
@@ -214,6 +226,12 @@ public:
         //- a combination of mapping and smoothing intended for better
         //- feature capturing
         void preMapVertices(const label nIterations = 3);
+
+        //- Constrained surface smoothing: redistributes single-patch
+        //- boundary points using patch-aware Laplacian smoothing.
+        //- Feature-edge, corner, BL/no-BL, and non-manifold points
+        //- are locked. Moves accepted only if proposedMoveIsValid.
+        void smoothSinglePatchPoints(const label nIterations = 3);
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

@@ -114,6 +114,10 @@ void cartesianMeshGenerator::mapMeshToSurface()
     //- prevents mesh protrusion at patch intersection edges
     mapper.mapCornersAndEdges();
 
+    //- constrained surface smoothing: redistribute single-patch
+    //- points around snapped features before untangling
+    mapper.smoothSinglePatchPoints(3);
+
     //- untangle surface faces
     meshSurfaceOptimizer(mse, *octreePtr_).untangleSurface();
 }
