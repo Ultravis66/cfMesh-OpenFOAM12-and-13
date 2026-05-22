@@ -389,6 +389,37 @@ point boundaryLayers::createNewVertex
     point newP = p - dist * normal;
     if( help::isnan(newP) || help::isinf(newP) )
         return p;
+    // BL/neutral crossing clamp: prevent extrusion across periodic/symmetry planes.
+    // Fires for blNeutralEdgePoints_ regardless of layerScale_.
+    if( !blNeutralEdgePoints_.empty() && blNeutralEdgePoints_.found(bpI) )
+    {
+        forAllRow(pFaces, bpI, pfI)
+        {
+            const label faceI = pFaces(bpI, pfI);
+            const label patchI = boundaryFacePatches[faceI];
+            if( patchI < 0 || patchI >= label(patchNames_.size()) ) continue;
+            // Only check neutral patches (patchRole_ == 2)
+            if( patchRole_.size() <= patchI ) continue;
+            if( patchRole_[patchI] != 2 ) continue;
+            const face& f = bFaces[faceI];
+            vector fn = vector::zero;
+            const point& fp0 = points[f[0]];
+            for(label pi=1; pi<f.size()-1; ++pi)
+                fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
+            if( mag(fn) < VSMALL ) continue;
+            fn /= mag(fn);
+            point fc = point::zero;
+            forAll(f, fi) fc += points[f[fi]];
+            fc /= scalar(f.size());
+            const scalar s0 = (p - fc) & fn;
+            const scalar s1 = (newP - fc) & fn;
+            if( s0 > SMALL && s1 < SMALL )
+            {
+                newP = p;
+                break;
+            }
+        }
+    }
     // Robust candidate-point clamping near BL/no-BL termination patches
     // Check ALL no-BL faces — use most restrictive constraint.
     // A point must not move further from any no-BL face than its
@@ -517,6 +548,78 @@ void boundaryLayers::createNewVertices(const boolList& treatPatches)
         ) << "Number of vertices " << nPoints_
             << " does not match the list size "
             << abort(FatalError);
+
+    // Local topology-aware layer rollback.
+    // Restricted to topology-sensitive points only:
+    // BL/neutral edges, BL/no-BL edges, BL/BL junction points.
+    // Uses correct sign logic and area-scaled tolerance.
+    {
+        const label maxRollbackIter = 5;
+        const scalar dampFactor = 0.5;
+        const VRWGraph& ptFacesRB = mse.pointFaces();
+        const faceList::subList& bFacesRB = mse.boundaryFaces();
+        label nRolledBack = 0;
+
+        // Build restricted rollback set: topology-sensitive points only
+        labelHashSet rollbackSet;
+        forAllConstIter(labelHashSet, blNeutralEdgePoints_, it)
+            rollbackSet.insert(it.key());
+        forAllConstIter(labelHashSet, blNoBlEdgePoints_, it)
+            rollbackSet.insert(it.key());
+        forAllConstIter(labelHashSet, blblJunctionPoints_, it)
+            rollbackSet.insert(it.key());
+
+        for(label iter=0; iter<maxRollbackIter; ++iter)
+        {
+            label nBad = 0;
+            forAll(procPoints, ppI)
+            {
+                const label bpI = procPoints[ppI];
+                if( !rollbackSet.found(bpI) ) continue;
+                const label meshPtI = bPoints[bpI];
+                const label origPtI = newLabelForVertex_[meshPtI];
+                if( origPtI < 0 ) continue;
+
+                // Value copies — avoid reference aliasing during mutation
+                const point layerPt = points[meshPtI];
+                const point basePt  = points[origPtI];
+
+                bool bad = false;
+                forAllRow(ptFacesRB, bpI, pfI)
+                {
+                    const face& f = bFacesRB[ptFacesRB(bpI, pfI)];
+                    point fc = point::zero;
+                    forAll(f, fi) fc += points[f[fi]];
+                    fc /= scalar(f.size());
+                    vector fn = vector::zero;
+                    const point& fp0 = points[f[0]];
+                    for(label pi=1; pi<f.size()-1; ++pi)
+                        fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
+                    const scalar areaMag = mag(fn);
+                    if( areaMag < VSMALL ) continue;
+                    const scalar tol = 1e-12 * areaMag;
+                    const scalar volLayer = (layerPt - fc) & fn;
+                    const scalar volBase  = (basePt  - fc) & fn;
+                    // Bad: base and layer on opposite sides of face plane
+                    if( mag(volBase) > tol && volBase*volLayer < -tol )
+                    { bad = true; break; }
+                }
+
+                if( bad )
+                {
+                    points[meshPtI] = dampFactor*layerPt
+                                   + (1.0-dampFactor)*basePt;
+                    ++nBad;
+                    ++nRolledBack;
+                }
+            }
+            if( nBad == 0 ) break;
+        }
+
+        if( nRolledBack > 0 )
+            Info << "Layer rollback: " << nRolledBack
+                 << " topology-sensitive vertices relaxed" << endl;
+    }
 
     Info << "Finished creating layer vertices" << endl;
 }
@@ -808,6 +911,68 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             points[bPoints[bpI]] = p;
         }
     }
+
+    // Local topology-aware layer rollback (second createNewVertices).
+    {
+        const meshSurfaceEngine& mseRB = surfaceEngine();
+        const VRWGraph& ptFacesRB = mseRB.pointFaces();
+        const faceList::subList& bFacesRB = mseRB.boundaryFaces();
+        const label maxRollbackIter = 5;
+        const scalar dampFactor = 0.5;
+        label nRolledBack = 0;
+
+        labelHashSet rollbackSet;
+        forAllConstIter(labelHashSet, blNeutralEdgePoints_, it)
+            rollbackSet.insert(it.key());
+        forAllConstIter(labelHashSet, blNoBlEdgePoints_, it)
+            rollbackSet.insert(it.key());
+        forAllConstIter(labelHashSet, blblJunctionPoints_, it)
+            rollbackSet.insert(it.key());
+
+        for(label iter=0; iter<maxRollbackIter; ++iter)
+        {
+            label nBad = 0;
+            forAll(bPoints, bpI)
+            {
+                if( !rollbackSet.found(bpI) ) continue;
+                const label meshPtI = bPoints[bpI];
+                const label origPtI = newLabelForVertex_[meshPtI];
+                if( origPtI < 0 ) continue;
+                const point layerPt = points[meshPtI];
+                const point basePt  = points[origPtI];
+                bool bad = false;
+                forAllRow(ptFacesRB, bpI, pfI)
+                {
+                    const face& f = bFacesRB[ptFacesRB(bpI, pfI)];
+                    point fc = point::zero;
+                    forAll(f, fi) fc += points[f[fi]];
+                    fc /= scalar(f.size());
+                    vector fn = vector::zero;
+                    const point& fp0 = points[f[0]];
+                    for(label pi=1; pi<f.size()-1; ++pi)
+                        fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
+                    const scalar areaMag = mag(fn);
+                    if( areaMag < VSMALL ) continue;
+                    const scalar tol = 1e-12 * areaMag;
+                    const scalar volLayer = (layerPt - fc) & fn;
+                    const scalar volBase  = (basePt  - fc) & fn;
+                    if( mag(volBase) > tol && volBase*volLayer < -tol )
+                    { bad = true; break; }
+                }
+                if( bad )
+                {
+                    points[meshPtI] = dampFactor*layerPt
+                                   + (1.0-dampFactor)*basePt;
+                    ++nBad;
+                    ++nRolledBack;
+                }
+            }
+            if( nBad == 0 ) break;
+        }
+        if( nRolledBack > 0 )
+            Info << "Layer rollback (pass2): " << nRolledBack
+                 << " topology-sensitive vertices relaxed" << endl;
+    }
 }
 
 void boundaryLayers::createNewPartitionVerticesParallel
@@ -928,6 +1093,43 @@ void boundaryLayers::createNewPartitionVerticesParallel
                 const point& p0 = pts[f[0]];
                 for(label pi=1; pi<f.size()-1; ++pi)
                     fn += (pts[f[pi]]-p0)^(pts[f[pi+1]]-p0);
+                blNormal += fn;
+            }
+            const scalar magN = mag(blNormal);
+            if( magN > VSMALL )
+                pNormals[bpI] = blNormal / magN;
+        }
+    }
+
+    // Override point normals at BL/neutral interface points (blade/periodic)
+    // Same logic as BL/no-BL: use only BL-side faces to compute normal.
+    // Prevents extrusion direction tilting toward periodic plane.
+    if( !blNeutralEdgePoints_.empty() )
+    {
+        const VRWGraph& pFaces2 = mse.pointFaces();
+        const labelList& bFacePatches2 = mse.boundaryFacePatches();
+        const faceList::subList& bFaces2 = mse.boundaryFaces();
+        const pointFieldPMG& pts2 = mesh_.points();
+
+        forAllConstIter(labelHashSet, blNeutralEdgePoints_, iter)
+        {
+            const label bpI = iter.key();
+
+            Map<label>::const_iterator patchIt = blNeutralPointPatch_.find(bpI);
+            if( patchIt == blNeutralPointPatch_.end() || patchIt() < 0 )
+                continue;
+            const label blPatch = patchIt();
+
+            vector blNormal(vector::zero);
+            forAllRow(pFaces2, bpI, pfI)
+            {
+                if( bFacePatches2[pFaces2(bpI, pfI)] != blPatch )
+                    continue;
+                const face& f = bFaces2[pFaces2(bpI, pfI)];
+                vector fn = vector::zero;
+                const point& p0 = pts2[f[0]];
+                for(label pi=1; pi<f.size()-1; ++pi)
+                    fn += (pts2[f[pi]]-p0)^(pts2[f[pi+1]]-p0);
                 blNormal += fn;
             }
             const scalar magN = mag(blNormal);
