@@ -385,9 +385,13 @@ To inspect boundary layers: in ParaView, use **Filters → Extract Block** to is
 
 ---
 
-## License
-
+## License and Attribution
 This project is licensed under the GNU General Public License v3.0, consistent with the original cfMesh license.
+Original cfMesh authorship and copyright remain with the original cfMesh authors, including Franjo Juretić / Creative Fields.
+This fork includes OpenFOAM 13 compatibility updates, build fixes, and meshing robustness modifications by Mitch Stolk.
+Modifications in this fork Copyright (C) 2026 Mitch Stolk.
+If you use this fork in academic, research, commercial evaluation, or public engineering work, please cite or acknowledge this repository:
+Mitchell Stolk, cfMesh-OpenFOAM13: OpenFOAM 13 port and robustness-focused fork of cfMesh, 2026.
 
 ## Disclaimer
 Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
