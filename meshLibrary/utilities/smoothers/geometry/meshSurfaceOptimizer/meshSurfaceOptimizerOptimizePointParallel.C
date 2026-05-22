@@ -273,7 +273,7 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianFCParallel
 
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
+//DISABLED: //DISABLED:     # pragma omp parallel for schedule(dynamic, 20)
     # endif
     forAll(newPositions, pI)
     {
@@ -394,7 +394,7 @@ void meshSurfaceOptimizer::edgeNodeDisplacementParallel
 
     pointField newPositions(nodesToSmooth.size());
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
+//DISABLED: //DISABLED:     # pragma omp parallel for schedule(dynamic, 20)
     # endif
     forAll(nodesToSmooth, pI)
     {
@@ -417,7 +417,7 @@ void meshSurfaceOptimizer::edgeNodeDisplacementParallel
     }
 
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
+//DISABLED: //DISABLED:     # pragma omp parallel for schedule(dynamic, 20)
     # endif
     forAll(newPositions, pI)
         sm.moveBoundaryVertexNoUpdate(nodesToSmooth[pI], newPositions[pI]);

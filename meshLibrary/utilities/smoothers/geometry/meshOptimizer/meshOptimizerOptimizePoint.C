@@ -212,7 +212,7 @@ void meshOptimizer::laplaceSmoother::laplacianWPC
         labelLongList procPoints;
 
         # ifdef USE_OMP
-        # pragma omp parallel for schedule(dynamic, 20)
+//DISABLED: //DISABLED:         # pragma omp parallel for schedule(dynamic, 20)
         # endif
         forAll(smoothPoints, i)
         {

@@ -294,7 +294,7 @@ void meshSurfaceOptimizer::smoothSurfaceOptimizer
     pointField newPositions(selectedPoints.size());
 
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
+//DISABLED:     # pragma omp parallel for schedule(dynamic, 20)
     # endif
     forAll(selectedPoints, i)
     {
@@ -306,7 +306,7 @@ void meshSurfaceOptimizer::smoothSurfaceOptimizer
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
 
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 100)
+//DISABLED: //DISABLED:     # pragma omp parallel for schedule(dynamic, 100)
     # endif
     forAll(newPositions, i)
     {
@@ -352,7 +352,7 @@ bool meshSurfaceOptimizer::untangleSurface
 
     boolList smoothVertex(bPoints.size(), false);
     # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 50)
+//DISABLED: //DISABLED:     # pragma omp parallel for schedule(dynamic, 50)
     # endif
     forAll(selectedBoundaryPoints, i)
     {
@@ -431,7 +431,7 @@ bool meshSurfaceOptimizer::untangleSurface
                 nAfterRefresh = 0;
 
                 # ifdef USE_OMP
-                # pragma omp parallel for schedule(dynamic, 100)
+//DISABLED: //DISABLED:                 # pragma omp parallel for schedule(dynamic, 100)
                 # endif
                 forAll(bPoints, bpI)
                     minInvertedPoints[bpI] = points[bPoints[bpI]];
