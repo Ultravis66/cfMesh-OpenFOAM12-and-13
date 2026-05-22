@@ -488,8 +488,9 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     const label CLS_SINGLE   = 0;
     const label CLS_TWOPATCH = 1;
     const label CLS_CORNER   = 2;
-    const label CLS_BLNOBL   = 3;
-    const label CLS_NONMANIF = 4;
+    const label CLS_BLNOBL     = 3;
+    const label CLS_NONMANIF   = 4;
+    const label CLS_BL_NEUTRAL = 5;
 
     labelList pointClass(surfaceEngine_.boundaryPoints().size(), CLS_SINGLE);
 
@@ -498,6 +499,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     label nCorner = 0;
     label nBlNoBl = 0;
     label nNonManif = 0;
+    label nBlNeutral = 0;
 
     forAll(nodesToMap, i)
     {
@@ -521,8 +523,16 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         }
         else if( nPatches == 2 )
         {
-            pointClass[bpI] = CLS_TWOPATCH;
-            ++nTwoPatch;
+            if( !blNeutralPoints_.empty() && blNeutralPoints_.found(bpI) )
+            {
+                pointClass[bpI] = CLS_BL_NEUTRAL;
+                ++nBlNeutral;
+            }
+            else
+            {
+                pointClass[bpI] = CLS_TWOPATCH;
+                ++nTwoPatch;
+            }
         }
         else
         {
@@ -532,15 +542,16 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     }
 
     Info << "BoundaryPointClassifier: "
-         << nSingle   << " single-patch, "
-         << nTwoPatch << " two-patch-edge, "
-         << nCorner   << " multi-patch-corner, "
-         << nBlNoBl   << " BL/no-BL transition, "
-         << nNonManif << " non-manifold" << endl;
+         << nSingle    << " single-patch, "
+         << nTwoPatch  << " two-patch-edge, "
+         << nCorner    << " multi-patch-corner, "
+         << nBlNoBl    << " BL/no-BL transition, "
+         << nBlNeutral << " BL/neutral-edge, "
+         << nNonManif  << " non-manifold" << endl;
 
     // Phase 2: VTK diagnostic output for topology classes.
     // Diagnostics only — no movement or projection behavior changes.
-    if( nCorner > 0 || nTwoPatch > 0 || nBlNoBl > 0 || nNonManif > 0 )
+    if( nCorner > 0 || nTwoPatch > 0 || nBlNoBl > 0 || nNonManif > 0 || nBlNeutral > 0 )
     {
         static label callCount = 0;
         ++callCount;
@@ -576,6 +587,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         writePointClassVTK("twoPatchEdgePoints", CLS_TWOPATCH, nTwoPatch);
         writePointClassVTK("multiPatchCornerPoints", CLS_CORNER, nCorner);
         writePointClassVTK("blNoBlTransitionPoints", CLS_BLNOBL, nBlNoBl);
+        writePointClassVTK("blNeutralEdgePoints", CLS_BL_NEUTRAL, nBlNeutral);
         writePointClassVTK("nonManifoldPoints", CLS_NONMANIF, nNonManif);
     }
 
@@ -914,19 +926,37 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         // the feature curve onto the wrong patch.
         Map<label>::const_iterator protIt =
             protectedPointPatches_.find(bpI);
-        const label projPatch =
-            (protIt != protectedPointPatches_.end() && protIt() >= 0)
-            ? protIt()
-            : pointPatches(bpI, 0);
+        Map<label>::const_iterator neutIt =
+            blNeutralPointPatches_.find(bpI);
 
-        meshOctree_.findNearestSurfacePointInRegion
-        (
-            mapPoint,
-            dSq,
-            nt,
-            projPatch,
-            p
-        );
+        if( protIt != protectedPointPatches_.end() && protIt() >= 0 )
+        {
+            // BL/no-BL protected point — constrain to BL-side patch only
+            meshOctree_.findNearestSurfacePointInRegion
+            (mapPoint, dSq, nt, protIt(), p);
+        }
+        else if( neutIt != blNeutralPointPatches_.end() && neutIt() >= 0 )
+        {
+            // BL/neutral point (blade/periodic junction) —
+            // constrain projection to BL-side patch only.
+            meshOctree_.findNearestSurfacePointInRegion
+            (mapPoint, dSq, nt, neutIt(), p);
+        }
+        else
+        {
+            const label projPatch =
+                (protIt != protectedPointPatches_.end() && protIt() >= 0)
+                ? protIt()
+                : pointPatches(bpI, 0);
+            meshOctree_.findNearestSurfacePointInRegion
+            (
+                mapPoint,
+                dSq,
+                nt,
+                projPatch,
+                p
+            );
+        }
 
         surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
 

@@ -114,6 +114,10 @@ class boundaryLayers
         //- number of BL layers per patch (0 = no BL = termination patch)
         labelList nLayersForPatch_;
 
+        //- patch role classification
+        //  0 = BL_PATCH, 1 = TERMINATION_PATCH, 2 = NEUTRAL_PATCH
+        labelList patchRole_;
+
         //- boundary faces with mixed zero/nonzero layer displacement
         //- passed to refineBoundaryLayers for single-layer treatment
         mutable labelHashSet mixedDisplacementFaces_;
@@ -136,6 +140,12 @@ class boundaryLayers
         //- patch index for each BL/no-BL interface point
         //- stores the BL-side patch index for patch-constrained projection
         mutable Map<label> blNoBlPointPatch_;
+
+        //- BL/neutral edge points (BL patch meets periodic/symmetry)
+        mutable labelHashSet blNeutralEdgePoints_;
+
+        //- BL-side patch index per neutral edge point
+        mutable Map<label> blNeutralPointPatch_;
 
         //- number of vertices in the mesh
         label nPoints_;
@@ -323,6 +333,18 @@ public:
         const Map<label>& blNoBlPointPatch() const
         {
             return blNoBlPointPatch_;
+        }
+
+        //- return BL/neutral edge points (blade/periodic junctions)
+        const labelHashSet& blNeutralEdgePoints() const
+        {
+            return blNeutralEdgePoints_;
+        }
+
+        //- return BL-side patch per neutral edge point
+        const Map<label>& blNeutralPointPatch() const
+        {
+            return blNeutralPointPatch_;
         }
 
         //- set gap points for BL suppression in thin clearance regions

@@ -93,6 +93,12 @@ class cartesianMeshGenerator
         //- used for patch-constrained projection instead of global search
         Map<label> blNoBlPointPatch_;
 
+        //- BL/neutral edge points (blade/periodic junctions)
+        labelHashSet blNeutralEdgePoints_;
+
+        //- BL-side patch per neutral edge point
+        Map<label> blNeutralPointPatch_;
+
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
         labelLongList blPoints_;
 

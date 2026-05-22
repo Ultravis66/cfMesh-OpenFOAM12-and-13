@@ -84,6 +84,8 @@ class meshSurfaceMapper
         //- boundary-point indices excluded from generic surface projection
         //- set via setProtectedPoints(); empty by default (no exclusion)
         labelHashSet protectedPoints_;
+        labelHashSet blNeutralPoints_;
+        Map<label> blNeutralPointPatches_;
 
         //- Boundary points rejected by validity check in last
         //- mapVerticesOntoSurface call — used by repairRejectedPoints
@@ -203,6 +205,18 @@ public:
         void setProtectedPoints(const labelHashSet& pts)
         {
             protectedPoints_ = pts;
+        }
+
+        //- set BL/neutral edge points (blade/periodic junctions)
+        void setBLNeutralPoints(const labelHashSet& pts)
+        {
+            blNeutralPoints_ = pts;
+        }
+
+        //- set BL-side patch per neutral edge point
+        void setBLNeutralPointPatches(const Map<label>& patches)
+        {
+            blNeutralPointPatches_ = patches;
         }
 
         //- set patch index map for patch-constrained projection

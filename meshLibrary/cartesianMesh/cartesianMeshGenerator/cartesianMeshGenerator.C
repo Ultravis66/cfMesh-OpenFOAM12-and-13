@@ -45,6 +45,7 @@ Description
 #include "checkCellConnectionsOverFaces.H"
 #include "checkIrregularSurfaceConnections.H"
 #include "checkNonMappableCellConnections.H"
+#include "OFstream.H"
 #include "checkBoundaryFacesSharingTwoEdges.H"
 #include "triSurfaceMetaData.H"
 #include "polyMeshGenGeometryModification.H"
@@ -171,6 +172,8 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     // Capture BL/no-BL transition edge points (boundary-point indices)
     // for handoff to post-BL mapper instances
     blNoBlEdgePoints_ = bl.blNoBlEdgePoints();
+    blNeutralEdgePoints_ = bl.blNeutralEdgePoints();
+    blNeutralPointPatch_ = bl.blNeutralPointPatch();
     blNoBlPointPatch_ = bl.blNoBlPointPatch();
     Info << "BL/no-BL edge points captured for mapper exclusion: "
          << blNoBlEdgePoints_.size() << endl;
@@ -325,8 +328,38 @@ void cartesianMeshGenerator::generateMesh()
                 blDetect.detectBLNoBlTransitionEdges();
                 blNoBlEdgePoints_ = blDetect.blNoBlEdgePoints();
                 blNoBlPointPatch_ = blDetect.blNoBlPointPatch();
+                blNeutralEdgePoints_ = blDetect.blNeutralEdgePoints();
+                blNeutralPointPatch_ = blDetect.blNeutralPointPatch();
                 Info << "Edge extraction: BL/no-BL interface points protected: "
                      << blNoBlEdgePoints_.size() << endl;
+                Info << "Edge extraction: BL/neutral interface points detected: "
+                     << blNeutralEdgePoints_.size() << endl;
+
+                // Write BL/neutral edge points to VTK for spatial verification
+                if( blNeutralEdgePoints_.size() > 0 )
+                {
+                    const meshSurfaceEngine mseVtk(mesh_);
+                    const labelList& bPts = mseVtk.boundaryPoints();
+                    const pointFieldPMG& allPts = mesh_.points();
+                    const label nNeutral = blNeutralEdgePoints_.size();
+                    OFstream osVtk("blNeutralEdgePoints_predetect.vtk");
+                    osVtk << "# vtk DataFile Version 2.0\n";
+                    osVtk << "blNeutralEdgePoints\n";
+                    osVtk << "ASCII\n";
+                    osVtk << "DATASET POLYDATA\n";
+                    osVtk << "POINTS " << nNeutral << " float\n";
+                    forAll(bPts, bpI)
+                    {
+                        if( !blNeutralEdgePoints_.found(bpI) ) continue;
+                        const point& p = allPts[bPts[bpI]];
+                        osVtk << p.x() << " " << p.y() << " " << p.z() << "\n";
+                    }
+                    osVtk << "VERTICES " << nNeutral << " " << 2*nNeutral << "\n";
+                    for(label k=0; k<nNeutral; ++k)
+                        osVtk << "1 " << k << "\n";
+                    Info << "Wrote " << nNeutral
+                         << " blNeutralEdgePoints to blNeutralEdgePoints_predetect.vtk" << endl;
+                }
             }
 
             mapEdgesAndCorners();
@@ -343,6 +376,11 @@ void cartesianMeshGenerator::generateMesh()
                 {
                     mapper.setProtectedPoints(blNoBlEdgePoints_);
                     mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
+                if( !blNeutralEdgePoints_.empty() )
+                {
+                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
+                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
                 }
                 const labelHashSet& corners = mPart.corners();
                 labelLongList cornerPts;
@@ -392,6 +430,11 @@ void cartesianMeshGenerator::generateMesh()
                 {
                     mapper.setProtectedPoints(blNoBlEdgePoints_);
                     mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
+                if( !blNeutralEdgePoints_.empty() )
+                {
+                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
+                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
                 }
                 const labelHashSet& edgePoints = mPart.edgePoints();
                 const labelHashSet& corners = mPart.corners();
@@ -457,6 +500,11 @@ void cartesianMeshGenerator::generateMesh()
                 {
                     mapper.setProtectedPoints(blNoBlEdgePoints_);
                     mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
+                if( !blNeutralEdgePoints_.empty() )
+                {
+                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
+                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
                 }
                 const labelList& bPoints = mse.boundaryPoints();
                 boolList isBLPoint(mesh_.points().size(), false);

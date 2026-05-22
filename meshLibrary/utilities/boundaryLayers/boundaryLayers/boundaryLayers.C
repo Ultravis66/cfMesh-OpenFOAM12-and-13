@@ -591,6 +591,10 @@ boundaryLayers::boundaryLayers
 
     // Per-patch nLayers: 0 means no BL (termination patch)
     nLayersForPatch_.setSize(boundaries.size(), 0);
+    // Patch role: 0=BL, 1=TERMINATION, 2=NEUTRAL
+    // Default: all nLayers==0 patches start as TERMINATION
+    // User can override with terminationPatches / neutralPatches in meshDict
+    patchRole_.setSize(boundaries.size(), 2); // default NEUTRAL
     if( meshDict.isDict("boundaryLayers") )
     {
         const dictionary& bndLayers = meshDict.subDict("boundaryLayers");
@@ -632,6 +636,44 @@ boundaryLayers::boundaryLayers
                 }
             }
         }
+
+        // Assign patch roles after all nLayers are set
+        // BL patches: nLayers > 0
+        // Termination patches: explicitly listed in terminationPatches
+        // Neutral patches: everything else (periodic, symmetry, etc)
+        wordList terminationPatchNames;
+        if( bndLayers.found("terminationPatches") )
+            terminationPatchNames = wordList(bndLayers.lookup("terminationPatches"));
+
+        forAll(boundaries, patchI)
+        {
+            if( nLayersForPatch_[patchI] > 0 )
+            {
+                patchRole_[patchI] = 0; // BL_PATCH
+            }
+            else
+            {
+                // Check if explicitly listed as termination
+                bool isTermination = false;
+                forAll(terminationPatchNames, tI)
+                    if( terminationPatchNames[tI] == boundaries[patchI].patchName() )
+                    { isTermination = true; break; }
+                patchRole_[patchI] = isTermination ? 1 : 2; // TERMINATION or NEUTRAL
+            }
+        }
+
+        // Report patch role assignment
+        label nBLR=0, nTermR=0, nNeutR=0;
+        forAll(boundaries, patchI)
+        {
+            if( patchRole_[patchI] == 0 ) ++nBLR;
+            else if( patchRole_[patchI] == 1 ) ++nTermR;
+            else ++nNeutR;
+        }
+        Info << "Patch role assignment: "
+             << nBLR << " BL, "
+             << nTermR << " termination, "
+             << nNeutR << " neutral" << endl;
     }
 }
 
@@ -691,6 +733,8 @@ void boundaryLayers::detectBLNoBlTransitionEdges() const
     blNoBlEdges_.clear();
     blNoBlEdgePoints_.clear();
     blNoBlPointPatch_.clear();
+    blNeutralEdgePoints_.clear();
+    blNeutralPointPatch_.clear();
 
     forAll(edges, eI)
     {
@@ -732,9 +776,50 @@ void boundaryLayers::detectBLNoBlTransitionEdges() const
         }
     }
 
+    // Detect BL/neutral edge points: two-patch points where
+    // one patch is BL and the other is neutral (periodic/symmetry).
+    // These are NOT termination points but need special handling
+    // to prevent BL extrusion across the neutral boundary.
+    forAll(edges, eI)
+    {
+        if( edgeFaces.sizeOfRow(eI) != 2 ) continue;
+        const label fA = edgeFaces(eI, 0);
+        const label fB = edgeFaces(eI, 1);
+        if( fA < 0 || fA >= boundaryFacePatches.size() ) continue;
+        if( fB < 0 || fB >= boundaryFacePatches.size() ) continue;
+        const label pA = boundaryFacePatches[fA];
+        const label pB = boundaryFacePatches[fB];
+        if( pA < 0 || pA >= label(isBLPatch.size()) ) continue;
+        if( pB < 0 || pB >= label(isBLPatch.size()) ) continue;
+        if( pA == pB ) continue;
+        const bool blA = isBLPatch[pA];
+        const bool blB = isBLPatch[pB];
+        // One BL, one no-BL
+        if( !((blA && !blB) || (!blA && blB)) ) continue;
+        // Check role: neutral = patchRole 2
+        const label noBlPatch = blA ? pB : pA;
+        if( patchRole_.size() > 0
+         && noBlPatch < label(patchRole_.size())
+         && patchRole_[noBlPatch] != 2 ) continue; // not neutral
+        const edge& e = edges[eI];
+        for( label ei = 0; ei < 2; ++ei )
+        {
+            const label gp = (ei==0) ? e[0] : e[1];
+            Map<label>::const_iterator it = globalToBP.find(gp);
+            if( it == globalToBP.end() ) continue;
+            const label bpI = it();
+            blNeutralEdgePoints_.insert(bpI);
+            if( !blNeutralPointPatch_.found(bpI) )
+                blNeutralPointPatch_.insert(bpI, blA ? pA : pB);
+        }
+    }
+
     Info << "BL/no-BL transition edge pre-detection: "
          << blNoBlEdges_.size() << " transition edges, "
          << blNoBlEdgePoints_.size() << " interface points" << endl;
+    Info << "BL/neutral edge points detected: "
+         << blNeutralEdgePoints_.size()
+         << " (blade/periodic-style junctions)" << endl;
 }
 
 void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
@@ -890,6 +975,96 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
          << " nPts3=" << nPts3
          << " nPts4plus=" << nPts4plus
          << " suppressed=" << nTriple << endl;
+
+    // Topology-aware scale assignment:
+    // Upgrade transition point suppression based on point topology class.
+    // Corner points (3+ patches) at BL/no-BL transitions are geometrically
+    // overconstrained — full suppress regardless of angle.
+    // Two-patch edge points get full suppress only if patch angle is sharp.
+    {
+        const scalar cosSharp = Foam::cos(scalar(75.0) * M_PI / 180.0);
+        label nCornerSuppressed = 0;
+        label nEdgeSuppressed = 0;
+        // Diagnostic histogram of patch normal dot products
+        label nDotNeg = 0, nDot0to05 = 0, nDot05to07 = 0, nDot07plus = 0;
+        forAll(bPoints, bpI)
+        {
+            if( !zeroPts[bpI] ) continue;
+            if( layerScale_[bpI] <= 0.0 ) continue;
+            // Count unique patches at this point
+            DynList<label> ptPatchList;
+            label nBLPt = 0, nTermPt = 0, nNeutPt = 0;
+            forAllRow(pPatches, bpI, pI)
+            {
+                const label patchI = pPatches(bpI, pI);
+                if( patchI < 0 || patchI >= label(patchNames_.size()) ) continue;
+                if( ptPatchList.contains(patchI) ) continue;
+                ptPatchList.append(patchI);
+                const label role = patchRole_[patchI];
+                if( role == 0 ) ++nBLPt;
+                else if( role == 1 ) ++nTermPt;
+                else ++nNeutPt;
+            }
+            const label nPt = ptPatchList.size();
+            // Corner: 3+ patches with BL + explicit termination — full suppress
+            // Neutral patches (periodic etc) do not trigger suppression
+            if( nPt >= 3 && nBLPt >= 1 && nTermPt >= 1 )
+            {
+                layerScale_[bpI] = 0.0;
+                ++nCornerSuppressed;
+                continue;
+            }
+            // Two-patch edge: suppress only if BL meets explicit termination
+            // patch at sharp angle. Neutral patches never trigger suppression.
+            if( nPt == 2 && nBLPt >= 1 && nTermPt >= 1
+             && blNoBlEdgePoints_.found(bpI) )
+            {
+                // Compute normals for the two patches
+                const VRWGraph& ptFaces2 = mse.pointFaces();
+                DynList<vector> patchNormals;
+                forAll(ptPatchList, pi)
+                {
+                    vector n = vector::zero;
+                    label nf = 0;
+                    forAllRow(ptFaces2, bpI, pfI)
+                    {
+                        const label faceI = ptFaces2(bpI, pfI);
+                        if( boundaryFacePatches[faceI] != ptPatchList[pi] ) continue;
+                        const face& f = bFaces[faceI];
+                        vector fn = vector::zero;
+                        const point& fp0 = points[f[0]];
+                        for(label fi=1; fi<f.size()-1; ++fi)
+                            fn += (points[f[fi]]-fp0)^(points[f[fi+1]]-fp0);
+                        if( mag(fn) > VSMALL ) { n += fn/mag(fn); ++nf; }
+                    }
+                    if( nf > 0 ) n /= scalar(nf);
+                    if( mag(n) > VSMALL ) n /= mag(n);
+                    patchNormals.append(n);
+                }
+                if( patchNormals.size() == 2 )
+                {
+                    const scalar dotProd = patchNormals[0] & patchNormals[1];
+                    if( dotProd < 0 ) ++nDotNeg;
+                    else if( dotProd < 0.5 ) ++nDot0to05;
+                    else if( dotProd < 0.707 ) ++nDot05to07;
+                    else ++nDot07plus;
+                    if( dotProd < cosSharp )
+                    {
+                        layerScale_[bpI] = 0.0;
+                        ++nEdgeSuppressed;
+                    }
+                }
+            }
+        }
+        Info << "Topology-aware BL suppression: "
+             << nCornerSuppressed << " corner points fully suppressed, "
+             << nEdgeSuppressed << " sharp edge points fully suppressed" << endl;
+        Info << "Normal dot-product histogram: "
+             << "dot<0: " << nDotNeg
+             << " 0-0.5: " << nDot0to05
+             << " 0.5-0.707: " << nDot05to07
+             << " >0.707: " << nDot07plus << endl;
+    }
 
     // BL/BL sharp-junction suppression:
     // Points touching 2+ BL patches where normals diverge sharply
