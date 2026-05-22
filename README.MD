@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-> **USABLE BETA** — active development on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
+> **v0.7.1 USABLE BETA** — active development... on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
 
 A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
@@ -214,7 +214,7 @@ Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are 
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
 
-### Two-pass candidate quality rollback (experimental infrastructure)
+### new 3-gate rollback in development
 Initial infrastructure exists for detecting degenerate layer-cell candidates and reducing local layer complexity, but the detection/rollback policy is still under development:
 - `mixedDisplacementFaces_` member on `boundaryLayers`
 - `forceSingleLayerFaces_` + `forceSingleLayerAtFaces()` on `refineBoundaryLayers`
@@ -222,36 +222,75 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issues
+**Residual OMP nondeterminism** — Run-to-run variance from dynamic OMP scheduling in base cfMesh BL generation pipeline. Skewness stable at 9.3–9.5 on good runs. Being addressed incrementally.
 
-**Residual OMP nondeterminism** — Run-to-run variance in mesh quality metrics (non-ortho errors, severely non-ortho face count) due to dynamic OMP scheduling in base cfMesh projection passes. Skewness is now stable (9.3–9.5). Non-ortho errors vary 0–1 typical. Being addressed incrementally by making projection passes fully deterministic.
+**Blade/periodic corner jank** — Small cluster of visually rough cells at blade trailing/leading edge + periodic + inlet/outlet 3-way corners. Geometric singularity — the 3-gate post-refinement rollback is in development to address this.
 
-**Residual spikes at blade_4/periodic junction** — Small cluster of cells at the blade trailing edge / periodic boundary intersection still show elevated non-orthogonality. Root cause: points near this junction are reverted by the validity checker during projection and cannot be fully repaired in one pass. Targeted repair pass reduces but does not eliminate this.
-
-**BL/no-BL interface protrusions** — BL prism cells extrude through adjacent no-BL patch surfaces at corner junctions. Fix in progress: clamp extrusion normals at `blNoBlEdgePoints_` to BL-side faces only.
-
-**2 high-aspect-ratio cells at blade-endwall junctions** — Machine epsilon volume at geometric singularity. Planned fix: wedge/pyramid topology emission at sharp BL/BL junctions.
+**BL/BL feature-edge rounding** — Blade/hub and blade/shroud feature curves can be slightly rounded by the surface smoother. Fix in progress: feature-curve locking during smooth passes.
 
 > **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
 ---
-## Mesh quality on NASA Rotor 37 (v0.5)
+## What's new in v0.7.1
 
+### Patch-role classification system
+Patches are now classified into three roles driven by meshDict:
+- `BL_PATCH` — wall patches with active boundary layers
+- `TERMINATION_PATCH` — inlet/outlet (explicit via `terminationPatches`)  
+- `NEUTRAL_PATCH` — periodic/symmetry (no BL suppression triggered)
+
+```
+boundaryLayers
+{
+    terminationPatches (inlet outlet);
+    ...
+}
+```
+
+### BL/neutral edge constraint (v0.7)
+Blade/periodic junction points — where a BL wall patch meets a periodic/symmetry patch — are now fully constrained:
+- **Projection**: locked to BL-side patch only via `findNearestSurfacePointInRegion`
+- **Extrusion normal**: recomputed from BL-side faces only, preventing tilt toward periodic plane
+- **Crossing clamp**: extruded points that cross the periodic plane are clamped back to surface
+- **VTK diagnostic**: `blNeutralEdgePoints_predetect.vtk` written per run for ParaView inspection
+
+### Topology-aware BL suppression
+Corner points (3+ patches) at BL/termination junctions are fully suppressed (`layerScale_ = 0.0`). Sharp two-patch BL/termination edges are suppressed based on patch normal angle (75° default threshold). Periodic/neutral patches never trigger suppression regardless of angle.
+
+### Partial deterministic optimizer (v0.6)
+8 race-sensitive OMP loops in the surface and mesh optimizer serialized. Reduces worst-case skewness spikes. 3 loops with weaker nondeterminism signals remain parallel for performance.
+
+---
+## Mesh quality on NASA Rotor 37 (v0.7.1)
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
-Results shown as typical range across runs — residual variance from base cfMesh OMP scheduling.
 
-| Metric | v0.5 typical | Original cfMesh |
-|--------|-------------|-----------------|
-| Cells | ~2.1M | ~2.1M |
-| Average non-orthogonality | 10.6° | 10.5° |
-| Max non-orthogonality | 90–100° | 147° |
-| Non-orthogonality errors | 0–1 | 1+ |
-| Negative volume cells | 0–2 | 5–7 |
-| Bad pyramid faces | 1–9 | 13–32 |
-| Max skewness | 9.3–9.5 | 15.6+ |
-| Severely non-ortho faces (>70°) | 1,800–2,100 | 2,058 |
-| High aspect ratio cells | 3–5 | 13 |
-| Runtime | ~75–100s | ~75s |
-| Visible surface protrusions | Significantly reduced | Severe at patch junctions |
+| Metric | v0.7.1 best case | v0.5 typical | Original cfMesh |
+|--------|-----------------|-------------|-----------------|
+| Cells | ~2.1M | ~2.1M | ~2.1M |
+| Average non-orthogonality | 10.6° | 10.6° | 10.5° |
+| Max non-orthogonality | 90–100° | 90–100° | 147° |
+| Non-ortho errors | 0 | 0–1 | 1+ |
+| Negative volume cells | 0 | 0–2 | 5–7 |
+| Bad pyramid faces | 1 | 1–9 | 13–32 |
+| Max skewness | 9.33 | 9.3–9.5 | 15.6+ |
+| Severely non-ortho faces (>70°) | ~1,800 | 1,800–2,100 | 2,058 |
+| Runtime | ~110–130s | ~75–100s | ~75s |
+| Blade/periodic protrusions | Significantly reduced | Significant | Severe |
+
+---
+
+## Version history
+
+| Tag | Branch | Description |
+|-----|--------|-------------|
+| `v0.7.1` | `feature/bl-transition-topology` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
+| `v0.7` | `feature/bl-transition-topology` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
+| `v0.6` | `feature/deterministic-optimizer` | Partial deterministic optimizer — 8 unsafe OMP loops serialized |
+| `v0.5` | `openfoam13` | Pure quality evaluator, thread-safe, tight skewness variance |
+| `v0.4` | `openfoam13` | Targeted repair of validity-rejected points |
+| `v0.35` | `openfoam13` | VTK diagnostics for validity-rejected points |
+| `v0.2` | `openfoam13` | Skewness proxy in quality evaluator |
+| `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
 
 ---
 ## Running the regression test
