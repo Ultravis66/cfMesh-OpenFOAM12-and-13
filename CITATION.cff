@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: "cfMesh-OpenFOAM13"
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+authors:
+  - family-names: Stolk
+    given-names: Mitchell
+year: 2026
+license: GPL-3.0-only
+repository-code: "https://github.com/Ultravis66/cfMesh-OpenFOAM13"
+abstract: "OpenFOAM 13 compatibility and robustness-focused fork of cfMesh, including build fixes and topology-aware boundary-layer meshing improvements."
