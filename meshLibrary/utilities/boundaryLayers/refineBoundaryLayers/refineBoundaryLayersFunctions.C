@@ -311,8 +311,79 @@ bool refineBoundaryLayers::analyseLayers()
         }
     }
 
-    // forceSingleLayerAtFaces: disabled pending two-pass quality rollback
-    // Architecture preserved - see feature/candidate-layer-quality-rollback
+    // BL/BL junction ramp: faces touching sharp junction points get
+    // reduced layer count to prevent degenerate cells at blade/hub/shroud.
+    // Ring 0 (junction face)    -> 1 layer
+    // Ring 1 (neighbor face)    -> max 2 layers
+    // Ring 2+ resumes full nLayers
+    if( blblJunctionPoints_.size() > 0 )
+    {
+        const meshSurfaceEngine& mseLoc = surfaceEngine();
+        const VRWGraph& ptFaces = mseLoc.pointFaces();
+
+        // Build mesh-point to boundary-point map
+        labelList meshToBnd(mesh_.points().size(), -1);
+        const labelList& bPts = mseLoc.boundaryPoints();
+        forAll(bPts, bpI)
+            meshToBnd[bPts[bpI]] = bpI;
+
+        // Ring 0: faces directly touching junction points -> 1 layer
+        // Only reduce faces that already have more than 1 layer
+        boolList ring0face(nLayersAtBndFace_.size(), false);
+        forAllConstIter(labelHashSet, blblJunctionPoints_, it)
+        {
+            const label bpI = it.key();
+            if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+            forAllRow(ptFaces, bpI, pfI)
+            {
+                const label bfI = ptFaces(bpI, pfI);
+                if( bfI < 0 || bfI >= label(nLayersAtBndFace_.size()) ) continue;
+                if( nLayersAtBndFace_[bfI] > 1 )
+                {
+                    ring0face[bfI] = true;
+                    nLayersAtBndFace_[bfI] = 1;
+                }
+            }
+        }
+
+        // Ring 1: faces sharing a point with ring0 faces -> max 2 layers
+        // Only reduce faces that already have more than 2 layers
+        const faceList::subList& bFacesLoc = mseLoc.boundaryFaces();
+        boolList ring1face(nLayersAtBndFace_.size(), false);
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            if( !ring0face[bfI] ) continue;
+            const face& f = bFacesLoc[bfI];
+            forAll(f, pI)
+            {
+                const label meshPtI = f[pI];
+                if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+                const label bpI = meshToBnd[meshPtI];
+                if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+                forAllRow(ptFaces, bpI, pfI)
+                {
+                    const label nbfI = ptFaces(bpI, pfI);
+                    if( nbfI < 0 || nbfI >= label(nLayersAtBndFace_.size()) ) continue;
+                    if( ring0face[nbfI] ) continue;
+                    if( nLayersAtBndFace_[nbfI] > 2 )
+                    {
+                        ring1face[nbfI] = true;
+                        nLayersAtBndFace_[nbfI] = 2;
+                    }
+                }
+            }
+        }
+
+        label nRing0 = 0, nRing1 = 0;
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            if( ring0face[bfI] ) ++nRing0;
+            else if( ring1face[bfI] ) ++nRing1;
+        }
+        Info << "BL/BL junction ramp: ring0=" << nRing0
+             << " faces forced to 1 layer, ring1=" << nRing1
+             << " faces capped at 2 layers" << endl;
+    }
 
     # ifdef DEBUGLayer
     forAll(nLayersAtBndFace_, bfI)
