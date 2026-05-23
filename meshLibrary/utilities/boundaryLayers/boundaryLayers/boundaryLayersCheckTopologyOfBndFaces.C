@@ -106,7 +106,7 @@ void boundaryLayers::checkTopologyOfBoundaryFaces(const labelList& patchLabels)
                 continue;
 
             //- find patches of neighbour faces
-            labelList neiPatches(bf.size());
+            labelList neiPatches(bf.size(), fPatch);  // default to own patch
             forAll(bf, eI)
             {
                 const label beI = faceEdges(bfI, eI);
@@ -119,7 +119,9 @@ void boundaryLayers::checkTopologyOfBoundaryFaces(const labelList& patchLabels)
 
                     neiPatches[eI] = facePatches[neiFace];
                 }
-                else if( edgeFaces.sizeOfRow(beI) == 1 )
+                else if( edgeFaces.sizeOfRow(beI) == 1
+                      && Pstream::parRun()
+                      && otherProcPatch.found(beI) )
                 {
                     //- edge is at a parallel boundary
                     neiPatches[eI] = otherProcPatch[beI];
@@ -134,6 +136,7 @@ void boundaryLayers::checkTopologyOfBoundaryFaces(const labelList& patchLabels)
                 if( neiPatches[eI] == fPatch )
                     continue;
 
+                if( neiPatches[eI] < 0 ) continue;
                 std::pair<label, label> pp
                 (
                     Foam::min(fPatch, neiPatches[eI]),
@@ -262,14 +265,15 @@ void boundaryLayers::checkTopologyOfBoundaryFaces(const labelList& patchLabels)
 
     if( nDecomposed != 0 )
     {
-        FatalError << "Critical. Not tested" << exit(FatalError);
-        decomposeCells dc(mesh_);
-        dc.decomposeMesh(decomposeCell);
-
-        clearOut();
+        FatalErrorIn
+        (
+            "void boundaryLayers::checkTopologyOfBoundaryFaces"
+            "(const labelList&)"
+        ) << "Boundary face topology decomposition requested for "
+          << nDecomposed << " faces, but cell decomposition path "
+          << "is not validated. Cannot continue safely."
+          << exit(FatalError);
     }
-
-    mesh_.write();
     Info << "Finished checking topology" << endl;
 }
 

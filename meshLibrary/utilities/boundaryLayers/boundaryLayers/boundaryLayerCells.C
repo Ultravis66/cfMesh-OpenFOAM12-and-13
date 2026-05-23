@@ -258,14 +258,18 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         //- check if the edge is a feature edge
         const label patchI = boundaryFacePatches[edgeFaces(edgeI, 0)];
 
-        label patchJ;
-        if( otherProcPatchPtr && otherProcPatchPtr->found(edgeI) )
+        label patchJ(-1);
+        if( Pstream::parRun() && otherProcPatchPtr && otherProcPatchPtr->found(edgeI) )
         {
             patchJ = otherProcPatchPtr->operator[](edgeI);
         }
-        else
+        else if( edgeFaces.sizeOfRow(edgeI) >= 2 )
         {
             patchJ = boundaryFacePatches[edgeFaces(edgeI, 1)];
+        }
+        else
+        {
+            continue;  // guard: single-face edge with no parallel info
         }
 
         if( patchI == patchJ )
@@ -308,6 +312,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
         //- check if face 5 is a boundary face or at an inter-processor boundary
         const label bps = bp[e.start()];
+        if( bps < 0 ) continue;  // guard: invalid boundary point
         label unusedPatch(-1);
         forAllRow(pointPatches, bps, i)
         {
@@ -342,6 +347,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
         //- check if face 4 is a boundary face or at an inter-processor boundary
         const label bpe = bp[e.end()];
+        if( bpe < 0 ) continue;  // guard: invalid boundary point
         unusedPatch = -1;
         forAllRow(pointPatches, bpe, i)
         {
@@ -819,7 +825,9 @@ void boundaryLayers::createNewFacesFromPointsParallel
                 )
                 {
                     //- found the processor containing other face
-                    otherFaceProc[pointOfOriginToFaceLabel[lpp]] = iter->first;
+                    auto fIt = pointOfOriginToFaceLabel.find(lpp);
+                    if( fIt != pointOfOriginToFaceLabel.end() )
+                        otherFaceProc[fIt->second] = iter->first;
                 }
             }
         }
