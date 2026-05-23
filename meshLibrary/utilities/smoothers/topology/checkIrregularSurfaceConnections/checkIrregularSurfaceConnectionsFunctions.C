@@ -77,10 +77,9 @@ bool checkIrregularSurfaceConnections::checkAndFixCellGroupsAtBndVertices
     label nBadVertices(0);
     DynList<label> frontCells;
 
+    // Serial loop: removeConnections path mutates shared faces/points;
+    // nondeterministic OMP ordering causes topology corruption
     const label size = bPoints.size();
-    # ifdef USE_OMP
-    # pragma omp parallel for private(frontCells) schedule(dynamic, 1000)
-    # endif
     for(label bpI=0;bpI<size;++bpI)
     {
         if( parallelBndNode[bpI] )
@@ -206,7 +205,10 @@ bool checkIrregularSurfaceConnections::checkAndFixCellGroupsAtBndVertices
                 if( f[pI] >= origNumVertices )
                     continue;
 
-                bpIter = dualEdgesForPoint.find(bp[f[pI]]);
+                const label bpFP = bp[f[pI]];
+                if( bpFP < 0 )
+                    continue;
+                bpIter = dualEdgesForPoint.find(bpFP);
                 if( bpIter != dualEdgesForPoint.end() )
                 {
                     const label cOwn = globalCellLabel[owner[faceI]];
@@ -316,9 +318,17 @@ bool checkIrregularSurfaceConnections::checkAndFixCellGroupsAtBndVertices
         label counter = 0;
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label gp = receivedData[counter++];
             const label nEdges = receivedData[counter++];
 
+            if( !globalToLocal.found(gp) )
+            {
+                // consume packet before skipping
+                counter += 2 * nEdges;
+                continue;
+            }
+
+            const label bpI = globalToLocal[gp];
             for(label i=0;i<nEdges;++i)
             {
                 const label s = receivedData[counter++];
@@ -580,10 +590,16 @@ bool checkIrregularSurfaceConnections::checkEdgeFaceConnections
                         const label edgeI = pointEdges(bpI, peI);
                         if( (edges[edgeI] == e) && badEdges.found(edgeI) )
                         {
-                            removeCell[owner[faceI]] = true;
-                            if( neighbour[faceI] < 0 )
-                                continue;
-                            removeCell[neighbour[faceI]] = true;
+                            const label own = owner[faceI];
+                            if( own >= 0 && own < label(removeCell.size()) )
+                                removeCell[own] = true;
+
+                            if( faceI < label(neighbour.size()) )
+                            {
+                                const label nei = neighbour[faceI];
+                                if( nei >= 0 && nei < label(removeCell.size()) )
+                                    removeCell[nei] = true;
+                            }
                         }
                     }
                 }
@@ -592,6 +608,7 @@ bool checkIrregularSurfaceConnections::checkEdgeFaceConnections
 
         polyMeshGenModifier(mesh_).removeCells(removeCell);
         clearMeshEngine();
+        mesh_.clearAddressingData();
 
         return true;
     }
@@ -769,8 +786,15 @@ bool checkIrregularSurfaceConnections::checkFaceGroupsAtBndVertices
             {
                 const label bpI = bp[e[i]];
 
+                if( bpI < 0 )
+                    continue;
+
+                auto dpIter = dualEdgesForPoint.find(bpI);
+                if( dpIter == dualEdgesForPoint.end() )
+                    continue;
+
                 const label fLocal = globalFaceLabel[edgeFaces(beI, 0)];
-                dualEdgesForPoint[bpI].append(edge(fLabel, fLocal));
+                dpIter->second.append(edge(fLabel, fLocal));
             }
         }
 
@@ -814,8 +838,16 @@ bool checkIrregularSurfaceConnections::checkFaceGroupsAtBndVertices
         counter = 0;
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label gp = receivedData[counter++];
             const label nEdges = receivedData[counter++];
+
+            if( !globalToLocal.found(gp) )
+            {
+                counter += 2 * nEdges;
+                continue;
+            }
+
+            const label bpI = globalToLocal[gp];
             for(label i=0;i<nEdges;++i)
             {
                 const label s = receivedData[counter++];
@@ -924,11 +956,16 @@ bool checkIrregularSurfaceConnections::checkFaceGroupsAtBndVertices
         forAllConstIter(labelHashSet, invalidVertices, it)
         {
             forAllRow(pointCells, it.key(), pcI)
-                removeCell[pointCells(it.key(), pcI)] = true;
+            {
+                const label cellI = pointCells(it.key(), pcI);
+                if( cellI >= 0 && cellI < label(removeCell.size()) )
+                    removeCell[cellI] = true;
+            }
         }
 
         polyMeshGenModifier(mesh_).removeCells(removeCell);
         clearMeshEngine();
+        mesh_.clearAddressingData();
 
         return true;
     }
