@@ -432,9 +432,17 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
                 const scalar h = fn & (fc - cc);
                 // Tolerance based on face area magnitude — dimensionally
                 // consistent with h = fn & (fc - cc) which has area*length units.
-                // mag(fn) is the face area; 1e-6 factor accepts flat-but-valid
-                // faces at tight junctions while rejecting true inversions.
-                const scalar faceScale = Foam::mag(fn) * scalar(1e-6);
+                // Tolerance: volume-scale hybrid.
+                // h = fn & (fc - cc) has area*length scale.
+                // face area * local length as main tolerance,
+                // local-volume floor for very small faces.
+                const scalar localLen =
+                    Foam::sqrt(mappingDistance[i] + VSMALL);
+                const scalar faceScale = Foam::max
+                (
+                    Foam::mag(fn) * localLen * scalar(1e-6),
+                    Foam::pow(localLen, 3) * scalar(1e-12)
+                );
                 if( h <= -faceScale )
                 { validMove = false; break; }
             }
