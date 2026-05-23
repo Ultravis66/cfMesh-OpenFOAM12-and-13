@@ -415,7 +415,21 @@ point boundaryLayers::createNewVertex
             const scalar s1 = (newP - fc) & fn;
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                newP = p;
+                // Bisect extrusion distance — hard clamp to p creates
+                // zero-thickness BL cells and astronomical aspect ratios.
+                scalar localDist = dist;
+                point candidate = newP;
+                for(label attempt=0; attempt<6; ++attempt)
+                {
+                    localDist *= scalar(0.5);
+                    candidate = p - localDist*normal;
+                    const scalar sCand = (candidate - fc) & fn;
+                    if( s0*sCand >= scalar(0) )
+                    {
+                        newP = candidate;
+                        break;
+                    }
+                }
                 break;
             }
         }
@@ -456,8 +470,21 @@ point boundaryLayers::createNewVertex
             // s1 < 0 means extruded point crossed to wrong side
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                // Extruded point crossed no-BL surface — clamp to original
-                newP = p;
+                // Bisect extrusion distance — hard clamp to p creates
+                // zero-thickness BL cells and astronomical aspect ratios.
+                scalar localDist = dist;
+                point candidate = newP;
+                for(label attempt=0; attempt<6; ++attempt)
+                {
+                    localDist *= scalar(0.5);
+                    candidate = p - localDist*normal;
+                    const scalar sCand = (candidate - fc) & fn;
+                    if( s0*sCand >= scalar(0) )
+                    {
+                        newP = candidate;
+                        break;
+                    }
+                }
                 break;
             }
         }

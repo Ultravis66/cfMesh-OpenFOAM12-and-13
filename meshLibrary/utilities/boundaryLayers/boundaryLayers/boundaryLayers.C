@@ -719,10 +719,10 @@ void boundaryLayers::detectBLNoBlTransitionEdges() const
     const edgeList& edges = mse.edges();
     const labelList& bPoints = mse.boundaryPoints();
 
-    // Classify patches from nLayersForPatch_
+    // Classify patches from patchRole_ — single source of truth
     boolList isBLPatch(patchNames_.size(), false);
     forAll(patchNames_, patchI)
-        if( nLayersForPatch_[patchI] > 0 )
+        if( patchI < label(patchRole_.size()) && patchRole_[patchI] == 0 )
             isBLPatch[patchI] = true;
 
     // Build global-to-boundary-point reverse map once, O(N)
