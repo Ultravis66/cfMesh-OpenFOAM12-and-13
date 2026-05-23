@@ -256,16 +256,9 @@ void meshSurfaceOptimizer::smoothLaplacianFC
 
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
 
-    # ifdef USE_OMP
-    # pragma omp parallel num_threads(newPositions.size())
-    # endif
+    // Serial apply: moveBoundaryVertexNoUpdate is not thread-safe
+    forAll(newPositions, threadI)
     {
-        # ifdef USE_OMP
-        const label threadI = omp_get_thread_num();
-        # else
-        const label threadI = 0;
-        # endif
-
         const LongList<labelledPoint>& newPos = newPositions[threadI];
 
         forAll(newPos, i)
@@ -305,9 +298,7 @@ void meshSurfaceOptimizer::smoothSurfaceOptimizer
 
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
 
-    # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 100)
-    # endif
+    // Serial apply: moveBoundaryVertexNoUpdate is not thread-safe
     forAll(newPositions, i)
     {
         const label bpI = selectedPoints[i];
@@ -719,7 +710,8 @@ void meshSurfaceOptimizer::optimizeSurface2D(const label nIterations)
         mesh2DEngine.correctPoints();
 
         //- map boundary edges to the surface
-        mapperPtr->mapVerticesOntoSurfacePatches(activeEdges);
+        if( mapperPtr )
+            mapperPtr->mapVerticesOntoSurfacePatches(activeEdges);
 
         //- update normal, centres, etc, after the surface has been modified
         bMod.updateGeometry(updatePoints);
@@ -748,7 +740,7 @@ void meshSurfaceOptimizer::optimizeSurface2D(const label nIterations)
         mesh2DEngine.correctPoints();
 
         //- update geometrical data due to movement of vertices
-        bMod.updateGeometry();
+        bMod.updateGeometry(movedPoints);
     }
 
     Info << endl;

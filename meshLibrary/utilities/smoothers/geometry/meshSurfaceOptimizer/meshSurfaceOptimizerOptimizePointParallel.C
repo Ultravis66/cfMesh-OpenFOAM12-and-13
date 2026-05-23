@@ -135,6 +135,10 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianParallel
     forAll(receivedData, i)
     {
         const refLabelledPoint& lp = receivedData[i];
+
+        if( !globalToLocal.found(lp.objectLabel()) )
+            continue;
+
         const label bpI = globalToLocal[lp.objectLabel()];
 
         labelledPoint& lpd = localData[bpI];
@@ -152,6 +156,10 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianParallel
 
         //- create new point position
         const labelledPoint& lp = localData[bpI];
+
+        if( lp.pointLabel() <= 0 )
+            continue;
+
         const point newP = lp.coordinates() / lp.pointLabel();
 
         meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
@@ -241,6 +249,8 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianFCParallel
     forAll(receivedData, i)
     {
         const refLabelledPoint& lp = receivedData[i];
+        if( !globalToLocal.found(lp.objectLabel()) )
+            continue;
         const label bpI = globalToLocal[lp.objectLabel()];
 
         labelledPoint& lpd = localData[bpI];
@@ -266,6 +276,13 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianFCParallel
 
         //- create new point position
         const labelledPoint& lp = localData[bpI];
+
+        if( lp.pointLabel() <= 0 )
+        {
+            newPositions[pI] = points[bPoints[bpI]];
+            continue;
+        }
+
         const point newP = lp.coordinates() / lp.pointLabel();
 
         newPositions[pI] = newP;
@@ -328,7 +345,11 @@ void meshSurfaceOptimizer::edgeNodeDisplacementParallel
         {
             const edge& e = edges[bpEdges(bpI, epI)];
             const label pI = bp[e.otherVertex(bPoints[bpI])];
-            if( vertexType_[pI] & (EDGE+CORNER) )
+
+            if( pI < 0 || pI >= label(vertexType_.size()) )
+                continue;
+
+            if( vertexType_[pI] & (EDGE | CORNER) )
             {
                 neiPoints.append
                 (
