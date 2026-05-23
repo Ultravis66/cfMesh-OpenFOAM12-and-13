@@ -55,12 +55,13 @@ label meshOctree::findLeafContainingVertex
         Info << "Vertex " << p << " is not in the initial cube" << endl;
         # endif
 
-        FatalErrorIn
+        WarningIn
         (
             "label meshOctree::findLeafContainingVertex(const point&) const"
-        ) << "Point " << p << " is not inside the initial cube" << endl;
+        ) << "Point " << p
+          << " is not inside the initial cube. Returning -1." << endl;
 
-        throw "Found invalid locations of points";
+        return -1;
 
         return -1;
     }
