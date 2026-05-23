@@ -275,8 +275,7 @@ Blade/periodic junction points — where a BL wall patch meets a periodic/symmet
 Corner points (3+ patches) at BL/termination junctions are fully suppressed (`layerScale_ = 0.0`). Sharp two-patch BL/termination edges are suppressed based on patch normal angle (75° default threshold). Periodic/neutral patches never trigger suppression regardless of angle.
 
 ### Full deterministic optimizer (v0.8)
-All race-sensitive OMP apply loops in the surface and mesh optimizer serialized. Core run-to-run variance eliminated. v0.6 addressed 8 loops; v0.8 completed the remaining apply loops and added divide-by-zero and bounds guards throughout.
-
+All known race-sensitive OMP apply loops in the surface and mesh optimizer have been serialized. Major run-to-run quality spikes have been eliminated on Rotor 37; minor residual variance in severe non-orthogonality counts remains under investigation.
 ---
 ## Mesh quality on NASA Rotor 37 (v0.8)
 
@@ -326,7 +325,7 @@ Expected output:
 cfMesh Rotor 37 Regression Test
 ...
 [ 1/3 ] Running cartesianMesh...
-PASS: cartesianMesh completed in ~75s
+PASS: cartesianMesh completed in ~85–95s
 PASS: Bad faces after untangling: 0 (limit: 10)
 [ 2/3 ] Running checkMesh...
 PASS: Cell count: ~2.0M (baseline: 2100000 +/-10%)
@@ -408,7 +407,7 @@ cd ~/rotor37_mesh
 cartesianMesh 2>&1 | tee mesh.log
 ```
 
-Expected runtime: ~60 seconds on a modern CPU. Watch for: (7950X3d in my case)
+Expected runtime: ~85–95 seconds on a Ryzen 7950X3D / WSL2 test setup.
 ```
 Finished renaming boundary patches
 ```
@@ -448,7 +447,7 @@ This project is licensed under the GNU General Public License v3.0, consistent w
 Original cfMesh authorship and copyright remain with the original cfMesh authors, including Franjo Juretić / Creative Fields.
 This fork includes OpenFOAM 13 compatibility updates, build fixes, and meshing robustness modifications by Mitch Stolk.
 Modifications in this fork Copyright (C) 2026 Mitch Stolk.
-If you use this fork in academic, research, commercial evaluation, or public engineering work, please cite or acknowledge this repository:
+If this fork is useful in academic, research, commercial evaluation, or public engineering work, attribution to this repository is appreciated.
 Mitchell Stolk, cfMesh-OpenFOAM13: OpenFOAM 13 port and robustness-focused fork of cfMesh, 2026.
 
 ## Disclaimer
