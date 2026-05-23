@@ -420,10 +420,10 @@ checkMesh -case ~/rotor37_mesh 2>&1 | grep -E "cells:|average non-orth|Failed|as
 
 Expected output:
 cells:            ~2.1M
-Mesh non-orthogonality Max: ~100 degrees  average: 10.5 degrees
-***High aspect ratio cells found, number of cells 3-5
-***Zero or negative cell volume detected, Number of negative volume cells: 0-2
-Failed 1-3 mesh checks.
+Mesh non-orthogonality Max: ~90 degrees  average: ~9.9 degrees
+***High aspect ratio cells found, number of cells 3
+***Zero or negative cell volume detected, Number of negative volume cells: 1
+Failed 1 mesh checks.
 
 ### 5. Visualize in ParaView
 
