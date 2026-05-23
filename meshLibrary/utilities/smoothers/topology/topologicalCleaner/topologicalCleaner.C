@@ -47,6 +47,7 @@ void topologicalCleaner::decomposeCells()
 
     Foam::decomposeCells dc(mesh_);
     dc.decomposeMesh(decomposeCell_);
+    mesh_.clearAddressingData();
 
 }
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
@@ -83,10 +84,11 @@ bool topologicalCleaner::cleanTopology()
 
     checkNonMappableFaces();
 
-    decomposeCells();
-
+    // Fix: run checkCellGroups BEFORE decomposeCells
     if( checkCellConnectionsOverFaces(mesh_).checkCellGroups() )
         changed_ = true;
+
+    decomposeCells();
 
     return changed_;
 }
