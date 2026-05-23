@@ -283,7 +283,9 @@ void topologicalCleaner::checkInvalidConnectionsForVerticesFaces
 
                 if( numFacesAtEdge[geI] > 2 )
                 {
+                    if( !globalToLocal.found(geI) ) continue;
                     const label edgeI = globalToLocal[geI];
+                    if( edgeI < 0 || edgeI >= label(edgeFaces.size()) ) continue;
                     forAllRow(edgeFaces, edgeI, fI)
                         removeCell[faceOwner[edgeFaces(edgeI, fI)]] = true;
 
@@ -300,6 +302,8 @@ void topologicalCleaner::checkInvalidConnectionsForVerticesFaces
         polyMeshGenModifier(mesh_).removeCells(removeCell);
 
         decomposeCell_.setSize(mesh_.cells().size());
+        mesh_.clearAddressingData();
+        changed_ = true;  // notify cleanTopology()
         decomposeCell_ = false;
     }
 }
