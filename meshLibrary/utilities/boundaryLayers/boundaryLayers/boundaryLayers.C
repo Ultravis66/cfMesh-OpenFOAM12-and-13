@@ -573,7 +573,7 @@ boundaryLayers::boundaryLayers
     layerScaleRing1_(0.25),
     layerScaleRing2_(0.50),
     layerScaleRing3_(0.75),
-    layerScaleRing4_(1.00)
+    layerScaleRing4_(0.90)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -748,13 +748,19 @@ void boundaryLayers::detectBLNoBlTransitionEdges() const
             const label patchI = boundaryFacePatches[faceI];
             if( patchI < 0 || patchI >= label(isBLPatch.size()) )
                 continue;
-            if( isBLPatch[patchI] )
+            if( patchRole_.size() > 0 && patchI < label(patchRole_.size()) )
             {
-                hasBL = true;
-                blPatchI = patchI;
+                if( patchRole_[patchI] == 0 )
+                {
+                    hasBL = true;
+                    blPatchI = patchI;
+                }
+                else if( patchRole_[patchI] == 1 )
+                {
+                    hasNoBL = true;
+                }
+                // patchRole_==2 (neutral) ignored here
             }
-            else
-                hasNoBL = true;
         }
 
         if( !hasBL || !hasNoBL ) continue;
@@ -835,16 +841,21 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     const meshSurfacePartitioner& mPart = surfacePartitioner();
     const VRWGraph& pPatches = mPart.pointPatches();
 
-    // Classify patches: wall patches get BL, others are termination
-    // Classify patches: nLayers==0 => termination (no BL)
-    boolList isBLPatch(patchNames_.size(), true);
+    // Classify patches using patchRole_ — the single source of truth.
+    // patchRole_: 0=BL, 1=TERMINATION, 2=NEUTRAL
+    // Previously derived from nLayersForPatch_==0 which treated neutral
+    // patches (periodic/symmetry) the same as termination (inlet/outlet).
+    // That caused over-suppression at blade/periodic junctions.
+    boolList isBLPatch(patchNames_.size(), false);
     boolList isTerminationPatch(patchNames_.size(), false);
     forAll(patchNames_, patchI)
     {
-        if( nLayersForPatch_[patchI] == 0 )
+        if( patchI < patchRole_.size() )
         {
-            isBLPatch[patchI] = false;
-            isTerminationPatch[patchI] = true;
+            isBLPatch[patchI]          = (patchRole_[patchI] == 0);
+            isTerminationPatch[patchI] = (patchRole_[patchI] == 1);
+            // patchRole_==2 (neutral) is neither BL nor termination
+            // — no suppression triggered at periodic/symmetry junctions
         }
     }
 
@@ -1158,7 +1169,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
         forAll(edges, eI)
         {
-            // Collect all patch IDs adjacent to this edge
+            // Collect all patch IDs adjacent to this edge.
+            // Only BL + explicit TERMINATION edges are suppression edges.
+            // Neutral patches (periodic/symmetry) do not trigger zero BL here.
             bool hasBL   = false;
             bool hasNoBL = false;
             label blPatchI = -1;
@@ -1167,17 +1180,18 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             {
                 const label faceI  = edgeFaces(eI, efI);
                 const label patchI = boundaryFacePatches[faceI];
-                if( patchI < 0 || patchI >= label(nLayersForPatch_.size()) )
+                if( patchI < 0 || patchI >= label(patchRole_.size()) )
                     continue;
-                if( nLayersForPatch_[patchI] > 0 )
+                if( patchRole_[patchI] == 0 )
                 {
                     hasBL = true;
                     blPatchI = patchI;
                 }
-                else
+                else if( patchRole_[patchI] == 1 )
+                {
                     hasNoBL = true;
+                }
             }
-
             if( !hasBL || !hasNoBL ) continue;
 
             blNoBlEdges_.insert(eI);
@@ -1238,7 +1252,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         }
     }
 
-    // Ring 3: neighbors of ring2 on BL patches -> 0.3
+    // Ring 3: neighbors of ring2 on BL patches -> 0.75
     boolList ring3(bPoints.size(), false);
     forAll(bPoints, bpI)
     {
@@ -1254,7 +1268,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         }
     }
 
-    // Ring 4: neighbors of ring3 on BL patches -> 0.6
+    // Ring 4: neighbors of ring3 on BL patches -> 0.90
     boolList ring4(bPoints.size(), false);
     forAll(bPoints, bpI)
     {

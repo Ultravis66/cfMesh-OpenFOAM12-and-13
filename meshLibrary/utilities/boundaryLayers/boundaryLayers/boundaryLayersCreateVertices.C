@@ -413,7 +413,7 @@ point boundaryLayers::createNewVertex
             fc /= scalar(f.size());
             const scalar s0 = (p - fc) & fn;
             const scalar s1 = (newP - fc) & fn;
-            if( s0 > SMALL && s1 < SMALL )
+            if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
                 newP = p;
                 break;
@@ -433,8 +433,8 @@ point boundaryLayers::createNewVertex
         {
             const label faceI = pFaces(bpI, pfI);
             const label patchI = boundaryFacePatches[faceI];
-            if( patchI < 0 || patchI >= patchNames_.size() ) continue;
-            if( nLayersForPatch_[patchI] != 0 ) continue;
+            if( patchI < 0 || patchI >= label(patchRole_.size()) ) continue;
+            if( patchRole_.size() <= label(patchI) || patchRole_[patchI] != 1 ) continue;  // explicit termination only
             const face& f = bFaces[faceI];
             vector fn = vector::zero;
             const point& fp0 = points[f[0]];
@@ -454,7 +454,7 @@ point boundaryLayers::createNewVertex
             // Only clamp if point actually crossed the face plane
             // s0 > 0 means original point is on correct side
             // s1 < 0 means extruded point crossed to wrong side
-            if( s0 > SMALL && s1 < SMALL )
+            if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
                 // Extruded point crossed no-BL surface — clamp to original
                 newP = p;
@@ -462,8 +462,6 @@ point boundaryLayers::createNewVertex
             }
         }
     }
-    return newP;
-
     return newP;
 }
 
@@ -572,9 +570,8 @@ void boundaryLayers::createNewVertices(const boolList& treatPatches)
         for(label iter=0; iter<maxRollbackIter; ++iter)
         {
             label nBad = 0;
-            forAll(procPoints, ppI)
+            forAll(bPoints, bpI)  // Fix: was procPoints (serial no-op)
             {
-                const label bpI = procPoints[ppI];
                 if( !rollbackSet.found(bpI) ) continue;
                 const label meshPtI = bPoints[bpI];
                 const label origPtI = newLabelForVertex_[meshPtI];

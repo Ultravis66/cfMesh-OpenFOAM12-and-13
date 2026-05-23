@@ -114,7 +114,7 @@ void cartesianMeshGenerator::mapMeshToSurface()
     mapper.repairRejectedPoints();
 
     //- snap corner and edge vertices onto feature curves
-    //- prevents mesh protrusion at patch intersection edges
+    //- early pass: stabilizes features before surface optimizer runs
     mapper.mapCornersAndEdges();
 
     //- constrained surface smoothing: redistribute single-patch
@@ -137,7 +137,7 @@ void cartesianMeshGenerator::extractPatches()
 
 void cartesianMeshGenerator::mapEdgesAndCorners()
 {
-    if( !blNoBlEdgePoints_.empty() )
+    if( !blNoBlEdgePoints_.empty() || !blNeutralEdgePoints_.empty() )
     {
         meshSurfaceEdgeExtractorNonTopo
         (
@@ -164,7 +164,6 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     //- add boundary layers
     boundaryLayers bl(mesh_, meshDict_);
     bl.terminateLayersAtConcaveEdges();
-    Info << "DEBUG: terminateLayersAtConcaveEdges called" << endl;
     bl.addLayerForAllPatches();
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
@@ -213,7 +212,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             readBool(meshDict_.lookup("enforceGeometryConstraints"));
     }
 
-    if( true )
     {
         meshSurfaceEngine mse(mesh_);
         meshSurfaceOptimizer surfOpt(mse, *octreePtr_);
@@ -336,7 +334,11 @@ void cartesianMeshGenerator::generateMesh()
                      << blNeutralEdgePoints_.size() << endl;
 
                 // Write BL/neutral edge points to VTK for spatial verification
-                if( blNeutralEdgePoints_.size() > 0 )
+                // Enable with: writeDiagnosticVTK true; in meshDict
+                bool writeDiagVTK = false;
+                if( meshDict_.found("writeDiagnosticVTK") )
+                    writeDiagVTK = Switch(meshDict_.lookup("writeDiagnosticVTK"));
+                if( writeDiagVTK && blNeutralEdgePoints_.size() > 0 )
                 {
                     const meshSurfaceEngine mseVtk(mesh_);
                     const labelList& bPts = mseVtk.boundaryPoints();
@@ -367,34 +369,9 @@ void cartesianMeshGenerator::generateMesh()
             optimiseMeshSurface();
 
 
-            // Step 1: snap corner points first
-            {
-                meshSurfaceEngine mse(mesh_);
-                meshSurfacePartitioner mPart(mse);
-                meshSurfaceMapper mapper(mse, *octreePtr_);
-                if( !blNoBlEdgePoints_.empty() )
-                {
-                    mapper.setProtectedPoints(blNoBlEdgePoints_);
-                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
-                }
-                if( !blNeutralEdgePoints_.empty() )
-                {
-                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
-                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
-                }
-                const labelHashSet& corners = mPart.corners();
-                labelLongList cornerPts;
-                forAllConstIter(labelHashSet, corners, it)
-                    cornerPts.append(it.key());
-                Info << "Ordered snap: snapping "
-                     << cornerPts.size()
-                     << " corner points" << endl;
-                mapper.mapCorners(cornerPts);
-            }
-
             // Step 1: snap corner points first (damped relaxation)
+            // Single pass — full BL/no-BL and BL/neutral protection.
             {
-                // Read relaxation factor from meshDict, default 0.25
                 scalar cornerSnapRelax = 0.25;
                 if( meshDict_.isDict("boundaryLayers") )
                 {
@@ -410,6 +387,16 @@ void cartesianMeshGenerator::generateMesh()
                 meshSurfacePartitioner mPart(mse);
                 meshSurfaceMapper mapper(mse, *octreePtr_);
                 mapper.setCornerSnapRelaxation(cornerSnapRelax);
+                if( !blNoBlEdgePoints_.empty() )
+                {
+                    mapper.setProtectedPoints(blNoBlEdgePoints_);
+                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
+                }
+                if( !blNeutralEdgePoints_.empty() )
+                {
+                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
+                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
+                }
                 const labelHashSet& corners = mPart.corners();
                 labelLongList cornerPts;
                 forAllConstIter(labelHashSet, corners, it)
@@ -564,10 +551,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
     mesh_(time),
     controller_(mesh_)
 {
-    if( true )
-    {
-        checkMeshDict cmd(meshDict_);
-    }
+    checkMeshDict cmd(meshDict_);
 
     fileName surfaceFile = meshDict_.lookup("surfaceFile");
     if( Pstream::parRun() )
@@ -575,15 +559,12 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
 
     surfacePtr_ = new triSurf(db_.path()/surfaceFile);
 
-    if( true )
-    {
-        //- save meta data with the mesh (surface mesh + its topology info)
-        triSurfaceMetaData sMetaData(*surfacePtr_);
-        const dictionary& surfMetaDict = sMetaData.metaData();
+    //- save meta data with the mesh (surface mesh + its topology info)
+    triSurfaceMetaData sMetaData(*surfacePtr_);
+    const dictionary& surfMetaDict = sMetaData.metaData();
 
-        mesh_.metaData().add("surfaceFile", surfaceFile, true);
-        mesh_.metaData().add("surfaceMeta", surfMetaDict, true);
-    }
+    mesh_.metaData().add("surfaceFile", surfaceFile, true);
+    mesh_.metaData().add("surfaceMeta", surfMetaDict, true);
 
     if( surfacePtr_->featureEdges().size() != 0 )
     {
