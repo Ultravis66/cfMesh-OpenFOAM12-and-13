@@ -76,6 +76,10 @@ bool triangulateNonPlanarBaseFaces::findNonPlanarBoundaryFaces()
             minDist = Foam::min(minDist, Foam::mag(c - points[bf[pI]]));
         }
 
+        // Floor to prevent false triggers on sliver/collapsed faces
+        const scalar lengthScale = Foam::max(minDist, VSMALL);
+
+        bool faceInvalid = false;
         forAll(bf, eI)
         {
             triangle<point, point> tri
@@ -93,13 +97,26 @@ bool triangulateNonPlanarBaseFaces::findNonPlanarBoundaryFaces()
             {
                 const scalar d = (points[bf[pI]] - triCentre) & n;
 
-                if( d > tol_ * minDist )
+                // Fix: use mag(d) — original missed negative-side non-planarity
+                if( Foam::mag(d) > tol_ * lengthScale )
                 {
-                    invertedCell_[faceOwner[bfI]] = true;
-
-                    decomposeFace_[nInternalFaces+bfI] = true;
-                    hasInvalid = true;
+                    faceInvalid = true;
+                    break;
                 }
+            }
+            if( faceInvalid ) break;
+        }
+
+        // Write shared arrays outside OMP loop for thread safety
+        if( faceInvalid )
+        {
+            # ifdef USE_OMP
+            # pragma omp critical
+            # endif
+            {
+                invertedCell_[faceOwner[bfI]] = true;
+                decomposeFace_[nInternalFaces+bfI] = true;
+                hasInvalid = true;
             }
         }
     }
