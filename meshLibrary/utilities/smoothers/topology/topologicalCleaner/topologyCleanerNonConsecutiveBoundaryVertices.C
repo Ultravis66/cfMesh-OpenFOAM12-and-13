@@ -59,9 +59,6 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
 
         for(label faceI=start;faceI<end;++faceI)
         {
-            # ifdef USE_OMP
-            # pragma omp task shared(decomposeFace,faces,cells,owner,faceI)
-            # endif
             {
                 const face& bf = faces[faceI];
 
@@ -70,7 +67,9 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
                     << bf << endl;
                 # endif
 
-                const cell& c = cells[owner[faceI]];
+                const label own = owner[faceI];
+                if( own < 0 || own >= label(cells.size()) ) continue;
+                const cell& c = cells[own];
 
                 forAll(c, fI)
                     if(
@@ -86,7 +85,7 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
                             forAll(f, pJ)
                                 if( bf[pI] == f[pJ] )
                                 {
-                                    shN.append(pI);
+                                    shN.appendIfNotIn(pI);
                                 }
 
                         # ifdef DEBUGCleaner
@@ -101,7 +100,7 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
                             # endif
 
                             decomposeFace[faceI] = true;
-                            decomposeCell_[owner[faceI]] = true;
+                            decomposeCell_[own] = true;
                             changed = true;
                         }
                         else if( shN.size() == 2 )
@@ -117,7 +116,7 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
                                 # endif
 
                                 decomposeFace[faceI] = true;
-                                decomposeCell_[owner[faceI]] = true;
+                                decomposeCell_[own] = true;
                                 changed = true;
                             }
                         }
@@ -133,6 +132,7 @@ void topologicalCleaner::checkNonConsecutiveBoundaryVertices()
     {
         changed_ = true;
         decomposeFaces(mesh_).decomposeMeshFaces(decomposeFace);
+        mesh_.clearAddressingData();
     }
 
     Info << "Finished checking for invalid face connections" << endl;
