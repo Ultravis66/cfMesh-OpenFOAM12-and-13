@@ -116,34 +116,9 @@ bool meshSurfaceMapper::proposedMoveIsValid
         { valid = false; break; }
     }
 
-    // Check 4: skewness proxy using candidate position
-    if( valid )
-    {
-        forAllRow(pFaces, bpI, pfI)
-        {
-            const label bfI = pFaces(bpI, pfI);
-            const face& f = bFaces[bfI];
-            point fc2 = point::zero;
-            forAll(f, fpI) fc2 += ptOf(f[fpI]);
-            fc2 /= scalar(f.size());
-            const label cellI = faceOwners[bfI];
-            point cc2 = point::zero;
-            const cell& cll = cells[cellI];
-            forAll(cll, cfI)
-            {
-                const face& cf = allFaces[cll[cfI]];
-                point cfc = point::zero;
-                forAll(cf, cpI) cfc += pts[cf[cpI]];
-                cc2 += cfc / scalar(cf.size());
-            }
-            cc2 /= scalar(cll.size());
-            const scalar d = mag(fc2 - cc2);
-            if( d < VSMALL ) continue;
-            const scalar skewness = mag(fc2 - 0.5*(fc2+cc2)) / d;
-            if( skewness > scalar(4.0) )
-            { valid = false; break; }
-        }
-    }
+    // Check 4 removed: skewness proxy fc2-0.5*(fc2+cc2) always equals
+    // 0.5*(fc2-cc2), giving ratio always 0.5 — never rejected anything.
+    // Rely on movement cap + face area + pyramid height checks above.
 
     return valid;
 }
@@ -329,6 +304,9 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         // Skip BL/no-BL interface points - must stay on feature curve
         if( !protectedPoints_.empty() && protectedPoints_.found(bpI) )
             continue;
+        // Skip BL/neutral points - must stay on BL-side patch
+        if( !blNeutralPoints_.empty() && blNeutralPoints_.found(bpI) )
+            continue;
         if( !corners.found(bpI) )
             FatalErrorIn
             (
@@ -341,6 +319,7 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
 
         //- find the nearest position to the given point patches
         const DynList<label> patches = pPatches[bpI];
+        if( patches.size() == 0 ) continue;  // guard: no patches = no valid snap
 
         point mapPointApprox(p);
         scalar distSqApprox;
@@ -451,15 +430,12 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
                 }
                 cc /= scalar(cll.size());
                 const scalar h = fn & (fc - cc);
-                // Relative threshold: reject only if pyramid height is
-                // meaningfully negative relative to local cell size.
-                // mappingDistance[i] ~ (4 * max edge length)^2 at point.
-                // Tolerance of -1e-6 * sqrt(mappingDistance) matches
-                // commercial mesher behaviour: accepts flat-but-valid
-                // faces at tight concave junctions, rejects true inversions.
-                const scalar localLen =
-                    Foam::sqrt(mappingDistance[i]) * scalar(1e-6);
-                if( h <= -localLen )
+                // Tolerance based on face area magnitude — dimensionally
+                // consistent with h = fn & (fc - cc) which has area*length units.
+                // mag(fn) is the face area; 1e-6 factor accepts flat-but-valid
+                // faces at tight junctions while rejecting true inversions.
+                const scalar faceScale = Foam::mag(fn) * scalar(1e-6);
+                if( h <= -faceScale )
                 { validMove = false; break; }
             }
             if( !validMove )
@@ -535,6 +511,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
 
         //- find patches at this edge point
         const DynList<label> patches = pPatches[bpI];
+        if( patches.size() == 0 ) continue;  // guard: no patches = no valid snap
 
         const scalar maxDist = mappingDistance[i];
 
@@ -628,54 +605,9 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
     mapToSmallestDistance(parallelBndNodes);
 
     // Old validity check replaced by serial pass above
-    if( false )
-    {
-        const VRWGraph& pFaces = surfaceEngine_.pointFaces();
-        const faceList::subList& bFaces = surfaceEngine_.boundaryFaces();
-        const labelList& faceOwners = surfaceEngine_.faceOwners();
-        const pointFieldPMG& pts = surfaceEngine_.points();
-        const cellListPMG& cells = surfaceEngine_.mesh().cells();
-        const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
-        label nReverted = 0;
-        forAll(nodesToMap, i)
-        {
-            const label bpI = nodesToMap[i];
-            bool validMove = true;
-            forAllRow(pFaces, bpI, pfI)
-            {
-                const label bfI = pFaces(bpI, pfI);
-                const face& f = bFaces[bfI];
-                point fc = point::zero;
-                forAll(f, fpI) fc += pts[f[fpI]];
-                fc /= scalar(f.size());
-                vector fn = vector::zero;
-                const point& p0 = pts[f[0]];
-                for(label fpI=1; fpI<f.size()-1; ++fpI)
-                    fn += (pts[f[fpI]]-p0)^(pts[f[fpI+1]]-p0);
-                const label cellI = faceOwners[bfI];
-                point cc = point::zero;
-                const cell& cll = cells[cellI];
-                forAll(cll, cfI)
-                {
-                    const face& cf = allFaces[cll[cfI]];
-                    point cfc = point::zero;
-                    forAll(cf, cpI) cfc += pts[cf[cpI]];
-                    cc += cfc / scalar(cf.size());
-                }
-                cc /= scalar(cll.size());
-                if( (fn & (fc - cc)) <= SMALL )
-                { validMove = false; break; }
-            }
-            if( !validMove )
-            {
-                sMod.moveBoundaryVertexNoUpdate(bpI, oldPositions[i]);
-                ++nReverted;
-            }
-        }
-        if( nReverted > 0 )
-            Info << "[EdgeValidity] reverted " << nReverted
-                 << " invalid edge moves" << endl;
-    }
+    // Old edge validity check removed — edge nodes must reach
+    // feature curves; hard revert inappropriate here.
+    // If bad pyramids persist near feature edges, add bisection.
 
     sMod.updateGeometry(nodesToMap);
 }
