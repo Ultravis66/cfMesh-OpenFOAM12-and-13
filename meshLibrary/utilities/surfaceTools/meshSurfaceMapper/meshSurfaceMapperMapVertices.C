@@ -160,7 +160,10 @@ void meshSurfaceMapper::mapToSmallestDistance(LongList<parMapperHelper>& parN)
         const label bpI = globalToLocal[ph.globalLabel()];
 
         parMapperHelper& phOrig = parN[bpToList[bpI]];
-        if( phOrig.movingDistance() < ph.movingDistance() )
+        // Select the candidate with the SMALLEST moving distance —
+        // was previously reversed (selected largest), causing wrong
+        // projection choices at parallel processor boundaries.
+        if( ph.movingDistance() < phOrig.movingDistance() )
         {
             surfModifier.moveBoundaryVertexNoUpdate(bpI, ph.coordinates());
             phOrig = ph;
@@ -944,16 +947,15 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         }
         else
         {
-            const label projPatch =
-                (protIt != protectedPointPatches_.end() && protIt() >= 0)
-                ? protIt()
-                : pointPatches(bpI, 0);
+            // Generic single-patch projection
+            // Guard: non-manifold points may have zero patch rows
+            if( pointPatches.sizeOfRow(bpI) == 0 ) continue;
             meshOctree_.findNearestSurfacePointInRegion
             (
                 mapPoint,
                 dSq,
                 nt,
-                projPatch,
+                pointPatches(bpI, 0),
                 p
             );
         }
