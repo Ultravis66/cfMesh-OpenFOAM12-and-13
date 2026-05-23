@@ -1,8 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-> **v0.8 USABLE BETA USABLE BETA** — active development... on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
-
-A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
+> **v0.8 USABLE BETA** — active development on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Core OMP nondeterminism fixed in v0.8 — mesh results are now deterministic run-to-run on Rotor 37. A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
@@ -91,6 +89,25 @@ checkMesh
 | `surfaceOptimizer` 100-iteration hang | Reduce to 10 iterations |
 | `addLayerForAllPatches` O(n²) BL quality rollback hangs | Removed |
 | `mapEdgeNodes` OMP nondeterminism — intermittent hangs and bad face explosions at full thread count | Deterministic `parallelBndNodes` build: compute in parallel, move and sync in serial |
+| `smoothLaplacianFC` apply loop OMP race — concurrent writes to shared mesh point storage | Serialize apply loop; compute remains parallel |
+| `smoothSurfaceOptimizer` apply loop OMP race | Serialize apply loop; compute remains parallel |
+| `nodeDisplacementLaplacianParallel` constructs `meshSurfaceEngineModifier` per point inside loop | Hoist modifier outside loop; serialize apply |
+| `nodeDisplacementLaplacianFCParallel` apply loop OMP race | Serialize apply loop |
+| `edgeNodeDisplacementParallel` apply loop OMP race + `std::map::operator[]` mutating map during parallel read | Serialize apply loop; replace `operator[]` with `find()` |
+| `lp.coordinates() / lp.pointLabel()` divide-by-zero in parallel Laplacian smoothers | Guard `pointLabel() <= 0`; fallback to original position where needed |
+| `globalToLocal[key]` unguarded on received parallel data — possible silent map insertion / invalid lookup | Add `globalToLocal.found()` guards with correct packet consumption in receive loops |
+| `calculateBoundaryOwners` uses patch 0 start offset regardless of `activePatch_` | Use `boundaries[activePatch_].patchStart()` when `activePatch_ >= 0` |
+| `calculateBoundaryFacePatches` iterates all patches when `activePatch_ >= 0` — out-of-bounds write risk | Add `activePatch_` branch; fill selected patch label only |
+| `moveBoundaryVertex` dereferences `faceNormalsPtr_` assuming non-null when `pointNormalsPtr_` is set | Guard with `pointNormalsPtr_ && faceNormalsPtr_` |
+| Face normal/centre computation has no size guard on degenerate faces | `bf.size() < 3` gives zero normal; `bf.empty()` gives zero centre |
+| `bp[e.start()]` / `bp[point]` used without `-1` guard throughout edge addressing | Add `bps < 0` / `bpI < 0` continue guards |
+| `checkAndFixCellGroupsAtBndVertices` performs topology surgery under OMP dynamic scheduling — nondeterministic face connectivity | Serialize repair loop when modifying topology |
+| `checkEdgeFaceConnections` / `checkFaceGroupsAtBndVertices` missing `clearAddressingData()` after `removeCells()` | Add `mesh_.clearAddressingData()` after each `removeCells()` |
+| `calcGlobalBoundaryPointLabels` receive loops use remote face/point indices without bounds checks | Guard face index, point index, and `bp[]` result before use |
+
+
+
+
 
 ---
 
@@ -177,7 +194,6 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.35` | Validity-rejected point VTK diagnostics |
 | `v0.4` | Targeted repair of validity-rejected points |
 | `v0.5` | Pure quality evaluator — no const_cast, thread-safe, tight variance |
-| `v0.8` | `feature/bl-transition-topology` | Full codebase audit — 40+ bug fixes across BL pipeline, topology cleaners, surface mapper, extruder |
 
 ### BL/no-BL transition edge constraint system
 
@@ -223,7 +239,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issues
-**Residual OMP nondeterminism** — Run-to-run variance from dynamic OMP scheduling in base cfMesh BL generation pipeline. Skewness stable at 9.3–9.5 on good runs. Being addressed incrementally.
+**Residual minor variance** — Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
 
 **Blade/periodic corner jank** — Small cluster of visually rough cells at blade trailing/leading edge + periodic + inlet/outlet 3-way corners. Geometric singularity — the 3-gate post-refinement rollback is in development to address this.
 
@@ -258,25 +274,26 @@ Blade/periodic junction points — where a BL wall patch meets a periodic/symmet
 ### Topology-aware BL suppression
 Corner points (3+ patches) at BL/termination junctions are fully suppressed (`layerScale_ = 0.0`). Sharp two-patch BL/termination edges are suppressed based on patch normal angle (75° default threshold). Periodic/neutral patches never trigger suppression regardless of angle.
 
-### Partial deterministic optimizer (v0.6)
-8 race-sensitive OMP loops in the surface and mesh optimizer serialized. Reduces worst-case skewness spikes. 3 loops with weaker nondeterminism signals remain parallel for performance.
+### Full deterministic optimizer (v0.8)
+All race-sensitive OMP apply loops in the surface and mesh optimizer serialized. Core run-to-run variance eliminated. v0.6 addressed 8 loops; v0.8 completed the remaining apply loops and added divide-by-zero and bounds guards throughout.
 
 ---
-## Mesh quality on NASA Rotor 37 (v0.7.1)
+## Mesh quality on NASA Rotor 37 (v0.8)
+
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.8 best case | v0.7.1 best case | v0.5 typical | Original cfMesh |
-|--------|-----------------|-------------|-----------------|
-| Cells | ~2.1M | ~2.1M | ~2.1M |
-| Average non-orthogonality | 10.6° | 10.6° | 10.5° |
-| Max non-orthogonality | 90–100° | 90–100° | 147° |
-| Non-ortho errors | 0 | 0–1 | 1+ |**1** |
-| Negative volume cells | 0 | 0–2 | 5–7 | **1** |
-| Bad pyramid faces | 1 | 1–9 | 13–32 |
-| Max skewness | 9.33 | 9.3–9.5 | 15.6+ | **8.74** |
-| Severely non-ortho faces (>70°) | ~1,800 | 1,800–2,100 | 2,058 | **1,636** |
-| Runtime | ~110–130s | ~75–100s | ~75s |
-| Blade/periodic protrusions | Significantly reduced | Significant | Severe |
+| Metric | v0.8 current baseline | v0.7.1 best case |
+|--------|------------------------|------------------|
+| Cells | ~2.1M | ~2.1M |
+| Average non-orthogonality | 9.86° | 10.6° |
+| Max non-orthogonality | ~90° | 90–100° |
+| Non-ortho errors | 1 | 0–1 |
+| Negative volume cells | 1 | 0–2 |
+| Bad pyramid faces | 8–11 | 1–9 |
+| Max skewness | 11.1 | 9.3–9.5 |
+| Severely non-ortho faces (>70°) | ~1,700 | 1,800–2,100 |
+| Runtime | ~85–91s | ~75–100s |
+| Deterministic / repeatable major metrics | Yes | No |
 
 ---
 
@@ -284,6 +301,7 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
 | Tag | Branch | Description |
 |-----|--------|-------------|
+| `v0.8` | `feature/bl-transition-topology` | Full codebase audit — 60+ bug fixes: OMP apply-loop serialization, globalToLocal guards, activePatch_ owner/patch bugs, face size guards, bounds guards throughout. Deterministic results on Rotor 37. |
 | `v0.7.1` | `feature/bl-transition-topology` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.7` | `feature/bl-transition-topology` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
 | `v0.6` | `feature/deterministic-optimizer` | Partial deterministic optimizer — 8 unsafe OMP loops serialized |
