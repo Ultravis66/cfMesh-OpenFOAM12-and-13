@@ -1,4 +1,5 @@
 FoamFile
+FoamFile
 {
     version   2.0;
     format    ascii;
@@ -23,16 +24,24 @@ localRefinement
     blade_4 { cellSize 0.0005; }
     hub     { cellSize 0.001; }
     shroud  { cellSize 0.001; }
-    periodic_1 { cellSize 0.001; }
-    periodic_2 { cellSize 0.001; }
+    periodic_1 { cellSize 0.0005; }
+    periodic_2 { cellSize 0.0005; }
 }
 
 boundaryLayers
 {
-    nLayers 5;
+    nLayers 0;
+    terminationPatches (inlet outlet);
 
     // BL/BL sharp feature detection
     blblFeatureAngleDeg 40;
+    cornerSnapRelaxation 0.25;
+    cornerSnapIterations 1;
+    edgeSnapRelaxation 1.0;
+    edgeSnapIterations 1;
+    snapMinPyramidHeight 1e-10;
+    postBLSnap false;
+    postRefineBLOptimisation true;
 
     // BL/no-BL and BL/BL transition ramp
     layerScaleRing1 0.25;
@@ -56,6 +65,8 @@ boundaryLayers
         periodic_2 { nLayers 0; }
     }
 }
+
+
 
 renameBoundary
 {
