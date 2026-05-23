@@ -157,15 +157,41 @@ void meshSurfaceEngine::calcGlobalBoundaryPointLabels() const
             label counter(0);
             while( counter < receivedData.size() )
             {
-                const face& f = faces[start+receivedData[counter++]];
+                const label localFaceI = receivedData[counter++];
                 const label pI = receivedData[counter++];
                 const label nProcs = receivedData[counter++];
+
+                if
+                (
+                    localFaceI < 0
+                 || localFaceI >= procBoundaries[patchI].patchSize()
+                )
+                {
+                    counter += nProcs;
+                    continue;
+                }
+
+                const face& f = faces[start + localFaceI];
+
+                if( pI < 0 || pI >= f.size() )
+                {
+                    counter += nProcs;
+                    continue;
+                }
+
+                const label bpI = bp[f[pI]];
+                if( bpI < 0 )
+                {
+                    counter += nProcs;
+                    continue;
+                }
+
                 for(label i=0;i<nProcs;++i)
                 {
                     const label neiProc = receivedData[counter++];
-                    if( !bpAtProcs.contains(bp[f[pI]], neiProc) )
+                    if( !bpAtProcs.contains(bpI, neiProc) )
                     {
-                        bpAtProcs.append(bp[f[pI]], neiProc);
+                        bpAtProcs.append(bpI, neiProc);
                         finished = false;
                     }
                 }
@@ -272,16 +298,32 @@ void meshSurfaceEngine::calcGlobalBoundaryPointLabels() const
             label counter(0);
             while( counter < receivedData.size() )
             {
-                const face& f = faces[start+receivedData[counter++]];
+                const label localFaceI2 = receivedData[counter++];
                 const label pI = receivedData[counter++];
                 const label globalLabel = receivedData[counter++];
 
-                if( globalPointLabel[bp[f[pI]]] == -1 )
+                if
+                (
+                    localFaceI2 < 0
+                 || localFaceI2 >= procBoundaries[patchI].patchSize()
+                )
+                    continue;
+
+                const face& f = faces[start + localFaceI2];
+
+                if( pI < 0 || pI >= f.size() )
+                    continue;
+
+                const label bpFP = bp[f[pI]];
+                if( bpFP < 0 )
+                    continue;
+
+                if( globalPointLabel[bpFP] == -1 )
                 {
-                    globalPointLabel[bp[f[pI]]] = globalLabel;
+                    globalPointLabel[bpFP] = globalLabel;
                     finished = false;
                 }
-                else if( globalPointLabel[bp[f[pI]]] != globalLabel )
+                else if( globalPointLabel[bpFP] != globalLabel )
                 {
                     FatalErrorIn
                     (
@@ -290,7 +332,7 @@ void meshSurfaceEngine::calcGlobalBoundaryPointLabels() const
                     ) << "Point labels in proc boundary "
                         << procBoundaries[patchI].patchName()
                         << " face " << f << " pI = " << pI
-                        << nl << " label " << globalPointLabel[bp[f[pI]]]
+                        << nl << " label " << globalPointLabel[bpFP]
                         << nl << " other global label " << globalLabel
                         << " do not match!" << abort(FatalError);
                 }
