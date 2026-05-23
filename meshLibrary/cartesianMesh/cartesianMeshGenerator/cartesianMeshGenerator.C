@@ -196,6 +196,20 @@ void cartesianMeshGenerator::refBoundaryLayers()
         meshOptimizer mOpt(mesh_);
         mOpt.lockPoints(blPoints_);
         mOpt.untangleBoundaryLayer();
+        // Post-refinement BL optimisation — optional, off by default.
+        // Enable with: postRefineBLOptimisation true; in boundaryLayers dict.
+        bool postRefineBLOpt = false;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+            if( bndL.found("postRefineBLOptimisation") )
+                postRefineBLOpt = Switch(bndL.lookup("postRefineBLOptimisation"));
+        }
+        if( postRefineBLOpt )
+        {
+            Info << "Running post-refinement boundary-layer optimisation" << endl;
+            mOpt.optimizeBoundaryLayer(modSurfacePtr_==NULL);
+        }
         Info << "refBoundaryLayers: stored "
              << blPoints_.size()
              << " BL interior points" << endl;
