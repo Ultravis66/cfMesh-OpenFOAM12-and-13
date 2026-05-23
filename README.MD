@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.8 USABLE BETA — active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
+v0.8 BETA — active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
 
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
