@@ -283,12 +283,16 @@ void extrudeLayer::createNewVertices()
 
     if( Pstream::parRun() )
     {
+        # ifdef DEBUGExtrudeLayer
         Pout << "Creating new points at processor boundaries" << endl;
+        # endif
         for(label procI=0;procI<Pstream::nProcs();++procI)
         {
             if( Pstream::myProcNo() == procI )
             {
+        # ifdef DEBUGExtrudeLayer
                Pout << "Front points are " << frontPoints << endl;
+        # endif
             }
 
             returnReduce(1, sumOp<label>());
@@ -343,7 +347,11 @@ void extrudeLayer::createNewVertices()
             if( Pstream::myProcNo() == procI )
             {
                forAllConstIter(dualEdgesMap, procPointsDual, it)
+            {
+        # ifdef DEBUGExtrudeLayer
                     Pout << "Point " << it->first << " local dual edges " << it->second << endl;
+        # endif
+            }
             }
 
             returnReduce(1, sumOp<label>());
@@ -352,7 +360,9 @@ void extrudeLayer::createNewVertices()
         //- fill-in with data at processor boundaries. Store edges
         //- on the processor with the lower label not to duplicate the data
         returnReduce(1, sumOp<label>());
+        # ifdef DEBUGExtrudeLayer
         Pout << "Adding data from processor boundaries" << endl;
+        # endif
         forAll(procBoundaries, patchI)
         {
             if( procBoundaries[patchI].owner() )
@@ -421,7 +431,9 @@ void extrudeLayer::createNewVertices()
 
         //- exchange this information with neighbouring processors
         returnReduce(1, sumOp<label>());
+        # ifdef DEBUGExtrudeLayer
         Pout << "Exchanging data with other processors" << endl;
+        # endif
 
         std::map<label, labelLongList> exchangeData;
         forAll(pProcs, i)
@@ -482,7 +494,11 @@ void extrudeLayer::createNewVertices()
             if( Pstream::myProcNo() == procI )
             {
                forAllConstIter(dualEdgesMap, procPointsDual, it)
+            {
+        # ifdef DEBUGExtrudeLayer
                     Pout << "Point " << it->first << " dual edges " << it->second << endl;
+        # endif
+            }
             }
 
             returnReduce(1, sumOp<label>());
@@ -490,7 +506,9 @@ void extrudeLayer::createNewVertices()
 
         //- Finally, find groups of faces and create new vertices
         returnReduce(1, sumOp<label>());
+        # ifdef DEBUGExtrudeLayer
         Pout << "Finding groups of edges at vertex" << endl;
+        # endif
         forAllConstIter(dualEdgesMap, procPointsDual, dIter)
         {
             const label pointI = dIter->first;
@@ -561,9 +579,13 @@ void extrudeLayer::createNewVertices()
                 }
             }
 
+        # ifdef DEBUGExtrudeLayer
             Info << "Edge groups for point " << pointI << " are " << edgeGroup << endl;
+        # endif
+        # ifdef DEBUGExtrudeLayer
             Info << "Face groups at point " << pointI << " are " << faceGroups
                 << " point faces " << pointFaces[pointI] << endl;
+        # endif
 
             //- stop in case there is only one group
             //- of faces attached to this point
@@ -605,7 +627,9 @@ void extrudeLayer::createNewVertices()
             }
         }
 
+        # ifdef DEBUGExtrudeLayer
         Pout << "Finishing creating new vertices at paralle boundaries" << endl;
+        # endif
         returnReduce(1, sumOp<label>());
     }
 
@@ -837,8 +861,14 @@ void extrudeLayer::movePoints()
         )
         {
             vector n = it->second;
-            if( mag(n) > VSMALL )
-                n /= mag(n);
+            const scalar magN = mag(n);
+            // Guard: skip if no valid displacement found
+            if( magN <= VSMALL || distances[it->first] >= VGREAT/2.0 )
+            {
+                displacements[it->first-nOrigPoints_] = vector::zero;
+                continue;
+            }
+            n /= magN;
             displacements[it->first-nOrigPoints_] = n * distances[it->first];
         }
     }
@@ -894,8 +924,13 @@ void extrudeLayer::movePoints()
             }
 
             const scalar d = mag(normal);
-            if( d > VSMALL )
-                normal /= d;
+            // Guard: if no valid extrusion face found, skip this point
+            if( thickness >= VGREAT/2.0 || d <= VSMALL )
+            {
+                displacements[pI] = vector::zero;
+                continue;
+            }
+            normal /= d;
 
             displacements[pI] = normal * thickness;
         }
@@ -1167,6 +1202,7 @@ void extrudeLayer::createLayerCells()
             //- origFacePointI and origFaceNextI
             DynList<label> fe;
             adc.facesSharingEdge(origFacePointI, origFaceNextI, fe);
+            if( fe.size() == 0 ) continue;  // guard: no shared face found
             const label origPointI = adc.origPoint(fe[0], origFacePointI);
 
             //- create a face attached to pointI
