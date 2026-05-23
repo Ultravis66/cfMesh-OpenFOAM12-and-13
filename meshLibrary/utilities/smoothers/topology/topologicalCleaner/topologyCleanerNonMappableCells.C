@@ -45,7 +45,7 @@ void topologicalCleaner::checkNonMappableCells()
     //- decompose cells with more than one boundary face
     const labelList& owner = mesh_.owner();
 
-    List<direction> nBoundaryFaces(mesh_.cells().size(), direction(0));
+    labelList nBoundaryFaces(mesh_.cells().size(), 0);
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     forAll(boundaries, patchI)
     {
@@ -54,7 +54,9 @@ void topologicalCleaner::checkNonMappableCells()
 
         for(label faceI=start;faceI<end;++faceI)
         {
-            ++nBoundaryFaces[owner[faceI]];
+            const label own = owner[faceI];
+            if( own < 0 || own >= label(nBoundaryFaces.size()) ) continue;
+            ++nBoundaryFaces[own];
         }
     }
 
@@ -108,8 +110,6 @@ void topologicalCleaner::checkNonMappableFaces()
     //- boundary but are not connected over an edge
     const label nIntFaces = mesh_.nInternalFaces();
 
-    //bool changed(false);
-
     label nBadFaces(0);
     for(label faceI=0;faceI<nIntFaces;++faceI)
     {
@@ -131,7 +131,7 @@ void topologicalCleaner::checkNonMappableFaces()
             )
         )
         {
-            ++nBadFaces;
+            if( !decomposeFace[faceI] ) ++nBadFaces;
             decomposeFace[faceI] = true;
             decomposeCell_[owner[faceI]] = true;
             decomposeCell_[neighbour[faceI]] = true;
@@ -216,6 +216,7 @@ void topologicalCleaner::checkNonMappableFaces()
     {
         changed_ = true;
         decomposeFaces(mesh_).decomposeMeshFaces(decomposeFace);
+        mesh_.clearAddressingData();
     }
 
     Info << "Finished checking non-mappable faces" << endl;
