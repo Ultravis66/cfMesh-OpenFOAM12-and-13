@@ -1002,14 +1002,18 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     if( featureSegs.size() > 0 )
     {
         const VRWGraph& ppGraph2 = surfaceEngine_.pointPoints();
+        const bool debugCornerSnap = false;  // set true to diagnose corner snap
         labelLongList remainingCorners;
         label nSnapped = 0;
         forAll(selectedCorners, cI)
         {
             const label bpI = selectedCorners[cI];
+            if( debugCornerSnap )
+            {
             Info << "  selCorner bpI=" << bpI
                  << " cls=" << pointClass[bpI]
                  << " CLS_CORNER=" << CLS_CORNER << endl;
+            }
             if( pointClass[bpI] != CLS_CORNER )
             { remainingCorners.append(bpI); continue; }
             const point& cp = points[bPoints[bpI]];
@@ -1039,25 +1043,36 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             }
             const scalar snapDist = Foam::sqrt(bestEndDSq);
             const scalar maxSnap = (localLen < GREAT/2.0) ? 2.0*localLen : GREAT;
+            if( debugCornerSnap )
+            {
             Info << "  CornerSnapActive snapDist=" << snapDist
                  << " maxSnap=" << maxSnap
                  << " localLen=" << localLen
                  << " bestEndDSq=" << bestEndDSq
                  << " GREAT/2=" << GREAT/2.0 << endl;
+            }
             const bool snapCondA = (snapDist <= maxSnap);
             const bool snapCondB = (bestEndDSq < GREAT/2.0);
+            if( debugCornerSnap )
+            {
             Info << "  SnapConditions: A=" << snapCondA << " B=" << snapCondB << endl;
+            }
             if( snapCondA && snapCondB )
             {
                 surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
                 ++nSnapped;
+            if( debugCornerSnap )
+            {
                 Info << "  SNAPPED bpI=" << bpI << endl;
+            }
             }
             else
                 remainingCorners.append(bpI);
         }
         // Debug: check why strict pass fails
         if( nSnapped == 0 && selectedCorners.size() > 0 )
+        if( debugCornerSnap )
+        {
         {
             const label bpI0 = selectedCorners[0];
             label nStrictCandidates = 0;
@@ -1088,6 +1103,8 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
              << " of " << selectedCorners.size()
              << " corner points to feature endpoints" << endl;
 
+        if( debugCornerSnap )
+        {
         // Diagnostic: show patch IDs for first corner and first few segs
         if( selectedCorners.size() > 0 && featureSegs.size() > 0 )
         {
@@ -1096,6 +1113,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             forAllRow(pointPatches, bpI0, ppI)
                 Info << pointPatches(bpI0, ppI) << " ";
             Info << ")" << endl;
+        }
             Info << "  First 3 featureSegs patchA/patchB: ";
             for(label k=0; k<Foam::min(label(3),featureSegs.size()); ++k)
                 Info << featureSegs[k].patchA << "/" << featureSegs[k].patchB << " ";
@@ -1103,6 +1121,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         }
 
         selectedCorners = remainingCorners;
+        }
     }
 
     //- map corner vertices
