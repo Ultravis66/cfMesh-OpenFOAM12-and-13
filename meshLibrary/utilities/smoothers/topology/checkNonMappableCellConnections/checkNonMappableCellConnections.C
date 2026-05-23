@@ -70,7 +70,7 @@ void checkNonMappableCellConnections::findCellTypes()
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 1000)
     # endif
-    for(label cellI=cells.size()-1;cellI>=0;--cellI)
+    forAll(cells, cellI)
     {
         if( cellType_[cellI] & INTERNALCELL )
             continue;
@@ -229,7 +229,7 @@ void checkNonMappableCellConnections::findCells(labelHashSet& badCells)
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 40)
     # endif
-    for(label cellI=cellType_.size()-1;cellI>=0;--cellI)
+    forAll(cellType_, cellI)
     {
         if( cellType_[cellI] & INTERNALFACEGROUP )
         {
@@ -238,7 +238,7 @@ void checkNonMappableCellConnections::findCells(labelHashSet& badCells)
             # endif
             badCells.insert(cellI);
         }
-        else if( cellType_[cellI] & (ALLBNDVERTEXCELL+INTERNALFACEGROUP) )
+        else if( cellType_[cellI] & ALLBNDVERTEXCELL )
         {
             //- mark cells which have only one internal neighbour
             const cell& c = cells[cellI];
@@ -310,9 +310,14 @@ bool checkNonMappableCellConnections::removeCells()
         {
             boolList removeCell(mesh_.cells().size(), false);
             forAllConstIter(labelHashSet, badCells, it)
-                removeCell[it.key()] = true;
+            {
+                const label cellI = it.key();
+                if( cellI >= 0 && cellI < label(removeCell.size()) )
+                    removeCell[cellI] = true;
+            }
 
             polyMeshGenModifier(mesh_).removeCells(removeCell);
+            mesh_.clearAddressingData();
 
             changed = true;
         }
