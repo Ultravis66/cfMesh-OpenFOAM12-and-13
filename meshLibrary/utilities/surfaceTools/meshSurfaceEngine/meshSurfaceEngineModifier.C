@@ -95,6 +95,11 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
 
             {
                 const face& bf = bFaces[bfI];
+                if( bf.empty() )
+                {
+                    faceCentres[bfI] = vector::zero;
+                    continue;
+                }
                 vector c = vector::zero;
                 forAll(bf, pI) c += points[bf[pI]];
                 faceCentres[bfI] = c / bf.size();
@@ -114,6 +119,11 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
 
             {
                 const face& bf = bFaces[bfI];
+                if( bf.size() < 3 )
+                {
+                    faceNormals[bfI] = vector::zero;
+                    continue;
+                }
                 vector n = vector::zero;
                 const point& p0 = points[bf[0]];
                 for(label pI=1; pI<bf.size()-1; ++pI)
@@ -123,7 +133,7 @@ void meshSurfaceEngineModifier::moveBoundaryVertex
         }
     }
 
-    if( surfaceEngine_.pointNormalsPtr_ )
+    if( surfaceEngine_.pointNormalsPtr_ && surfaceEngine_.faceNormalsPtr_ )
     {
         const vectorField& faceNormals = *surfaceEngine_.faceNormalsPtr_;
         const VRWGraph& pFaces = surfaceEngine_.pointFaces();
@@ -236,6 +246,8 @@ void meshSurfaceEngineModifier::syncVerticesAtParallelBoundaries
     forAll(receivedData, i)
     {
         const labelledPoint& lp = receivedData[i];
+        if( !globalToLocal.found(lp.pointLabel()) )
+            continue;
         const label bpI = globalToLocal[lp.pointLabel()];
         const point newP = points[bPoints[bpI]] + lp.coordinates();
         moveBoundaryVertexNoUpdate(bpI, newP);
@@ -274,8 +286,13 @@ void meshSurfaceEngineModifier::updateGeometry
         forAll(updateFaces, bfI)
         {
             if( updateFaces[bfI] )
-                {
+            {
                 const face& bf = bFaces[bfI];
+                if( bf.empty() )
+                {
+                    faceCentres[bfI] = vector::zero;
+                    continue;
+                }
                 vector c = vector::zero;
                 forAll(bf, pI) c += points[bf[pI]];
                 faceCentres[bfI] = c / bf.size();
@@ -294,8 +311,13 @@ void meshSurfaceEngineModifier::updateGeometry
         forAll(updateFaces, bfI)
         {
             if( updateFaces[bfI] )
-                {
+            {
                 const face& bf = bFaces[bfI];
+                if( bf.size() < 3 )
+                {
+                    faceNormals[bfI] = vector::zero;
+                    continue;
+                }
                 vector n = vector::zero;
                 const point& p0 = points[bf[0]];
                 for(label pI=1; pI<bf.size()-1; ++pI)
@@ -322,7 +344,11 @@ void meshSurfaceEngineModifier::updateGeometry
                 const face& bf = bFaces[pFaces(bpI, pfI)];
 
                 forAll(bf, pI)
-                    updateBndPoint[bp[bf[pI]]] = true;
+                {
+                    const label bpJ = bp[bf[pI]];
+                    if( bpJ >= 0 )
+                        updateBndPoint[bpJ] = true;
+                }
             }
         }
 
@@ -387,7 +413,11 @@ void meshSurfaceEngineModifier::updateGeometry
             help::exchangeMap(exchangeNodeLabels, receivedNodes);
 
             forAll(receivedNodes, i)
+            {
+                if( !globalToLocal.found(receivedNodes[i]) )
+                    continue;
                 updateBndPoint[globalToLocal[receivedNodes[i]]] = true;
+            }
 
 
             //- start updating point normals
@@ -425,6 +455,8 @@ void meshSurfaceEngineModifier::updateGeometry
 
             forAll(receivedData, i)
             {
+                if( !globalToLocal.found(receivedData[i].pointLabel()) )
+                    continue;
                 const label bpI = globalToLocal[receivedData[i].pointLabel()];
                 pn[bpI] += receivedData[i].coordinates();
             }
