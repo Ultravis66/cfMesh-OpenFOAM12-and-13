@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.8 BETA — active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
+v0.8 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
 
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
@@ -13,7 +13,7 @@ Tested on **NASA Rotor 37** two-passage turbomachinery sector geometry with boun
 | Branch | OpenFOAM Version | Status |
 |--------|-----------------|--------|
 | `master` | OpenFOAM 13 | **Active development** |
-| `openfoam12-archive` | OpenFOAM 12 | Archived — no further updates |
+| `openfoam12-archive` | OpenFOAM 12 | Archived, no further updates |
 
 ---
 
@@ -44,10 +44,10 @@ checkMesh
 ---
 
 ## What works
-- `cartesianMesh` — Cartesian hex-dominant mesher, primary supported executable, tested on NASA Rotor 37
-- `tetMesh` — Builds successfully, experimental, not fully validated
-- `pMesh` — Builds successfully, experimental, not fully validated
-- `libmeshLibrary.so` — Core mesh library
+- `cartesianMesh` Cartesian hex-dominant mesher, primary supported executable, tested on NASA Rotor 37
+- `tetMesh` Builds successfully, experimental, not fully validated
+- `pMesh` Builds successfully, experimental, not fully validated
+- `libmeshLibrary.so` Core mesh library
 
 ---
 
@@ -58,7 +58,7 @@ checkMesh
 | `Pstream::blocking/scheduled/nonBlocking` | `Pstream::commsTypes::blocking/scheduled/nonBlocking` |
 | `eigenVector(T, scalar)` | `eigenVectors(T)` with direct component access |
 | `circumCentre()/circumRadius()` | `circumSphere().first()/.second()` |
-| `isFile()` | `std::filesystem::exists()` — requires filesystem include and c++17 |
+| `isFile()` | `std::filesystem::exists()` requires filesystem include and c++17 |
 | `rm/isDir/rmDir` | requires `OSspecific.H` include in affected files |
 | edgeMesh library | include paths updated to use meshTools |
 | `unallocLabelList` | `labelList` |
@@ -69,9 +69,9 @@ checkMesh
 
 | Bug | Fix |
 |-----|-----|
-| `face::centre()` garbage for cfMesh face ordering — phantom inversions | Replace with vertex average everywhere |
-| `face::normal()` garbage — wrong BL extrusion direction | Replace with triangle fan normal everywhere |
-| Inversion check on unmapped octree mesh — infinite loop | Map vertices onto surface BEFORE `preMapVertices()` |
+| `face::centre()` garbage for cfMesh face ordering phantom inversions | Replace with vertex average everywhere |
+| `face::normal()` garbage wrong BL extrusion direction | Replace with triangle fan normal everywhere |
+| Inversion check on unmapped octree mesh infinite loop | Map vertices onto surface BEFORE `preMapVertices()` |
 | `preMapVertices()` internal untangleSurface hangs | Use `preMapVertices(0)` |
 | `findLeafContainingVertex` throws `char const*` | Replace throw with return -1 |
 | `newPositionSurfaceOptimizer` garbage vertex positions | Displacement bound + vecY near-zero guard |
@@ -88,20 +88,20 @@ checkMesh
 | `meshSurfaceMapperCornersAndEdges` 20-iteration hang | Reduce to 5 iterations |
 | `surfaceOptimizer` 100-iteration hang | Reduce to 10 iterations |
 | `addLayerForAllPatches` O(n²) BL quality rollback hangs | Removed |
-| `mapEdgeNodes` OMP nondeterminism — intermittent hangs and bad face explosions at full thread count | Deterministic `parallelBndNodes` build: compute in parallel, move and sync in serial |
-| `smoothLaplacianFC` apply loop OMP race — concurrent writes to shared mesh point storage | Serialize apply loop; compute remains parallel |
+| `mapEdgeNodes` OMP nondeterminism intermittent hangs and bad face explosions at full thread count | Deterministic `parallelBndNodes` build: compute in parallel, move and sync in serial |
+| `smoothLaplacianFC` apply loop OMP race concurrent writes to shared mesh point storage | Serialize apply loop; compute remains parallel |
 | `smoothSurfaceOptimizer` apply loop OMP race | Serialize apply loop; compute remains parallel |
 | `nodeDisplacementLaplacianParallel` constructs `meshSurfaceEngineModifier` per point inside loop | Hoist modifier outside loop; serialize apply |
 | `nodeDisplacementLaplacianFCParallel` apply loop OMP race | Serialize apply loop |
 | `edgeNodeDisplacementParallel` apply loop OMP race + `std::map::operator[]` mutating map during parallel read | Serialize apply loop; replace `operator[]` with `find()` |
 | `lp.coordinates() / lp.pointLabel()` divide-by-zero in parallel Laplacian smoothers | Guard `pointLabel() <= 0`; fallback to original position where needed |
-| `globalToLocal[key]` unguarded on received parallel data — possible silent map insertion / invalid lookup | Add `globalToLocal.found()` guards with correct packet consumption in receive loops |
+| `globalToLocal[key]` unguarded on received parallel data possible silent map insertion / invalid lookup | Add `globalToLocal.found()` guards with correct packet consumption in receive loops |
 | `calculateBoundaryOwners` uses patch 0 start offset regardless of `activePatch_` | Use `boundaries[activePatch_].patchStart()` when `activePatch_ >= 0` |
-| `calculateBoundaryFacePatches` iterates all patches when `activePatch_ >= 0` — out-of-bounds write risk | Add `activePatch_` branch; fill selected patch label only |
+| `calculateBoundaryFacePatches` iterates all patches when `activePatch_ >= 0` out-of-bounds write risk | Add `activePatch_` branch; fill selected patch label only |
 | `moveBoundaryVertex` dereferences `faceNormalsPtr_` assuming non-null when `pointNormalsPtr_` is set | Guard with `pointNormalsPtr_ && faceNormalsPtr_` |
 | Face normal/centre computation has no size guard on degenerate faces | `bf.size() < 3` gives zero normal; `bf.empty()` gives zero centre |
 | `bp[e.start()]` / `bp[point]` used without `-1` guard throughout edge addressing | Add `bps < 0` / `bpI < 0` continue guards |
-| `checkAndFixCellGroupsAtBndVertices` performs topology surgery under OMP dynamic scheduling — nondeterministic face connectivity | Serialize repair loop when modifying topology |
+| `checkAndFixCellGroupsAtBndVertices` performs topology surgery under OMP dynamic scheduling nondeterministic face connectivity | Serialize repair loop when modifying topology |
 | `checkEdgeFaceConnections` / `checkFaceGroupsAtBndVertices` missing `clearAddressingData()` after `removeCells()` | Add `mesh_.clearAddressingData()` after each `removeCells()` |
 | `calcGlobalBoundaryPointLabels` receive loops use remote face/point indices without bounds checks | Guard face index, point index, and `bp[]` result before use |
 
@@ -114,13 +114,13 @@ checkMesh
 ## Boundary Layer Generation Improvements
 
 ### Patch-based BL control
-Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names — now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
+Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
 
 ### BL/BL junction topology infrastructure (C1)
 
 Persistent metadata for sharp BL/BL junction points is now carried through the boundary-layer generation pipeline:
 
-- `blblJunctionPoints_` — `labelHashSet` on `boundaryLayers` capturing boundary points on sharp BL/BL feature curves.
+- `blblJunctionPoints_` `labelHashSet` on `boundaryLayers` capturing boundary points on sharp BL/BL feature curves.
 - Junction points use `layerScale_ = 0.0` to suppress spurious extrusion at the singular feature line.
 - Sharp BL/BL junctions are detected using patch-normal angle comparison rather than hardcoded patch names.
 
@@ -143,8 +143,8 @@ Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient th
 
 A commercial-mesher-style surface projection and repair pipeline, developed incrementally on top of the original cfMesh surface mapping code.
 
-### Architecture fix — patch-identity-first projection
-The original cfMesh pipeline ran `mapMeshToSurface` (global surface projection) before `extractPatches` (patch identity assignment). This meant every boundary point was projected using a global nearest-triangle search with no patch constraint — causing points near concave multi-patch corners to snap to the wrong patch surface, producing visible protrusions.
+### Architecture fix patch-identity-first projection
+The original cfMesh pipeline ran `mapMeshToSurface` (global surface projection) before `extractPatches` (patch identity assignment). This meant every boundary point was projected using a global nearest-triangle search with no patch constraint causing points near concave multi-patch corners to snap to the wrong patch surface, producing visible protrusions.
 
 Fix: `extractPatches` now runs before `mapMeshToSurface`, establishing patch identity on the raw Cartesian hex mesh before any projection occurs. A second `extractPatches` call after projection corrects any misassignments from the unprojected hex geometry. This is the primary fix for surface protrusions.
 
@@ -153,24 +153,24 @@ Every boundary point is classified into one of five topology classes before proj
 
 | Class | Description |
 |-------|-------------|
-| `SINGLE_PATCH` | Interior surface point — standard projection |
-| `TWO_PATCH_EDGE` | Feature curve point — constrained to edge |
-| `MULTI_PATCH_CORNER` | 3+ patch junction — constrained to corner endpoint |
-| `BL_NOBL` | BL/no-BL transition — locked |
-| `NONMANIFOLD` | Non-manifold geometry — locked and reported |
+| `SINGLE_PATCH` | Interior surface point standard projection |
+| `TWO_PATCH_EDGE` | Feature curve point constrained to edge |
+| `MULTI_PATCH_CORNER` | 3+ patch junction constrained to corner endpoint |
+| `BL_NOBL` | BL/no-BL transition locked |
+| `NONMANIFOLD` | Non-manifold geometry locked and reported |
 
 VTK diagnostic output available for each class for ParaView inspection.
 
 ### Feature curve extraction and corner snap
 Dual-mode feature curve extraction (face-patch data when available, pointPatches fallback for early pipeline stages). Extracts ~10,260 feature edge segments. 24/24 multi-patch corner points snap correctly to nearest incident feature curve endpoint.
 
-### Pure quality evaluator — `proposedMoveIsValid`
-Reusable per-point quality gate used by all movement logic. Evaluates a proposed new position purely geometrically — no mesh mutation, no `const_cast`, thread-safe by construction.
+### Pure quality evaluator `proposedMoveIsValid`
+Reusable per-point quality gate used by all movement logic. Evaluates a proposed new position purely geometrically no mesh mutation, no `const_cast`, thread-safe by construction.
 
 Checks per incident face:
 1. Movement distance cap (relative to local cell size)
 2. Face area (reject near-zero collapse)
-3. Pyramid height (relative to face area — scale-invariant)
+3. Pyramid height (relative to face area scale-invariant)
 4. Skewness proxy (rejects moves that worsen local face skewness beyond threshold)
 
 ### Constrained surface smoothing
@@ -193,11 +193,11 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.2` | Skewness proxy added to quality evaluator |
 | `v0.35` | Validity-rejected point VTK diagnostics |
 | `v0.4` | Targeted repair of validity-rejected points |
-| `v0.5` | Pure quality evaluator — no const_cast, thread-safe, tight variance |
+| `v0.5` | Pure quality evaluator no const_cast, thread-safe, tight variance |
 
 ### BL/no-BL transition edge constraint system
 
-Generic protection system for points where BL patches meet no-BL patches (wall meets inlet/outlet/periodic). Fully geometry-agnostic — driven entirely by `nLayersForPatch_` from meshDict, no patch names hardcoded.
+Generic protection system for points where BL patches meet no-BL patches (wall meets inlet/outlet/periodic). Fully geometry-agnostic driven entirely by `nLayersForPatch_` from meshDict, no patch names hardcoded.
 
 | Component | Description |
 |-----------|-------------|
@@ -239,11 +239,11 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 - Phase 1 non-mutating diagnostic in progress
 
 ### Known remaining issues
-**Residual minor variance** — Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
+**Residual minor variance** Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
 
-**Blade/periodic corner jank** — Small cluster of visually rough cells at blade trailing/leading edge + periodic + inlet/outlet 3-way corners. Geometric singularity — the 3-gate post-refinement rollback is in development to address this.
+**Blade/periodic corner jank** Small cluster of visually rough cells at blade trailing/leading edge + periodic + inlet/outlet 3-way corners. Geometric singularity the 3-gate post-refinement rollback is in development to address this.
 
-**BL/BL feature-edge rounding** — Blade/hub and blade/shroud feature curves can be slightly rounded by the surface smoother. Fix in progress: feature-curve locking during smooth passes.
+**BL/BL feature-edge rounding** Blade/hub and blade/shroud feature curves can be slightly rounded by the surface smoother. Fix in progress: feature-curve locking during smooth passes.
 
 > **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
@@ -252,9 +252,9 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 
 ### Patch-role classification system
 Patches are now classified into three roles driven by meshDict:
-- `BL_PATCH` — wall patches with active boundary layers
-- `TERMINATION_PATCH` — inlet/outlet (explicit via `terminationPatches`)  
-- `NEUTRAL_PATCH` — periodic/symmetry (no BL suppression triggered)
+- `BL_PATCH` wall patches with active boundary layers
+- `TERMINATION_PATCH` inlet/outlet (explicit via `terminationPatches`)  
+- `NEUTRAL_PATCH` periodic/symmetry (no BL suppression triggered)
 
 ```
 boundaryLayers
@@ -265,7 +265,7 @@ boundaryLayers
 ```
 
 ### BL/neutral edge constraint (v0.7)
-Blade/periodic junction points — where a BL wall patch meets a periodic/symmetry patch — are now fully constrained:
+Blade/periodic junction points where a BL wall patch meets a periodic/symmetry patch are now fully constrained:
 - **Projection**: locked to BL-side patch only via `findNearestSurfacePointInRegion`
 - **Extrusion normal**: recomputed from BL-side faces only, preventing tilt toward periodic plane
 - **Crossing clamp**: extruded points that cross the periodic plane are clamped back to surface
@@ -300,10 +300,10 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
 | Tag | Branch | Description |
 |-----|--------|-------------|
-| `v0.8` | `feature/bl-transition-topology` | Full codebase audit — 60+ bug fixes: OMP apply-loop serialization, globalToLocal guards, activePatch_ owner/patch bugs, face size guards, bounds guards throughout. Deterministic results on Rotor 37. |
+| `v0.8` | `feature/bl-transition-topology` | Full codebase audit 60+ bug fixes: OMP apply-loop serialization, globalToLocal guards, activePatch_ owner/patch bugs, face size guards, bounds guards throughout. Deterministic results on Rotor 37. |
 | `v0.7.1` | `feature/bl-transition-topology` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.7` | `feature/bl-transition-topology` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
-| `v0.6` | `feature/deterministic-optimizer` | Partial deterministic optimizer — 8 unsafe OMP loops serialized |
+| `v0.6` | `feature/deterministic-optimizer` | Partial deterministic optimizer 8 unsafe OMP loops serialized |
 | `v0.5` | `openfoam13` | Pure quality evaluator, thread-safe, tight skewness variance |
 | `v0.4` | `openfoam13` | Targeted repair of validity-rejected points |
 | `v0.35` | `openfoam13` | VTK diagnostics for validity-rejected points |
@@ -342,11 +342,11 @@ Run this after any code change to catch regressions before committing.
 
 ## Troubleshooting
 
-**Build fails with missing header:** Make sure OpenFOAM 13 is sourced before building. Run `echo $WM_PROJECT_VERSION` — should return `13`.
+**Build fails with missing header:** Make sure OpenFOAM 13 is sourced before building. Run `echo $WM_PROJECT_VERSION` should return `13`.
 
 **`cartesianMesh` not found after build:** Check `$FOAM_USER_APPBIN` is in your PATH. Run `source /opt/openfoam13/etc/bashrc` again.
 
-**Mesh hangs:** Should not occur in current version — OMP nondeterminism in `mapEdgeNodes` was fixed in this port. If you encounter a hang, please open a GitHub issue with your STL and meshDict.
+**Mesh hangs:** Should not occur in current version OMP nondeterminism in `mapEdgeNodes` was fixed in this port. If you encounter a hang, please open a GitHub issue with your STL and meshDict.
 
 ---
 
