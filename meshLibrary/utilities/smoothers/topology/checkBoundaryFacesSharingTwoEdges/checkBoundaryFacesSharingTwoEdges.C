@@ -481,12 +481,17 @@ bool checkBoundaryFacesSharingTwoEdges::improveTopology()
         //- find cells which will be decomposed
         boolList decomposeCell(mesh_.cells().size(), false);
         const labelList& owner = mesh_.owner();
+        // Face decomposition is allowed; cell decomposition intentionally
+        // disabled here. Enabling decomposeCell[own]=true caused
+        // over-decomposition on sharp BL/periodic junctions (Rotor37).
+        // Re-enable only behind a flag after validation.
+        const bool decomposeOwnerCells = false;
         forAll(decomposeFace, faceI)
         {
             if( !decomposeFace[faceI] ) continue;
             const label own = owner[faceI];
-            if( own >= 0 && own < label(decomposeCell.size()) )
-                decomposeCell[own] = true;  // Fix: was missing = true (no-op)
+            if( decomposeOwnerCells && own >= 0 && own < label(decomposeCell.size()) )
+                decomposeCell[own] = true;
         }
 
         //- decompose marked faces

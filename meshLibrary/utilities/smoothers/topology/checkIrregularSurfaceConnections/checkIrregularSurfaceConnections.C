@@ -75,31 +75,26 @@ bool checkIrregularSurfaceConnections::checkAndFixIrregularConnections()
     Info << "Checking for irregular surface connections" << endl;
     
     bool finished;
-    
+    bool changed(false);
     labelHashSet badVertices;
-    
     do
     {
         finished = true;
-        
+        badVertices.clear();
         while( checkAndFixCellGroupsAtBndVertices(badVertices, true) )
-            finished = false;
-        
+        { finished = false; changed = true; badVertices.clear(); }
         while( checkEdgeFaceConnections(badVertices, true) )
-            finished = false;
-        
+        { finished = false; changed = true; badVertices.clear(); }
         if( checkFaceGroupsAtBndVertices(badVertices, true) )
-            finished = false;
+        { finished = false; changed = true; badVertices.clear(); }
     } while( !finished );
-    
-    polyMeshGenModifier(mesh_).removeUnusedVertices();
-    
+    if( changed )
+    {
+        polyMeshGenModifier(mesh_).removeUnusedVertices();
+        mesh_.clearAddressingData();
+    }
     Info << "Finished checking for irregular surface connections" << endl;
-    
-    if( returnReduce(badVertices.size(), sumOp<label>()) != 0 )
-        return true;
-    
-    return false;
+    return returnReduce(changed, maxOp<bool>());
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
