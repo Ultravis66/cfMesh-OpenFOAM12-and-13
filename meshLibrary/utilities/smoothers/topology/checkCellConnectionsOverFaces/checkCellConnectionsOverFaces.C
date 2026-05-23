@@ -228,7 +228,11 @@ bool checkCellConnectionsOverFaces::checkCellGroups()
     labelList nCellsInGroup(nGroups_, 0);
 
     forAll(cellGroup_, cI)
-        ++nCellsInGroup[cellGroup_[cI]];
+    {
+        const label groupI = cellGroup_[cI];
+        if( groupI >= 0 && groupI < label(nCellsInGroup.size()) )
+            ++nCellsInGroup[groupI];
+    }
 
     if( Pstream::parRun() )
     {
@@ -236,22 +240,37 @@ bool checkCellConnectionsOverFaces::checkCellGroups()
             reduce(nCellsInGroup[groupI], sumOp<label>());
     }
 
-    //- find groups which has most cells this group will be kept
-    label maxGroup(-1);
+    // Find group with most cells — use clear variable names
+    // Note: original code reused nGroups_ as group ID which was confusing
+    label keepGroup(-1);
+    label maxCells(-1);
     forAll(nCellsInGroup, groupI)
-        if( nCellsInGroup[groupI] > maxGroup )
+    {
+        Info << "  region " << groupI
+             << ": " << nCellsInGroup[groupI] << " cells" << endl;
+        if( nCellsInGroup[groupI] > maxCells )
         {
-            maxGroup = nCellsInGroup[groupI];
-            nGroups_ = groupI;
+            maxCells = nCellsInGroup[groupI];
+            keepGroup = groupI;
         }
+    }
 
     //- remove cells which are not in the group which has max num of cells
     boolList removeCell(mesh_.cells().size(), false);
+    label nRemove = 0;
     forAll(cellGroup_, cellI)
-        if( cellGroup_[cellI] != nGroups_ )
+        if( cellGroup_[cellI] != keepGroup )
+        {
             removeCell[cellI] = true;
+            ++nRemove;
+        }
+
+    Warning << "Removing " << nRemove
+            << " cells outside largest connected region "
+            << keepGroup << endl;
 
     polyMeshGenModifier(mesh_).removeCells(removeCell);
+    mesh_.clearAddressingData();
 
     return true;
 }
