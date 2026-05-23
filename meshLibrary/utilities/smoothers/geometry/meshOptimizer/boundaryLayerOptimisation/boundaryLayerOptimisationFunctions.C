@@ -554,7 +554,7 @@ void boundaryLayerOptimisation::optimiseLayer()
         //- smoothing thickness variation of boundary hairs
         optimiseThicknessVariation(BOUNDARY);
 
-        if( true )
+        // Surface geometry update after each BL normal/thickness pass
         {
             meshSurfaceEngineModifier bMod(meshSurface());
             bMod.updateGeometry();
