@@ -39,31 +39,37 @@ namespace Foam
 void boundaryLayers::addWrapperLayer()
 {
     createOTopologyLayers();
-    
-    if( treatedPatch_[0] ) return;
+
+    if( treatedPatch_.size() && treatedPatch_[0] ) return;
 
     const meshSurfaceEngine& mse = surfaceEngine();
-    
     const labelList& bPoints = mse.boundaryPoints();
-    
     boolList treatPatches(mesh_.boundaries().size(), true);
-    
-    labelLongList newLabelForVertex(nPoints_, -1);
 
     pointFieldPMG& points = mesh_.points();
-    points.setSize(points.size() + bPoints.size());
+
+    // Fix: was populating local newLabelForVertex instead of member
+    // newLabelForVertex_ — createNewFacesAndCells uses the member
+    const label oldNPoints = points.size();
+    nPoints_ = oldNPoints;
+    newLabelForVertex_.setSize(oldNPoints);
+    newLabelForVertex_ = -1;
+    points.setSize(oldNPoints + bPoints.size());
+
     forAll(bPoints, bpI)
     {
-        points[nPoints_] = points[bPoints[bpI]];
-        newLabelForVertex[bPoints[bpI]] = nPoints_++;
+        const label oldPointI = bPoints[bpI];
+        points[nPoints_] = points[oldPointI];
+        newLabelForVertex_[oldPointI] = nPoints_;
+        ++nPoints_;
     }
-    
+
     createNewFacesAndCells(treatPatches);
-    
+
     forAll(treatPatches, patchI)
         if( treatPatches[patchI] )
             treatedPatch_[patchI] = true;
-        
+
     //- delete surface engine
     clearOut();
 }
