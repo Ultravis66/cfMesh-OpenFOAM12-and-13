@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-> **v0.7.1 USABLE BETA** — active development... on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
+> **v0.8 USABLE BETA USABLE BETA** — active development... on OpenFOAM Foundation v13. Quality system significantly improved over original cfMesh. Run-to-run variance exists due to residual OMP nondeterminism in base cfMesh pipeline — being addressed incrementally.
 
 A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
 
@@ -177,6 +177,7 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.35` | Validity-rejected point VTK diagnostics |
 | `v0.4` | Targeted repair of validity-rejected points |
 | `v0.5` | Pure quality evaluator — no const_cast, thread-safe, tight variance |
+| `v0.8` | `feature/bl-transition-topology` | Full codebase audit — 40+ bug fixes across BL pipeline, topology cleaners, surface mapper, extruder |
 
 ### BL/no-BL transition edge constraint system
 
@@ -264,16 +265,16 @@ Corner points (3+ patches) at BL/termination junctions are fully suppressed (`la
 ## Mesh quality on NASA Rotor 37 (v0.7.1)
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.7.1 best case | v0.5 typical | Original cfMesh |
+| Metric | v0.8 best case | v0.7.1 best case | v0.5 typical | Original cfMesh |
 |--------|-----------------|-------------|-----------------|
 | Cells | ~2.1M | ~2.1M | ~2.1M |
 | Average non-orthogonality | 10.6° | 10.6° | 10.5° |
 | Max non-orthogonality | 90–100° | 90–100° | 147° |
-| Non-ortho errors | 0 | 0–1 | 1+ |
-| Negative volume cells | 0 | 0–2 | 5–7 |
+| Non-ortho errors | 0 | 0–1 | 1+ |**1** |
+| Negative volume cells | 0 | 0–2 | 5–7 | **1** |
 | Bad pyramid faces | 1 | 1–9 | 13–32 |
-| Max skewness | 9.33 | 9.3–9.5 | 15.6+ |
-| Severely non-ortho faces (>70°) | ~1,800 | 1,800–2,100 | 2,058 |
+| Max skewness | 9.33 | 9.3–9.5 | 15.6+ | **8.74** |
+| Severely non-ortho faces (>70°) | ~1,800 | 1,800–2,100 | 2,058 | **1,636** |
 | Runtime | ~110–130s | ~75–100s | ~75s |
 | Blade/periodic protrusions | Significantly reduced | Significant | Severe |
 
