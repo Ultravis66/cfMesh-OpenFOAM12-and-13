@@ -169,6 +169,9 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.addLayerForAllPatches();
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
+    blblAcuteCornerPoints_ = bl.blblAcuteCornerPoints();
+    Info << "Acute BL+BL+neutral corners captured: "
+         << blblAcuteCornerPoints_.size() << endl;
 
     // Capture BL/no-BL transition edge points (boundary-point indices)
     // for handoff to post-BL mapper instances
@@ -308,6 +311,24 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             surfOpt.enforceConstraints();
 
 
+        //- lock acute BL+BL+neutral corners: prevent optimizer
+        //- from moving these points across patch boundaries
+        //- controlled by meshDict: lockAcuteCornerPoints true/false
+        bool lockAcuteCorners = false;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndL =
+                meshDict_.subDict("boundaryLayers");
+            if( bndL.found("lockAcuteCornerPoints") )
+                lockAcuteCorners =
+                    bool(Switch(bndL.lookup("lockAcuteCornerPoints")));
+        }
+        if( lockAcuteCorners && blblAcuteCornerPoints_.size() )
+        {
+            Info << "Locking " << blblAcuteCornerPoints_.size()
+                 << " acute BL+BL+neutral corner points in optimizer" << endl;
+            surfOpt.setAcuteCornerPoints(blblAcuteCornerPoints_);
+        }
         surfOpt.optimizeSurface();
     }
 

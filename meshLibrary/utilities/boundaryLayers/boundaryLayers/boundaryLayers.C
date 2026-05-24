@@ -570,6 +570,7 @@ boundaryLayers::boundaryLayers
     nPoints_(mesh.points().size()),
     geometryAnalysed_(false),
     blblFeatureAngleDeg_(40.0),
+    blblCornerAcuteThreshold_(0.3),
     layerScaleRing1_(0.25),
     layerScaleRing2_(0.50),
     layerScaleRing3_(0.75),
@@ -607,6 +608,9 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("blblFeatureAngleDeg") )
             blblFeatureAngleDeg_ =
                 readScalar(bndLayers.lookup("blblFeatureAngleDeg"));
+        if( bndLayers.found("blblCornerAcuteThreshold") )
+            blblCornerAcuteThreshold_ =
+                readScalar(bndLayers.lookup("blblCornerAcuteThreshold"));
         if( bndLayers.found("layerScaleRing1") )
             layerScaleRing1_ =
                 readScalar(bndLayers.lookup("layerScaleRing1"));
@@ -1025,23 +1029,16 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     minDot = Foam::min(minDot, blNorms[i] & blNorms[j]);
 
             // Acute corner: BL patch normals diverge strongly
-            // Read threshold from meshDict or use default 0.3 (~73 degrees)
-            // Lower value = more conservative (only most acute corners suppressed)
-            scalar acuteThreshold = 0.3;
-            if( meshDict_.isDict("boundaryLayers") )
-            {
-                const dictionary& bndL =
-                    meshDict_.subDict("boundaryLayers");
-                if( bndL.found("blblCornerAcuteThreshold") )
-                    acuteThreshold =
-                        readScalar(bndL.lookup("blblCornerAcuteThreshold"));
-            }
-            const bool isAcute = (minDot < acuteThreshold && minDot < GREAT);
+            // Threshold read from meshDict via blblCornerAcuteThreshold_
+            // Default 0.3 (~73 degrees). Lower = more conservative.
+            const bool isAcute = (minDot < blblCornerAcuteThreshold_ && minDot < GREAT);
 
             zeroDistPoints_[bpI] = true;
             layerScale_[bpI] = isAcute ? 0.02 : 0.15;
             zeroPts[bpI] = true;
             blblCornerPoints_.insert(bpI);
+            if( isAcute )
+                blblAcuteCornerPoints_.insert(bpI);
             ++nTriple;
 
             # ifdef DEBUGLayer

@@ -80,6 +80,7 @@ class boundaryLayers
 
         //- meshDict-configurable BL transition parameters
         scalar blblFeatureAngleDeg_;   // degrees, default 40
+        scalar blblCornerAcuteThreshold_; // dot product threshold, default 0.3
         scalar layerScaleRing1_;       // default 0.25
         scalar layerScaleRing2_;       // default 0.50
         scalar layerScaleRing3_;       // default 0.75
@@ -126,6 +127,7 @@ class boundaryLayers
         //- populated by markConcaveEdgePoints, consumed by C2/C3
         mutable labelHashSet blblJunctionPoints_;
         mutable labelHashSet blblCornerPoints_;
+        mutable labelHashSet blblAcuteCornerPoints_;
 
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
@@ -316,6 +318,11 @@ public:
         const labelHashSet& blblCornerPoints() const
         {
             return blblCornerPoints_;
+        }
+
+        const labelHashSet& blblAcuteCornerPoints() const
+        {
+            return blblAcuteCornerPoints_;
         }
 
         //- return edges where BL and no-BL patches meet

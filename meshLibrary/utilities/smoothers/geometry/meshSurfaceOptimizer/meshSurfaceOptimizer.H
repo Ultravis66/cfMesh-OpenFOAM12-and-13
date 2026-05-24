@@ -319,6 +319,18 @@ public:
             }
         }
 
+        //- lock acute BL+BL+neutral corner points — prevent optimizer movement
+        void setAcuteCornerPoints(const labelHashSet& acutePts)
+        {
+            forAllConstIter(labelHashSet, acutePts, it)
+            {
+                const label bpI = it.key();
+                if( bpI < 0 || bpI >= label(vertexType_.size()) )
+                    continue;
+                vertexType_[bpI] = LOCKED | FEATURE_EDGE;
+            }
+        }
+
         //- runs a surface smoother on the selected boundary points
         bool untangleSurface
         (
