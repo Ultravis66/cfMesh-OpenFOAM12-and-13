@@ -194,6 +194,10 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.35` | Validity-rejected point VTK diagnostics |
 | `v0.4` | Targeted repair of validity-rejected points |
 | `v0.5` | Pure quality evaluator no const_cast, thread-safe, tight variance |
+| `v0.6` | Partial deterministic optimizer — 8 unsafe OMP loops serialized |
+| `v0.7` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
+| `v0.7.1` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
+| `v0.8` | Full codebase audit — 60+ bug fixes: OMP serialization, globalToLocal guards, activePatch_ bugs, face size guards, bounds guards throughout |
 
 ### BL/no-BL transition edge constraint system
 
