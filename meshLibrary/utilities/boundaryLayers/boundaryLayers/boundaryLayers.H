@@ -125,6 +125,7 @@ class boundaryLayers
         //- boundary points on sharp BL/BL junction feature curves
         //- populated by markConcaveEdgePoints, consumed by C2/C3
         mutable labelHashSet blblJunctionPoints_;
+        mutable labelHashSet blblCornerPoints_;
 
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
@@ -310,6 +311,11 @@ public:
         const labelHashSet& junctionEdgePoints() const
         {
             return blblJunctionPoints_;
+        }
+
+        const labelHashSet& blblCornerPoints() const
+        {
+            return blblCornerPoints_;
         }
 
         //- return edges where BL and no-BL patches meet

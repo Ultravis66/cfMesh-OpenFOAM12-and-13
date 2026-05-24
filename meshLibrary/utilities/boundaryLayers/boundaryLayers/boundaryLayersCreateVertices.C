@@ -146,10 +146,70 @@ point boundaryLayers::createNewVertex
 
         if( otherPatches.size() == 1 )
         {
-            //- vertex is on an edge
+            //- vertex is on an edge (or BL+BL+neutral corner)
             # ifdef DEBUGLayer
             Info << "Vertex is on an edge" << endl;
             # endif
+
+            // BL+BL+neutral corner: use per-patch conservative normal
+            // Do NOT apply layerScale_ here — common code below handles it once
+            if( blblCornerPoints_.found(bpI) )
+            {
+                Map<vector> patchNormals;
+                forAllRow(pFaces, bpI, pfI)
+                {
+                    const label faceI = pFaces(bpI, pfI);
+                    const label patchLabel = boundaryFacePatches[faceI];
+                    if( patchLabel < 0 || patchLabel >= label(treatPatches.size()) ) continue;
+                    if( !treatPatches[patchLabel] ) continue;
+                    const face& f = bFaces[faceI];
+                    if( f.size() < 3 ) continue;
+                    vector fn = vector::zero;
+                    const point& p0 = points[f[0]];
+                    for(label pi=1; pi<f.size()-1; ++pi)
+                        fn += (points[f[pi]] - p0) ^ (points[f[pi+1]] - p0);
+                    if( patchNormals.found(patchLabel) )
+                        patchNormals[patchLabel] += fn;
+                    else
+                        patchNormals.insert(patchLabel, fn);
+                }
+                if( patchNormals.size() >= 2 )
+                {
+                    scalar bestDist = GREAT;
+                    vector bestNormal = vector::zero;
+                    forAllConstIter(Map<vector>, patchNormals, it)
+                    {
+                        vector n = it();
+                        const scalar magN = mag(n);
+                        if( magN < VSMALL ) continue;
+                        n /= magN;
+                        scalar localDist = VGREAT;
+                        forAllRow(pointPoints, bpI, ppI)
+                        {
+                            const label bpJ = pointPoints(bpI, ppI);
+                            const vector vec = points[bPoints[bpJ]] - p;
+                            const scalar d = 0.5 * mag(vec & n);
+                            if( d < localDist ) localDist = d;
+                        }
+                        if( localDist < bestDist )
+                        {
+                            bestDist = localDist;
+                            bestNormal = n;
+                        }
+                    }
+                    if( mag(bestNormal) > VSMALL )
+                    {
+                        normal = bestNormal;
+                        dist = bestDist;
+                        // layerScale_ applied once by common code below
+                    }
+                    else
+                        normal = pNormals[bpI];
+                }
+                else
+                    normal = pNormals[bpI];
+            }
+            else
             //- zero-dist for BL-transition edge points
             if( terminateLayersAtConcaveEdges_
              && layerScale_.size() > bpI
