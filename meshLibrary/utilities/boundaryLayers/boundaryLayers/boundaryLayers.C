@@ -955,7 +955,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     {
         if( !boundaryPointIsBL[bpI] ) continue;
         if( zeroPts[bpI] ) continue;
-        label nPatches = 0, nBLPatches = 0, nTermPatches = 0;
+        label nPatches = 0, nBLPatches = 0, nTermPatches = 0, nNeutPatches = 0;
         DynList<label> seenPatches;
         forAllRow(pPatches, bpI, pI)
         {
@@ -967,18 +967,52 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( patchI < label(nLayersForPatch_.size())
              && nLayersForPatch_[patchI] > 0 )
                 ++nBLPatches;
+            else if( patchRole_.size() > patchI && patchRole_[patchI] == 2 )
+                ++nNeutPatches;
             else
                 ++nTermPatches;
         }
         if( nPatches == 2 ) ++nPts2;
         else if( nPatches == 3 ) ++nPts3;
         else if( nPatches > 3 ) ++nPts4plus;
+        // BL + termination corners
         if( nPatches >= 3 && nBLPatches >= 2 && nTermPatches >= 1 )
         {
             zeroDistPoints_[bpI] = true;
             layerScale_[bpI] = 0.02;
             zeroPts[bpI] = true;
             ++nTriple;
+        }
+        // BL + BL + neutral corners (blade/shroud/periodic, blade/hub/periodic)
+        else if( nPatches >= 3 && nBLPatches >= 2 && nNeutPatches >= 1 )
+        {
+            zeroDistPoints_[bpI] = true;
+            layerScale_[bpI] = 0.02;
+            zeroPts[bpI] = true;
+            ++nTriple;
+        }
+        // BL+BL+neutral corners (blade/shroud/periodic, blade/hub/periodic)
+        // Use 0.02 not 0.0 — feeds ring taper without zero-thickness collapse
+        else if( nPatches >= 3 )
+        {
+            label nBL = 0, nNeut = 0;
+            forAllRow(pPatches, bpI, pI)
+            {
+                const label patchI = pPatches(bpI, pI);
+                if( patchI < 0 || patchI >= label(patchNames_.size()) ) continue;
+                if( patchI < label(nLayersForPatch_.size())
+                 && nLayersForPatch_[patchI] > 0 )
+                    ++nBL;
+                else if( patchRole_.size() > patchI && patchRole_[patchI] == 2 )
+                    ++nNeut;
+            }
+            if( nBL >= 2 && nNeut >= 1 )
+            {
+                zeroDistPoints_[bpI] = true;
+                layerScale_[bpI] = 0.02;
+                zeroPts[bpI] = true;
+                ++nTriple;
+            }
         }
     }
     Info << "BL triple-junction stats: "
@@ -1024,6 +1058,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 layerScale_[bpI] = 0.0;
                 ++nCornerSuppressed;
                 continue;
+            }
+
             }
             // Two-patch edge: suppress only if BL meets explicit termination
             // patch at sharp angle. Neutral patches never trigger suppression.
