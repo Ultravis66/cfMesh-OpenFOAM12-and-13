@@ -49,6 +49,7 @@ Description
 #include "checkBoundaryFacesSharingTwoEdges.H"
 #include "triSurfaceMetaData.H"
 #include "polyMeshGenChecks.H"
+#include "triSurfaceCleanupDuplicates.H"
 #include "polyMeshGenGeometryModification.H"
 #include "surfaceMeshGeometryModification.H"
 
@@ -666,6 +667,46 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
         //- delete the old surface and assign the new one
         deleteDemandDrivenData(surfacePtr_);
         surfacePtr_ = surfaceWithPatches;
+    }
+
+    // Geometry preprocessing: weld near-coincident vertices
+    // Enable: geometryPreprocessing { active true; weldTolerance 1e-4; }
+    if( meshDict_.isDict("geometryPreprocessing") )
+    {
+        const dictionary& preProcDict =
+            meshDict_.subDict("geometryPreprocessing");
+        const bool active =
+            preProcDict.found("active") ?
+            bool(Switch(preProcDict.lookup("active"))) : false;
+        if( active )
+        {
+            const scalar weldTol =
+                preProcDict.found("weldTolerance") ?
+                readScalar(preProcDict.lookup("weldTolerance")) : 1e-4;
+            const label nPtsBefore = surfacePtr_->points().size();
+            const label nTriBefore = surfacePtr_->size();
+            Info << "Geometry preprocessing: welding near-coincident "
+                 << "vertices within " << weldTol << " m" << endl;
+            Info << "  Before: " << nPtsBefore << " points, "
+                 << nTriBefore << " facets" << endl;
+            meshOctree* preprocOctree = new meshOctree(*surfacePtr_);
+            meshOctreeCreator
+            (
+                *preprocOctree,
+                meshDict_
+            ).createOctreeBoxes();
+            triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
+            cleaner.mergeIdentities();
+            deleteDemandDrivenData(preprocOctree);
+            const label nPtsAfter = surfacePtr_->points().size();
+            const label nTriAfter = surfacePtr_->size();
+            Info << "  After:  " << nPtsAfter << " points, "
+                 << nTriAfter << " facets" << endl;
+            Info << "  Welded: " << (nPtsBefore - nPtsAfter)
+                 << " points, removed "
+                 << (nTriBefore - nTriAfter)
+                 << " degenerate facets" << endl;
+        }
     }
 
     if( meshDict_.found("anisotropicSources") )

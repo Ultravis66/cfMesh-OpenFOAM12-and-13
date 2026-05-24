@@ -1047,7 +1047,6 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 continue;
             }
 
-            }
             // Two-patch edge: suppress only if BL meets explicit termination
             // patch at sharp angle. Neutral patches never trigger suppression.
             if( nPt == 2 && nBLPt >= 1 && nTermPt >= 1
