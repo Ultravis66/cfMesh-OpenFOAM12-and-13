@@ -6,15 +6,11 @@ FoamFile
     location  "system";
     object    meshDict;
 }
-
 surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
-
 maxCellSize 0.003;
 boundaryCellSize 0.001;
 minCellSize 0.0005;
-
 insideMesh (0.214 0.000 0.025);
-
 localRefinement
 {
     blade_1 { cellSize 0.0005; }
@@ -26,13 +22,10 @@ localRefinement
     periodic_1 { cellSize 0.0005; }
     periodic_2 { cellSize 0.0005; }
 }
-
 boundaryLayers
 {
     nLayers 0;
     terminationPatches (inlet outlet);
-
-    // BL/BL sharp feature detection
     blblFeatureAngleDeg 40;
     cornerSnapRelaxation 0.25;
     cornerSnapIterations 1;
@@ -41,15 +34,12 @@ boundaryLayers
     snapMinPyramidHeight 1e-10;
     postBLSnap false;
     postRefineBLOptimisation true;
-
-    // BL/no-BL and BL/BL transition ramp
     layerScaleRing1 0.25;
     layerScaleRing2 0.50;
     layerScaleRing3 0.75;
     layerScaleRing4 1.00;
     thicknessRatio 1.3;
     maxFirstLayerThickness 1e-4;
-
     patchBoundaryLayers
     {
         blade_1 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
@@ -64,14 +54,10 @@ boundaryLayers
         periodic_2 { nLayers 0; }
     }
 }
-
-
-
 renameBoundary
 {
     defaultName     walls;
     defaultType     wall;
-
     newPatchNames
     {
         inlet      { newName inlet;      type patch; }
