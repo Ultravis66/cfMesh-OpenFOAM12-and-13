@@ -7,21 +7,31 @@ FoamFile
     object    meshDict;
 }
 surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
+
+geometryPreprocessing
+{
+    active          true;
+    weldTolerance   1e-4;
+}
+
 maxCellSize 0.003;
 boundaryCellSize 0.001;
 minCellSize 0.0005;
+
 insideMesh (0.214 0.000 0.025);
+
 localRefinement
 {
-    blade_1 { cellSize 0.0005; }
-    blade_2 { cellSize 0.0005; }
-    blade_3 { cellSize 0.0005; }
-    blade_4 { cellSize 0.0005; }
-    hub     { cellSize 0.001; }
-    shroud  { cellSize 0.001; }
+    blade_1    { cellSize 0.0005; }
+    blade_2    { cellSize 0.0005; }
+    blade_3    { cellSize 0.0005; }
+    blade_4    { cellSize 0.0005; }
+    hub        { cellSize 0.001; }
+    shroud     { cellSize 0.001; }
     periodic_1 { cellSize 0.0005; }
     periodic_2 { cellSize 0.0005; }
 }
+
 boundaryLayers
 {
     nLayers 0;
@@ -54,6 +64,7 @@ boundaryLayers
         periodic_2 { nLayers 0; }
     }
 }
+
 renameBoundary
 {
     defaultName     walls;
