@@ -105,7 +105,7 @@ checkMesh
 | `checkEdgeFaceConnections` / `checkFaceGroupsAtBndVertices` missing `clearAddressingData()` after `removeCells()` | Add `mesh_.clearAddressingData()` after each `removeCells()` |
 | `calcGlobalBoundaryPointLabels` receive loops use remote face/point indices without bounds checks | Guard face index, point index, and `bp[]` result before use |
 | `findLeafContainingVertex` throws raw `char const*` for points near octree boundary — process terminates on fine meshes | Replace `FatalErrorIn` + `throw` with `WarningIn` + `return -1`; all callers already handle `-1` gracefully |
-
+| Near-coincident STL vertices below mesh resolution cause protrusions at sharp trailing-edge corners | meshDict-controlled geometry preprocessing pass: octree-based vertex weld before octree generation (geometryPreprocessing { active true; weldTolerance 1e-4; }) |
 
 
 
@@ -199,6 +199,7 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.7.1` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.8` | Full codebase audit — 60+ bug fixes: OMP serialization, globalToLocal guards, activePatch_ bugs, face size guards, bounds guards throughout |
 | `v0.8.1` | `feature/bl-transition-topology` | BL/BL junction extrusion fix: per-patch conservative normal selection in createNewVertex. Max skewness drops from 11.1 to 8.74. |
+| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing: meshDict-controlled near-coincident vertex welding. BL+BL+neutral corner classification. Bad pyramids 6-9→1, non-ortho errors 1→0. |
 
 ### BL/no-BL transition edge constraint system
 
