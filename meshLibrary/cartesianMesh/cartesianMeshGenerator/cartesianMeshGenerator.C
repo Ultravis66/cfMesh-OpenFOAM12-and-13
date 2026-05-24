@@ -237,6 +237,10 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         if( enforceConstraints )
             surfOpt.enforceConstraints();
 
+        //- lock BL/BL junction points to preserve feature edges
+        if( blblJunctionPoints_.size() )
+            surfOpt.setFeatureEdgePoints(blblJunctionPoints_);
+
         surfOpt.optimizeSurface();
     }
 

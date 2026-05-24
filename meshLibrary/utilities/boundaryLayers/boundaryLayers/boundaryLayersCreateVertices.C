@@ -319,8 +319,65 @@ point boundaryLayers::createNewVertex
     }
     else
     {
-        // Feature-aware normal: only average faces from treated patches
+        // BL/BL junction: per-patch normals, conservative min-dist selection
+        if( blblJunctionPoints_.found(bpI) )
         {
+            Map<vector> patchNormals;
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label faceI = pFaces(bpI, pfI);
+                const label patchLabel = boundaryFacePatches[faceI];
+                if( patchLabel < 0 || patchLabel >= label(treatPatches.size()) ) continue;
+                if( !treatPatches[patchLabel] ) continue;
+                const face& f = bFaces[faceI];
+                if( f.size() < 3 ) continue;
+                vector fn = vector::zero;
+                const point& p0 = points[f[0]];
+                for(label pi=1; pi<f.size()-1; ++pi)
+                    fn += (points[f[pi]] - p0) ^ (points[f[pi+1]] - p0);
+                if( patchNormals.found(patchLabel) )
+                    patchNormals[patchLabel] += fn;
+                else
+                    patchNormals.insert(patchLabel, fn);
+            }
+            if( patchNormals.size() >= 2 )
+            {
+                scalar bestDist = GREAT;
+                vector bestNormal = vector::zero;
+                forAllConstIter(Map<vector>, patchNormals, it)
+                {
+                    vector n = it();
+                    const scalar magN = mag(n);
+                    if( magN < VSMALL ) continue;
+                    n /= magN;
+                    scalar localDist = VGREAT;
+                    forAllRow(pointPoints, bpI, ppI)
+                    {
+                        const label bpJ = pointPoints(bpI, ppI);
+                        const vector vec = points[bPoints[bpJ]] - p;
+                        const scalar d = 0.5 * mag(vec & n);
+                        if( d < localDist ) localDist = d;
+                    }
+                    if( localDist < bestDist )
+                    {
+                        bestDist = localDist;
+                        bestNormal = n;
+                    }
+                }
+                if( mag(bestNormal) > VSMALL )
+                {
+                    normal = bestNormal;
+                    dist = Foam::min(dist, bestDist);
+                }
+                else
+                    normal = pNormals[bpI];
+            }
+            else
+                normal = pNormals[bpI];
+        }
+        else
+        {
+            // Feature-aware normal: only average faces from treated patches
             vector patchNormal(vector::zero);
             forAllRow(pFaces, bpI, pfI)
             {
