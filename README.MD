@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.8.1 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
+v0.8.2 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
 
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
@@ -106,7 +106,7 @@ checkMesh
 | `calcGlobalBoundaryPointLabels` receive loops use remote face/point indices without bounds checks | Guard face index, point index, and `bp[]` result before use |
 | `findLeafContainingVertex` throws raw `char const*` for points near octree boundary — process terminates on fine meshes | Replace `FatalErrorIn` + `throw` with `WarningIn` + `return -1`; all callers already handle `-1` gracefully |
 | Near-coincident STL vertices below mesh resolution cause protrusions at sharp trailing-edge corners | meshDict-controlled geometry preprocessing pass: octree-based vertex weld before octree generation (geometryPreprocessing { active true; weldTolerance 1e-4; }) |
-
+| BL+BL+neutral 3-way corners (blade/shroud/periodic, blade/hub/periodic) extruded with averaged bisector normal causing protrusions | Acute corner classifier measures patch-normal dot product; acute corners (dot < threshold) get 0.02 layerScale + projection guard; mild corners get 0.15 + ring taper |
 
 
 ---
@@ -230,6 +230,12 @@ Generic protection system for points where BL patches meet no-BL patches (wall m
 | `gapSuppression` | false | Suppress BL at detected gap-risk points |
 | `gapDetectionDistance` | 1e-4 | Absolute gap width threshold for detection |
 | `gapProbeDistance` | 1e-6 | Inward normal probe distance for gap measurement |
+| `geometryPreprocessing { active true; weldTolerance 1e-4; }` | off | Pre-mesh STL near-coincident vertex welding. Fixes knife-edge TE defects below mesh resolution. |
+| `blblCornerAcuteThreshold` | 0.3 | Dot product threshold for acute BL+BL+neutral corner classification. 0.3=73°, 0.0=90°, -0.3=107°. |
+| `lockAcuteCornerPoints` | true | Lock acute BL+BL+neutral corners in final surface optimizer. Prevents post-BL smoothing from pushing corners across patch boundaries. |
+| `layerScaleRing1` | 0.10 | Updated default — softer taper start |
+| `layerScaleRing2` | 0.30 | Updated default |
+| `layerScaleRing3` | 0.60 | Updated default |
 
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
@@ -247,7 +253,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 ### Known remaining issues
 **Residual minor variance** Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
 
-**Blade/periodic corner jank** Small cluster of visually rough cells at blade trailing/leading edge + periodic + inlet/outlet 3-way corners. Geometric singularity the 3-gate post-refinement rollback is in development to address this.
+**Blade TE singularity** One residual high-aspect cell and one near-zero volume cell at the blade trailing-edge geometric singularity (knife-edge meeting shroud+periodic). This is a CAD/STL limitation — the feature is below mesh resolution. The geometry preprocessing weld mitigates but cannot fully resolve a true zero-thickness trailing edge.
 
 **BL/BL feature-edge rounding** Blade/hub and blade/shroud feature curves can be slightly rounded by the surface smoother. Fix in progress: feature-curve locking during smooth passes.
 
@@ -287,18 +293,18 @@ All known race-sensitive OMP apply loops in the surface and mesh optimizer have 
 
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.8.1 current | v0.8 | v0.7.1 best case |
-|--------|----------------|------|------------------|
-| Cells | ~2.28M | ~2.28M | ~2.1M |
-| Average non-orthogonality | 9.86° | 9.86° | 10.6° |
-| Max non-orthogonality | ~90° | ~90° | 90–100° |
-| Non-ortho errors | 1 | 1 | 0–1 |
-| Negative volume cells | 1 | 1 | 0–2 |
-| Bad pyramid faces | 6 | 8–11 | 1–9 |
-| Max skewness | **8.74** | 11.1 | 9.3–9.5 |
-| Severely non-ortho faces (>70°) | ~1,960 | ~1,700 | 1,800–2,100 |
-| Runtime | ~83s | ~85–91s | ~75–100s |
-| Deterministic / repeatable major metrics | Yes | Yes | No |
+| Metric | v0.8.2 current | v0.8.1 | v0.8 | v0.7.1 best case |
+|--------|----------------|--------|------|------------------|
+| Cells | ~2.28M | ~2.28M | ~2.28M | ~2.1M |
+| Average non-orthogonality | 9.88° | 9.86° | 9.86° | 10.6° |
+| Max non-orthogonality | ~90° | ~90° | ~90° | 90–100° |
+| Non-ortho errors | 0 | 1 | 1 | 0–1 |
+| Negative volume cells | 1 | 1 | 1 | 0–2 |
+| Bad pyramid faces | **0** | 6 | 8–11 | 1–9 |
+| Max skewness | **8.74** | 8.74 | 11.1 | 9.3–9.5 |
+| Severely non-ortho faces (>70°) | ~1,696 | ~1,960 | ~1,700 | 1,800–2,100 |
+| Runtime | ~83s | ~83s | ~85–91s | ~75–100s |
+| Deterministic / repeatable major metrics | Yes | Yes | Yes | No |
 
 ---
 
@@ -315,6 +321,7 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 | `v0.35` | `openfoam13` | VTK diagnostics for validity-rejected points |
 | `v0.2` | `openfoam13` | Skewness proxy in quality evaluator |
 | `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
+| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
 
 ---
 ## Running the regression test
