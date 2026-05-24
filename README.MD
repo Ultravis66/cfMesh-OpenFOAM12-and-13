@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.8 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
+v0.8.1 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation.
 
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
@@ -198,6 +198,7 @@ Binary search along the snap vector for points that fail full projection. Gated 
 | `v0.7` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
 | `v0.7.1` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.8` | Full codebase audit — 60+ bug fixes: OMP serialization, globalToLocal guards, activePatch_ bugs, face size guards, bounds guards throughout |
+| `v0.8.1` | `feature/bl-transition-topology` | BL/BL junction extrusion fix: per-patch conservative normal selection in createNewVertex. Max skewness drops from 11.1 to 8.74. |
 
 ### BL/no-BL transition edge constraint system
 
@@ -285,18 +286,18 @@ All known race-sensitive OMP apply loops in the surface and mesh optimizer have 
 
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.8 current baseline | v0.7.1 best case |
-|--------|------------------------|------------------|
-| Cells | ~2.1M | ~2.1M |
-| Average non-orthogonality | 9.86° | 10.6° |
-| Max non-orthogonality | ~90° | 90–100° |
-| Non-ortho errors | 1 | 0–1 |
-| Negative volume cells | 1 | 0–2 |
-| Bad pyramid faces | 8–11 | 1–9 |
-| Max skewness | 11.1 | 9.3–9.5 |
-| Severely non-ortho faces (>70°) | ~1,700 | 1,800–2,100 |
-| Runtime | ~85–91s | ~75–100s |
-| Deterministic / repeatable major metrics | Yes | No |
+| Metric | v0.8.1 current | v0.8 | v0.7.1 best case |
+|--------|----------------|------|------------------|
+| Cells | ~2.28M | ~2.28M | ~2.1M |
+| Average non-orthogonality | 9.86° | 9.86° | 10.6° |
+| Max non-orthogonality | ~90° | ~90° | 90–100° |
+| Non-ortho errors | 1 | 1 | 0–1 |
+| Negative volume cells | 1 | 1 | 0–2 |
+| Bad pyramid faces | 6 | 8–11 | 1–9 |
+| Max skewness | **8.74** | 11.1 | 9.3–9.5 |
+| Severely non-ortho faces (>70°) | ~1,960 | ~1,700 | 1,800–2,100 |
+| Runtime | ~83s | ~85–91s | ~75–100s |
+| Deterministic / repeatable major metrics | Yes | Yes | No |
 
 ---
 
