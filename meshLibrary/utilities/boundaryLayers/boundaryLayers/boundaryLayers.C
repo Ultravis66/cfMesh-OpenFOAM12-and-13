@@ -983,23 +983,66 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             zeroPts[bpI] = true;
             ++nTriple;
         }
-        // BL + BL + neutral corners (blade/shroud/periodic, blade/hub/periodic)
-        else if( nPatches >= 3 && nBLPatches >= 2 && nNeutPatches >= 1 )
-        {
-            zeroDistPoints_[bpI] = true;
-            layerScale_[bpI] = 0.02;
-            zeroPts[bpI] = true;
-            ++nTriple;
-        }
         // BL+BL+neutral corners (blade/shroud/periodic, blade/hub/periodic)
-        // nNeutPatches already counted above — use directly
+        // Measure patch-normal spread to classify acute vs mild corners
         else if( nPatches >= 3 && nBLPatches >= 2 && nNeutPatches >= 1 )
         {
+            // Compute average normal per BL patch at this corner
+            const VRWGraph& ptFaces = mse.pointFaces();
+            const faceList::subList& bFaces = mse.boundaryFaces();
+            const labelList& bFacePatches = mse.boundaryFacePatches();
+
+            Map<vector> blPatchNormals;
+            forAllRow(ptFaces, bpI, pfI)
+            {
+                const label faceI = ptFaces(bpI, pfI);
+                const label patchI = bFacePatches[faceI];
+                if( patchI < 0 || patchI >= label(patchRole_.size()) ) continue;
+                if( patchRole_[patchI] != 0 ) continue; // BL patches only
+                const face& f = bFaces[faceI];
+                if( f.size() < 3 ) continue;
+                vector fn = vector::zero;
+                const point& p0 = points[bPoints[bpI]];
+                // Use face normal
+                const point& fp0 = points[f[0]];
+                for(label fi=1; fi<f.size()-1; ++fi)
+                    fn += (points[f[fi]]-fp0)^(points[f[fi+1]]-fp0);
+                if( blPatchNormals.found(patchI) )
+                    blPatchNormals[patchI] += fn;
+                else
+                    blPatchNormals.insert(patchI, fn);
+            }
+
+            // Find minimum dot product between any two BL patch normals
+            scalar minDot = GREAT;
+            DynList<vector> blNorms;
+            forAllConstIter(Map<vector>, blPatchNormals, it)
+            {
+                const scalar magN = mag(it());
+                if( magN > VSMALL )
+                    blNorms.append(it() / magN);
+            }
+            for(label i=0; i<blNorms.size(); ++i)
+                for(label j=i+1; j<blNorms.size(); ++j)
+                    minDot = Foam::min(minDot, blNorms[i] & blNorms[j]);
+
+            // Acute corner: BL patch normals diverge strongly
+            // minDot < 0 means angle > 90 degrees between patches
+            const scalar acuteThreshold = 0.3; // ~73 degrees
+            const bool isAcute = (minDot < acuteThreshold && minDot < GREAT);
+
             zeroDistPoints_[bpI] = true;
-            layerScale_[bpI] = 0.02;
+            layerScale_[bpI] = isAcute ? 0.02 : 0.15;
             zeroPts[bpI] = true;
             blblCornerPoints_.insert(bpI);
             ++nTriple;
+
+            # ifdef DEBUGLayer
+            Info << "BL+BL+neutral corner bpI=" << bpI
+                 << " minDot=" << minDot
+                 << " acute=" << isAcute
+                 << " layerScale=" << layerScale_[bpI] << endl;
+            # endif
         }
     }
     Info << "BL triple-junction stats: "
