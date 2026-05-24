@@ -104,7 +104,7 @@ checkMesh
 | `checkAndFixCellGroupsAtBndVertices` performs topology surgery under OMP dynamic scheduling nondeterministic face connectivity | Serialize repair loop when modifying topology |
 | `checkEdgeFaceConnections` / `checkFaceGroupsAtBndVertices` missing `clearAddressingData()` after `removeCells()` | Add `mesh_.clearAddressingData()` after each `removeCells()` |
 | `calcGlobalBoundaryPointLabels` receive loops use remote face/point indices without bounds checks | Guard face index, point index, and `bp[]` result before use |
-
+| `findLeafContainingVertex` throws raw `char const*` for points near octree boundary — process terminates on fine meshes | Replace `FatalErrorIn` + `throw` with `WarningIn` + `return -1`; all callers already handle `-1` gracefully |
 
 
 
