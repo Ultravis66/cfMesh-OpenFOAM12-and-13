@@ -315,7 +315,7 @@ public:
                 if( vertexType_[bpI] & CORNER )
                     vertexType_[bpI] |= FEATURE_EDGE;
                 else
-                    vertexType_[bpI] = LOCKED | FEATURE_EDGE;
+                    vertexType_[bpI] = EDGE | FEATURE_EDGE;
             }
         }
 

@@ -48,6 +48,7 @@ Description
 #include "OFstream.H"
 #include "checkBoundaryFacesSharingTwoEdges.H"
 #include "triSurfaceMetaData.H"
+#include "polyMeshGenChecks.H"
 #include "polyMeshGenGeometryModification.H"
 #include "surfaceMeshGeometryModification.H"
 
@@ -225,7 +226,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
             if( hasNegVol || hasBadPyramids || hasNonOrtho )
             {
                 const meshSurfaceEngine mse(mesh_);
-                const labelList& bFaceOwner = mse.boundaryFaceOwners();
+                const labelList& bFaceOwner = mse.faceOwners();
                 const faceList::subList& bFaces = mse.boundaryFaces();
                 const label nBndFaces = bFaces.size();
                 const label nInternalFaces = mesh_.nInternalFaces();
@@ -301,16 +302,10 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         meshSurfaceEngine mse(mesh_);
         meshSurfaceOptimizer surfOpt(mse, *octreePtr_);
 
-        //- constrain BL/BL junction points to preserve feature edges
-        if( blblJunctionPoints_.size() )
-            surfOpt.setFeatureEdgePoints(blblJunctionPoints_);
 
         if( enforceConstraints )
             surfOpt.enforceConstraints();
 
-        //- lock BL/BL junction points to preserve feature edges
-        if( blblJunctionPoints_.size() )
-            surfOpt.setFeatureEdgePoints(blblJunctionPoints_);
 
         surfOpt.optimizeSurface();
     }
