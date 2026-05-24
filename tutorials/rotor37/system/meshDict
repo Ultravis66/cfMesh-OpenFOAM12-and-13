@@ -37,6 +37,7 @@ boundaryLayers
     nLayers 0;
     terminationPatches (inlet outlet);
     blblFeatureAngleDeg 40;
+    blblCornerAcuteThreshold 0.3;  // dot product threshold: 0.3=73deg, 0.0=90deg, -0.3=107deg
     cornerSnapRelaxation 0.25;
     cornerSnapIterations 1;
     edgeSnapRelaxation 1.0;

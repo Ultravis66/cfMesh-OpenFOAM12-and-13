@@ -1025,8 +1025,17 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     minDot = Foam::min(minDot, blNorms[i] & blNorms[j]);
 
             // Acute corner: BL patch normals diverge strongly
-            // minDot < 0 means angle > 90 degrees between patches
-            const scalar acuteThreshold = 0.3; // ~73 degrees between BL patches
+            // Read threshold from meshDict or use default 0.3 (~73 degrees)
+            // Lower value = more conservative (only most acute corners suppressed)
+            scalar acuteThreshold = 0.3;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndL.found("blblCornerAcuteThreshold") )
+                    acuteThreshold =
+                        readScalar(bndL.lookup("blblCornerAcuteThreshold"));
+            }
             const bool isAcute = (minDot < acuteThreshold && minDot < GREAT);
 
             zeroDistPoints_[bpI] = true;
