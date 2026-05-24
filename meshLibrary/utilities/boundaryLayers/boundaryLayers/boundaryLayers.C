@@ -1002,8 +1002,6 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 const face& f = bFaces[faceI];
                 if( f.size() < 3 ) continue;
                 vector fn = vector::zero;
-                const point& p0 = points[bPoints[bpI]];
-                // Use face normal
                 const point& fp0 = points[f[0]];
                 for(label fi=1; fi<f.size()-1; ++fi)
                     fn += (points[f[fi]]-fp0)^(points[f[fi+1]]-fp0);
@@ -1028,7 +1026,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
             // Acute corner: BL patch normals diverge strongly
             // minDot < 0 means angle > 90 degrees between patches
-            const scalar acuteThreshold = 0.3; // ~73 degrees
+            const scalar acuteThreshold = 0.3; // ~73 degrees between BL patches
             const bool isAcute = (minDot < acuteThreshold && minDot < GREAT);
 
             zeroDistPoints_[bpI] = true;
