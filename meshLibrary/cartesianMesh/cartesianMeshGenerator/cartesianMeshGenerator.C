@@ -230,6 +230,10 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         meshSurfaceEngine mse(mesh_);
         meshSurfaceOptimizer surfOpt(mse, *octreePtr_);
 
+        //- constrain BL/BL junction points to preserve feature edges
+        if( blblJunctionPoints_.size() )
+            surfOpt.setFeatureEdgePoints(blblJunctionPoints_);
+
         if( enforceConstraints )
             surfOpt.enforceConstraints();
 

@@ -90,6 +90,9 @@ class meshSurfaceOptimizer
         word badPointsSubsetName_;
 
     // Private member functions
+        //- BL/BL junction points constrained to slide along feature curves
+        labelHashSet featureEdgePoints_;
+
         //- classify surface vertices as PARTITION, EDGE, CORNER
         void classifySurfaceVertices();
 
@@ -246,7 +249,8 @@ class meshSurfaceOptimizer
             EDGE = 2,
             CORNER = 4,
             PROCBND = 8,
-            LOCKED = 16
+            LOCKED = 16,
+            FEATURE_EDGE = 32
         };
 
 public:
@@ -294,6 +298,26 @@ public:
         //- Points which must be moved away from the required position are
         //- stored into a point subset
         void enforceConstraints(const word subsetName="badPoints");
+
+        //- constrain BL/BL junction points to preserve feature edges
+        //- must be called AFTER construction since vertexType_ is already set
+        void setFeatureEdgePoints(const labelHashSet& featurePts)
+        {
+            featureEdgePoints_ = featurePts;
+
+            forAllConstIter(labelHashSet, featureEdgePoints_, it)
+            {
+                const label bpI = it.key();
+
+                if( bpI < 0 || bpI >= label(vertexType_.size()) )
+                    continue;
+
+                if( vertexType_[bpI] & CORNER )
+                    vertexType_[bpI] |= FEATURE_EDGE;
+                else
+                    vertexType_[bpI] = EDGE | FEATURE_EDGE;
+            }
+        }
 
         //- runs a surface smoother on the selected boundary points
         bool untangleSurface
