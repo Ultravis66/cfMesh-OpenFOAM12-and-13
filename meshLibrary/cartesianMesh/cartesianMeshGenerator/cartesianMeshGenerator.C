@@ -193,6 +193,77 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
              refLayers.pointsInBndLayer(blPoints_);
 
+
+        // 3-gate post-refinement diagnostic (non-mutating)
+        {
+            Pout << nl
+                 << "### ENTERING 3-GATE POST-REFINEMENT DIAGNOSTIC ###"
+                 << nl << endl;
+            Pout << "3-gate diagnostic: checking post-refinement BL quality" << endl;
+
+            labelHashSet badCells;
+            labelHashSet badPyramidFaces;
+            labelHashSet nonOrthoFaces;
+
+            const bool hasNegVol =
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &badCells);
+
+            const bool hasBadPyramids =
+                polyMeshGenChecks::checkFacePyramids
+                (mesh_, false, -SMALL, &badPyramidFaces);
+
+            // Gate 3: severe non-orthogonality above 85 degrees
+            const bool hasNonOrtho =
+                polyMeshGenChecks::checkFaceDotProduct
+                (mesh_, false, 85.0, &nonOrthoFaces);
+
+            Pout << "3-gate diagnostic results:" << endl;
+            Pout << "  Gate 1 (neg vol cells):    " << badCells.size() << endl;
+            Pout << "  Gate 2 (bad pyramids):     " << badPyramidFaces.size() << endl;
+            Pout << "  Gate 3 (non-ortho >85deg): " << nonOrthoFaces.size() << endl;
+
+            if( hasNegVol || hasBadPyramids || hasNonOrtho )
+            {
+                const meshSurfaceEngine mse(mesh_);
+                const labelList& bFaceOwner = mse.boundaryFaceOwners();
+                const faceList::subList& bFaces = mse.boundaryFaces();
+                const label nBndFaces = bFaces.size();
+                const label nInternalFaces = mesh_.nInternalFaces();
+
+                labelHashSet rollbackBndFaces;
+
+                forAllConstIter(labelHashSet, badCells, it)
+                {
+                    const label cellI = it.key();
+                    for(label bfI=0; bfI<nBndFaces; ++bfI)
+                        if( bFaceOwner[bfI] == cellI )
+                            rollbackBndFaces.insert(bfI);
+                }
+
+                forAllConstIter(labelHashSet, badPyramidFaces, it)
+                {
+                    const label faceI = it.key();
+                    if( faceI >= nInternalFaces )
+                        rollbackBndFaces.insert(faceI - nInternalFaces);
+                }
+
+                forAllConstIter(labelHashSet, nonOrthoFaces, it)
+                {
+                    const label faceI = it.key();
+                    if( faceI >= nInternalFaces )
+                        rollbackBndFaces.insert(faceI - nInternalFaces);
+                }
+
+                Pout << "  Rollback candidates: "
+                     << rollbackBndFaces.size()
+                     << " boundary faces would be targeted" << endl;
+            }
+            else
+            {
+                Pout << "  All gates passed - no rollback needed" << endl;
+            }
+        }
+
         meshOptimizer mOpt(mesh_);
         mOpt.lockPoints(blPoints_);
         mOpt.untangleBoundaryLayer();
