@@ -69,11 +69,42 @@ static label scanNearCoincidentPoints
     const triSurf& surf,
     const meshOctree& octree,
     const scalar tolerance,
+    const dictionary& meshDict,
     const bool verbose = false
 )
 {
     const pointField& pts = surf.points();
     const wordList pNames = surf.patchNames();
+
+    // Build BL patch index set from meshDict patchBoundaryLayers
+    labelHashSet blPatchIndices;
+    if( meshDict.isDict("boundaryLayers") )
+    {
+        const dictionary& bndL = meshDict.subDict("boundaryLayers");
+        if( bndL.isDict("patchBoundaryLayers") )
+        {
+            const dictionary& pbl = bndL.subDict("patchBoundaryLayers");
+            forAll(pNames, pi)
+            {
+                if( pbl.isDict(pNames[pi]) )
+                {
+                    const dictionary& pd = pbl.subDict(pNames[pi]);
+                    const label nL = pd.found("nLayers") ?
+                        readLabel(pd.lookup("nLayers")) : 0;
+                    if( nL > 0 )
+                        blPatchIndices.insert(pi);
+                }
+            }
+        }
+        // Also check global nLayers
+        if( bndL.found("nLayers") )
+        {
+            const label globalN = readLabel(bndL.lookup("nLayers"));
+            if( globalN > 0 )
+                forAll(pNames, pi)
+                    blPatchIndices.insert(pi);
+        }
+    }
     std::set<std::pair<label,label>> countedPairs;
     label nPairs = 0;
 
@@ -153,15 +184,45 @@ static label scanNearCoincidentPoints
                                 if( pNamesA[pi] == pNamesB[pj] )
                                     samePatch = true;
 
+                        // Check if both points are on BL wall patches
+                        bool bothBLWall = false;
+                        if( pNamesA.size() && pNamesB.size() )
+                        {
+                            bool aIsBL = false, bIsBL = false;
+                            forAll(pNamesA, pii)
+                            {
+                                forAll(pNames, ni)
+                                    if( pNames[ni] == pNamesA[pii]
+                                     && blPatchIndices.found(ni) )
+                                        aIsBL = true;
+                            }
+                            forAll(pNamesB, pii)
+                            {
+                                forAll(pNames, ni)
+                                    if( pNames[ni] == pNamesB[pii]
+                                     && blPatchIndices.found(ni) )
+                                        bIsBL = true;
+                            }
+                            bothBLWall = aIsBL && bIsBL;
+                        }
+
                         if( ratio < 0.20 )
+                            // Feature <20% of tolerance — almost certainly defect
                             classification = "WELD_SAFE_RATIO";
-                        else if( samePatch && ratio < 0.80 )
-                            classification = "WELD_SAME_PATCH";
                         else if( !pNamesA.size() || !pNamesB.size() )
+                            // Missing patch data — never auto-weld
                             classification = "FLAG_INCOMPLETE";
+                        else if( samePatch && ratio < 0.80 && pNamesA.size() && pNamesB.size() )
+                            // Same patch, moderate ratio — surface sliver
+                            classification = "WELD_SAME_PATCH";
+                        else if( bothBLWall && ratio < 0.50 )
+                            // Both BL wall patches, moderate ratio — TE knife-edge
+                            classification = "WELD_BL_WALL_PAIR";
                         else if( ratio > 0.80 )
+                            // High ratio — may be legitimate geometry
                             classification = "FLAG_HIGH_RATIO";
                         else
+                            // Cross-patch or unknown — flag for review
                             classification = "FLAG_CROSS_PATCH_CANDIDATE";
 
                         if( verbose )
@@ -171,10 +232,13 @@ static label scanNearCoincidentPoints
                                  << " d=" << d*1000.0 << "mm"
                                  << " ratio=" << ratio
                                  << " class=" << classification
-                                 << " at " << pts[pointI]
-                                 << " pA=" << pNamesA
-                                 << " pB=" << pNamesB
-                                 << endl;
+                                 << " at " << pts[pointI];
+                            Info << " pA(" << pNamesA.size() << ")=(";
+                            forAll(pNamesA, i) Info << pNamesA[i] << " ";
+                            Info << ")";
+                            Info << " pB(" << pNamesB.size() << ")=(";
+                            forAll(pNamesB, i) Info << pNamesB[i] << " ";
+                            Info << ")" << endl;
                         }
                     }
                 }
@@ -877,6 +941,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     *surfacePtr_,
                     *scanOctree,
                     weldTol,
+                    meshDict_,
                     writeDiag
                 );
                 deleteDemandDrivenData(scanOctree);
