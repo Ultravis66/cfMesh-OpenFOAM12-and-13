@@ -39,6 +39,7 @@ Description
 #include <map>
 #include <string>
 #include <set>
+#include "OFstream.H"
 
 # ifdef USE_OMP
 #include <omp.h>
@@ -1318,6 +1319,66 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         Info << "BL/no-BL transition edge detection: "
              << blNoBlEdges_.size() << " transition edges, "
              << blNoBlEdgePoints_.size() << " interface points locked" << endl;
+    }
+
+
+    // Topology-role VTK diagnostic dump
+    // Roles: 0=SINGLE_PATCH 1=TWO_PATCH_EDGE 2=MULTI_PATCH_CORNER
+    //        3=BL_NOBL_TRANSITION 4=BLBL_JUNCTION 5=ACUTE_CORNER
+    {
+        const meshSurfaceEngine& mseDiag = surfaceEngine();
+        const labelList& bPtsDiag = mseDiag.boundaryPoints();
+        const pointField& ptsDiag = mseDiag.mesh().points();
+        meshSurfacePartitioner mPartDiag(mseDiag);
+        const labelHashSet& cornersDiag = mPartDiag.corners();
+        const labelHashSet& edgePtsDiag = mPartDiag.edgePoints();
+        OFstream vtkFile("boundaryPointRoles.vtk");
+        vtkFile << "# vtk DataFile Version 3.0\n";
+        vtkFile << "Boundary point topology roles\n";
+        vtkFile << "ASCII\n";
+        vtkFile << "DATASET POLYDATA\n";
+        vtkFile << "POINTS " << bPtsDiag.size() << " float\n";
+        forAll(bPtsDiag, bpI)
+        {
+            const point& p = ptsDiag[bPtsDiag[bpI]];
+            vtkFile << p.x() << ' ' << p.y() << ' ' << p.z() << '\n';
+        }
+        vtkFile << "\nVERTICES " << bPtsDiag.size()
+                << " " << 2*bPtsDiag.size() << '\n';
+        forAll(bPtsDiag, bpI)
+            vtkFile << "1 " << bpI << '\n';
+        vtkFile << "\nPOINT_DATA " << bPtsDiag.size() << '\n';
+        vtkFile << "SCALARS role int 1\n";
+        vtkFile << "LOOKUP_TABLE default\n";
+        label nSingle=0, nEdge=0, nCorner=0, nBlNoBl=0, nBlBl=0, nAcute=0;
+        forAll(bPtsDiag, bpI)
+        {
+            int role = 0;
+            if( blblAcuteCornerPoints_.found(bpI) )      role = 5;
+            else if( blblJunctionPoints_.found(bpI) )    role = 4;
+            else if( blNoBlEdgePoints_.found(bpI) )      role = 3;
+            else if( cornersDiag.found(bpI) )            role = 2;
+            else if( edgePtsDiag.found(bpI) )            role = 1;
+            vtkFile << role << '\n';
+            switch(role)
+            {
+                case 0: ++nSingle; break;
+                case 1: ++nEdge;   break;
+                case 2: ++nCorner; break;
+                case 3: ++nBlNoBl; break;
+                case 4: ++nBlBl;   break;
+                case 5: ++nAcute;  break;
+            }
+        }
+        Info << "[Diag] boundaryPointRoles.vtk written" << endl;
+        Info << "[Diag] Role counts:"
+             << " SINGLE_PATCH=" << nSingle
+             << " TWO_PATCH_EDGE=" << nEdge
+             << " MULTI_PATCH_CORNER=" << nCorner
+             << " BL_NOBL=" << nBlNoBl
+             << " BLBL_JUNCTION=" << nBlBl
+             << " ACUTE_CORNER=" << nAcute
+             << endl;
     }
 
     // Ring 1: neighbors of zero points on BL patches -> 0.25
