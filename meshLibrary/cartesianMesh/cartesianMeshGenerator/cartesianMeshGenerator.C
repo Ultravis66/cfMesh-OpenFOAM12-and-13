@@ -62,6 +62,69 @@ namespace Foam
 
 // * * * * * * * * * * * * Private member functions  * * * * * * * * * * * * //
 
+// Non-mutating scan for near-coincident vertices
+// Returns count of unique vertex pairs closer than tolerance
+static label scanNearCoincidentPoints
+(
+    const triSurf& surf,
+    const meshOctree& octree,
+    const scalar tolerance,
+    const bool verbose = false
+)
+{
+    const pointField& pts = surf.points();
+    std::set<std::pair<label,label>> countedPairs;
+    label nPairs = 0;
+
+    for(label leafI=0; leafI<octree.numberOfLeaves(); ++leafI)
+    {
+        DynList<label> ct;
+        octree.containedTriangles(leafI, ct);
+
+        std::set<label> points;
+        forAll(ct, ctI)
+        {
+            const label triI = ct[ctI];
+            if( triI < 0 || triI >= label(surf.size()) ) continue;
+            const labelledTri& tri = surf[triI];
+            forAll(tri, i)
+                points.insert(tri[i]);
+        }
+
+        for
+        (
+            std::set<label>::const_iterator it = points.begin();
+            it != points.end();
+            ++it
+        )
+        {
+            const label pointI = *it;
+            std::set<label>::const_iterator nIt = it;
+            ++nIt;
+            for(; nIt != points.end(); ++nIt)
+            {
+                const label pointJ = *nIt;
+                if( magSqr(pts[pointI] - pts[pointJ]) < sqr(tolerance) )
+                {
+                    const label a = Foam::min(pointI, pointJ);
+                    const label b = Foam::max(pointI, pointJ);
+                    if( countedPairs.insert(std::make_pair(a, b)).second )
+                    {
+                        ++nPairs;
+                        if( verbose )
+                            Info << "  Near-coincident pair: "
+                                 << a << " " << b
+                                 << " d="
+                                 << mag(pts[pointI]-pts[pointJ])*1000.0
+                                 << " mm at " << pts[pointI] << endl;
+                    }
+                }
+            }
+        }
+    }
+    return nPairs;
+}
+
 void cartesianMeshGenerator::createCartesianMesh()
 {
     //- create polyMesh from octree boxes
@@ -743,10 +806,23 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
             Info << "  weldTolerance: " << weldTol << " m" << endl;
             if( reportOnly )
             {
-                Info << "  reportOnly: non-mutating scan not yet implemented."
-                     << " No geometry changes made." << endl;
-                if( writeDiag )
-                    Info << "  writeDiagnostics: VTK output not yet implemented" << endl;
+                // Non-mutating scan — no geometry modification
+                meshOctree* scanOctree = new meshOctree(*surfacePtr_);
+                meshOctreeCreator
+                (
+                    *scanOctree,
+                    meshDict_
+                ).createOctreeBoxes();
+                const label nFound = scanNearCoincidentPoints
+                (
+                    *surfacePtr_,
+                    *scanOctree,
+                    weldTol,
+                    writeDiag
+                );
+                deleteDemandDrivenData(scanOctree);
+                Info << "  Near-coincident pairs found: " << nFound << endl;
+                Info << "  No geometry modified (reportOnly true)" << endl;
             }
             else if( weldNearPoints )
             {
