@@ -105,6 +105,11 @@ public:
 
         //- merge duplicate vertices and triangles
         void mergeIdentities();
+
+        //- merge only approved pairs (selective weld)
+        //- newPointLabel[i] = i means keep; newPointLabel[i] = j means merge i into j
+        //- caller builds the mapping; this method does the compaction + bookkeeping
+        void mergeApprovedPairs(labelLongList& newPointLabel);
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

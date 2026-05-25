@@ -16,7 +16,8 @@ geometryPreprocessing
     weldTolerance         1e-4;    // 0.1mm — safe for most turbomachinery STL
     autoScaleWithCellSize false;   // true = weldTol = min(weldTol, ratio*minCellSize)
     minFeatureToCellRatio 0.20;    // used when autoScaleWithCellSize true
-    writeDiagnostics      false;   // VTK output (not yet implemented)
+    writeDiagnostics      false;
+    selectiveWeld         false;  // true = weld only classified-safe pairs   // VTK output (not yet implemented)
 }
 
 maxCellSize 0.003;

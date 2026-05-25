@@ -950,14 +950,197 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
             }
             else if( weldNearPoints )
             {
+                const bool selectiveWeld =
+                    preProcDict.found("selectiveWeld") ?
+                    bool(Switch(preProcDict.lookup("selectiveWeld"))) : false;
+
                 meshOctree* preprocOctree = new meshOctree(*surfacePtr_);
                 meshOctreeCreator
                 (
                     *preprocOctree,
                     meshDict_
                 ).createOctreeBoxes();
-                triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
-                cleaner.mergeIdentities();
+
+                if( selectiveWeld )
+                {
+                    // Phase 2C: selective weld using classification
+                    Info << "  selectiveWeld: building approved pair list" << endl;
+
+                    // Run scan to get classification
+                    const label nFound = scanNearCoincidentPoints
+                    (
+                        *surfacePtr_,
+                        *preprocOctree,
+                        weldTol,
+                        meshDict_,
+                        true  // verbose — needed to build pair list
+                    );
+                    Info << "  selectiveWeld: " << nFound
+                         << " pairs scanned" << endl;
+
+                    // Build newPointLabel from approved pairs
+                    // Re-run scan internally to collect approved pairs
+                    const pointField& pts = surfacePtr_->points();
+                    const wordList pNames = surfacePtr_->patchNames();
+
+                    labelHashSet blPatchIdx;
+                    if( meshDict_.isDict("boundaryLayers") )
+                    {
+                        const dictionary& bndL =
+                            meshDict_.subDict("boundaryLayers");
+                        if( bndL.isDict("patchBoundaryLayers") )
+                        {
+                            const dictionary& pbl =
+                                bndL.subDict("patchBoundaryLayers");
+                            forAll(pNames, pi)
+                            {
+                                if( pbl.isDict(pNames[pi]) )
+                                {
+                                    const dictionary& pd =
+                                        pbl.subDict(pNames[pi]);
+                                    const label nL = pd.found("nLayers") ?
+                                        readLabel(pd.lookup("nLayers")) : 0;
+                                    if( nL > 0 ) blPatchIdx.insert(pi);
+                                }
+                            }
+                        }
+                    }
+
+                    List<labelHashSet> ptPatches(surfacePtr_->nPoints());
+                    forAll(*surfacePtr_, triI)
+                    {
+                        const labelledTri& tri = (*surfacePtr_)[triI];
+                        forAll(tri, vi)
+                            if( tri[vi] >= 0 && tri[vi] < label(ptPatches.size()) )
+                                ptPatches[tri[vi]].insert(tri.region());
+                    }
+
+                    labelLongList newPointLabel(surfacePtr_->nPoints());
+                    forAll(newPointLabel, pI) newPointLabel[pI] = pI;
+
+                    std::set<std::pair<label,label>> seen;
+                    for(label leafI=0; leafI<preprocOctree->numberOfLeaves(); ++leafI)
+                    {
+                        DynList<label> ct;
+                        preprocOctree->containedTriangles(leafI, ct);
+                        std::set<label> lpts;
+                        forAll(ct, ctI)
+                        {
+                            const label tI = ct[ctI];
+                            if( tI < 0 || tI >= label(surfacePtr_->size()) ) continue;
+                            const labelledTri& tri = (*surfacePtr_)[tI];
+                            forAll(tri, i) lpts.insert(tri[i]);
+                        }
+                        for( auto it=lpts.begin(); it!=lpts.end(); ++it )
+                        {
+                            const label pI = *it;
+                            auto nIt = it; ++nIt;
+                            for(; nIt!=lpts.end(); ++nIt)
+                            {
+                                const label pJ = *nIt;
+                                if( magSqr(pts[pI]-pts[pJ]) >= sqr(weldTol) ) continue;
+                                const label a = Foam::min(pI,pJ);
+                                const label b = Foam::max(pI,pJ);
+                                if( !seen.insert(std::make_pair(a,b)).second ) continue;
+
+                                DynList<word> pNA, pNB;
+                                forAllConstIter(labelHashSet, ptPatches[a], it2)
+                                {
+                                    const label r = it2.key();
+                                    if( r >= 0 && r < label(pNames.size()) )
+                                        pNA.append(pNames[r]);
+                                }
+                                forAllConstIter(labelHashSet, ptPatches[b], it2)
+                                {
+                                    const label r = it2.key();
+                                    if( r >= 0 && r < label(pNames.size()) )
+                                        pNB.append(pNames[r]);
+                                }
+
+                                const scalar ratio =
+                                    mag(pts[pI]-pts[pJ]) / weldTol;
+
+                                bool samePatch = false;
+                                forAll(pNA,pi) forAll(pNB,pj)
+                                    if(pNA[pi]==pNB[pj]) samePatch=true;
+
+                                bool bothBL = false;
+                                if( pNA.size() && pNB.size() )
+                                {
+                                    bool abl=false, bbl=false;
+                                    forAll(pNA,pi) forAll(pNames,ni)
+                                        if(pNames[ni]==pNA[pi] && blPatchIdx.found(ni)) abl=true;
+                                    forAll(pNB,pi) forAll(pNames,ni)
+                                        if(pNames[ni]==pNB[pi] && blPatchIdx.found(ni)) bbl=true;
+                                    bothBL = abl && bbl;
+                                }
+
+                                // Never weld points touching neutral/periodic/termination patches
+                                // Build neutral patch set from meshDict
+                                bool touchesNeutral = false;
+                                {
+                                    wordHashSet termPatches;
+                                    if( meshDict_.isDict("boundaryLayers") )
+                                    {
+                                        const dictionary& bndL =
+                                            meshDict_.subDict("boundaryLayers");
+                                        if( bndL.found("terminationPatches") )
+                                        {
+                                            wordList tp(bndL.lookup("terminationPatches"));
+                                            forAll(tp, i) termPatches.insert(tp[i]);
+                                        }
+                                    }
+                                    // A point touches neutral if it is NOT a BL wall patch
+                                    // and NOT a termination patch (i.e. periodic/symmetry)
+                                    forAll(pNA, pi)
+                                    {
+                                        bool isBLorTerm = false;
+                                        forAll(pNames, ni)
+                                            if( pNames[ni] == pNA[pi] )
+                                                if( blPatchIdx.found(ni) || termPatches.found(pNA[pi]) )
+                                                    isBLorTerm = true;
+                                        if( !isBLorTerm ) touchesNeutral = true;
+                                    }
+                                    forAll(pNB, pi)
+                                    {
+                                        bool isBLorTerm = false;
+                                        forAll(pNames, ni)
+                                            if( pNames[ni] == pNB[pi] )
+                                                if( blPatchIdx.found(ni) || termPatches.found(pNB[pi]) )
+                                                    isBLorTerm = true;
+                                        if( !isBLorTerm ) touchesNeutral = true;
+                                    }
+                                }
+
+                                bool approved = false;
+                                if( touchesNeutral ) approved = false;
+                                else if( ratio < 0.20 ) approved = true;
+                                else if( !pNA.size() || !pNB.size() ) approved = false;
+                                else if( samePatch && ratio < 0.80 ) approved = true;
+                                else if( bothBL && ratio < 0.50 ) approved = true;
+
+                                if( approved )
+                                {
+                                    // Mark b to merge into a — no coord changes during scan
+                                    newPointLabel[b] = a;
+                                    Info << "  Approved weld pair: " << a
+                                         << " " << b
+                                         << " ratio=" << ratio << endl;
+                                }
+                            }
+                        }
+                    }
+
+                    triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
+                    cleaner.mergeApprovedPairs(newPointLabel);
+                }
+                else
+                {
+                    // Full weld — proven safe path
+                    triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
+                    cleaner.mergeIdentities();
+                }
+
                 deleteDemandDrivenData(preprocOctree);
                 const label nPtsAfter = surfacePtr_->points().size();
                 const label nTriAfter = surfacePtr_->size();
