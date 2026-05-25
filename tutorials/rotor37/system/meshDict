@@ -10,8 +10,13 @@ surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
 
 geometryPreprocessing
 {
-    active          true;
-    weldTolerance   1e-4;
+    active                true;
+    reportOnly            false;   // true = scan only, no geometry changes
+    weldNearPoints        true;
+    weldTolerance         1e-4;    // 0.1mm — safe for most turbomachinery STL
+    autoScaleWithCellSize false;   // true = weldTol = min(weldTol, ratio*minCellSize)
+    minFeatureToCellRatio 0.20;    // used when autoScaleWithCellSize true
+    writeDiagnostics      false;   // VTK output (not yet implemented)
 }
 
 maxCellSize 0.003;

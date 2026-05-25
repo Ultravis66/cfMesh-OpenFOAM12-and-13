@@ -690,8 +690,9 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
         surfacePtr_ = surfaceWithPatches;
     }
 
-    // Geometry preprocessing: weld near-coincident vertices
-    // Enable: geometryPreprocessing { active true; weldTolerance 1e-4; }
+    // Geometry preprocessing
+    // Controls: active, reportOnly, weldNearPoints, weldTolerance,
+    //   autoScaleWithCellSize, minFeatureToCellRatio, writeDiagnostics
     if( meshDict_.isDict("geometryPreprocessing") )
     {
         const dictionary& preProcDict =
@@ -701,32 +702,74 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
             bool(Switch(preProcDict.lookup("active"))) : false;
         if( active )
         {
-            const scalar weldTol =
+            const bool reportOnly =
+                preProcDict.found("reportOnly") ?
+                bool(Switch(preProcDict.lookup("reportOnly"))) : false;
+            const bool weldNearPoints =
+                preProcDict.found("weldNearPoints") ?
+                bool(Switch(preProcDict.lookup("weldNearPoints"))) : true;
+            const bool autoScale =
+                preProcDict.found("autoScaleWithCellSize") ?
+                bool(Switch(preProcDict.lookup("autoScaleWithCellSize"))) : false;
+            const scalar minRatio =
+                preProcDict.found("minFeatureToCellRatio") ?
+                readScalar(preProcDict.lookup("minFeatureToCellRatio")) : 0.20;
+            const bool writeDiag =
+                preProcDict.found("writeDiagnostics") ?
+                bool(Switch(preProcDict.lookup("writeDiagnostics"))) : false;
+            scalar weldTol =
                 preProcDict.found("weldTolerance") ?
                 readScalar(preProcDict.lookup("weldTolerance")) : 1e-4;
+            // Auto-scale: weldTol = min(specified, ratio*minCellSize)
+            if( autoScale )
+            {
+                scalar minCellSize = GREAT;
+                if( meshDict_.found("minCellSize") )
+                    minCellSize = readScalar(meshDict_.lookup("minCellSize"));
+                else if( meshDict_.found("maxCellSize") )
+                    minCellSize = readScalar(meshDict_.lookup("maxCellSize"));
+                const scalar autoTol = minRatio * minCellSize;
+                weldTol = Foam::min(weldTol, autoTol);
+                Info << "Geometry preprocessing: autoScaleWithCellSize"
+                     << " minCellSize=" << minCellSize
+                     << " ratio=" << minRatio
+                     << " => weldTolerance=" << weldTol << " m" << endl;
+            }
             const label nPtsBefore = surfacePtr_->points().size();
             const label nTriBefore = surfacePtr_->size();
-            Info << "Geometry preprocessing: welding near-coincident "
-                 << "vertices within " << weldTol << " m" << endl;
-            Info << "  Before: " << nPtsBefore << " points, "
+            Info << "Geometry preprocessing:" << endl;
+            Info << "  Surface: " << nPtsBefore << " points, "
                  << nTriBefore << " facets" << endl;
-            meshOctree* preprocOctree = new meshOctree(*surfacePtr_);
-            meshOctreeCreator
-            (
-                *preprocOctree,
-                meshDict_
-            ).createOctreeBoxes();
-            triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
-            cleaner.mergeIdentities();
-            deleteDemandDrivenData(preprocOctree);
-            const label nPtsAfter = surfacePtr_->points().size();
-            const label nTriAfter = surfacePtr_->size();
-            Info << "  After:  " << nPtsAfter << " points, "
-                 << nTriAfter << " facets" << endl;
-            Info << "  Welded: " << (nPtsBefore - nPtsAfter)
-                 << " points, removed "
-                 << (nTriBefore - nTriAfter)
-                 << " degenerate facets" << endl;
+            Info << "  weldTolerance: " << weldTol << " m" << endl;
+            if( reportOnly )
+            {
+                Info << "  reportOnly: non-mutating scan not yet implemented."
+                     << " No geometry changes made." << endl;
+                if( writeDiag )
+                    Info << "  writeDiagnostics: VTK output not yet implemented" << endl;
+            }
+            else if( weldNearPoints )
+            {
+                meshOctree* preprocOctree = new meshOctree(*surfacePtr_);
+                meshOctreeCreator
+                (
+                    *preprocOctree,
+                    meshDict_
+                ).createOctreeBoxes();
+                triSurfaceCleanupDuplicates cleaner(*preprocOctree, weldTol);
+                cleaner.mergeIdentities();
+                deleteDemandDrivenData(preprocOctree);
+                const label nPtsAfter = surfacePtr_->points().size();
+                const label nTriAfter = surfacePtr_->size();
+                Info << "  After:  " << nPtsAfter << " points, "
+                     << nTriAfter << " facets" << endl;
+                Info << "  Welded: " << (nPtsBefore - nPtsAfter)
+                     << " points, removed "
+                     << (nTriBefore - nTriAfter)
+                     << " degenerate facets" << endl;
+                if( writeDiag )
+                    Info << "  writeDiagnostics: VTK output not yet implemented" << endl;
+            }
         }
     }
 
