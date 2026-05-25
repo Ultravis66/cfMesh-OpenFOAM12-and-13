@@ -295,6 +295,29 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
         newPointLabel[pI] = root;
     }
 
+    // DEBUG: dump all requested merges after chain resolution
+    {
+        label nRequestedMerges = 0;
+        Info << "mergeApprovedPairs: requested merge pairs after root resolution:" << endl;
+        forAll(newPointLabel, pI)
+        {
+            const label root = newPointLabel[pI];
+            if( root != pI )
+            {
+                ++nRequestedMerges;
+                Info << "  merge " << nRequestedMerges
+                     << ": p=" << pI
+                     << " -> root=" << root
+                     << " x[p]=" << pts[pI]
+                     << " x[root]=" << pts[root]
+                     << " dist=" << mag(pts[pI] - pts[root])
+                     << endl;
+            }
+        }
+        Info << "mergeApprovedPairs: total requested non-root merges = "
+             << nRequestedMerges << endl;
+    }
+
     // Step 2: Compute cluster midpoints
     // For each root, average all points that map to it
     pointField clusterSum(pts.size(), point::zero);
@@ -306,12 +329,13 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
         clusterCount[root]++;
     }
 
-    // Step 3: Move root points to cluster midpoint
-    forAll(pts, pI)
-    {
-        if( newPointLabel[pI] == pI && clusterCount[pI] > 1 )
-            pts[pI] = clusterSum[pI] / scalar(clusterCount[pI]);
-    }
+    // Step 3: Move root points to cluster midpoint — DISABLED for debug
+    Info << "mergeApprovedPairs: DEBUG midpoint motion disabled; keeping root coordinates" << endl;
+    // forAll(pts, pI)
+    // {
+    //     if( newPointLabel[pI] == pI && clusterCount[pI] > 1 )
+    //         pts[pI] = clusterSum[pI] / scalar(clusterCount[pI]);
+    // }
 
     // Step 4: Compact point list — two-pass to avoid index ordering bugs
     // Pass 4a: assign compacted indices to root points only
@@ -360,6 +384,8 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
     LongList<labelledTri> newTriangles(surf_.facets());
     labelLongList newTriangleLabel(surf_.size(), -1);
     counter = 0;
+    label nDegenerateRemoved = 0;
+    label nInvalidSkipped = 0;
 
     forAll(surf_, triI)
     {
@@ -369,7 +395,8 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
             newPointLabel[tri[1]] < 0 ||
             newPointLabel[tri[2]] < 0 )
         {
-            continue; // skip degenerate/invalid
+            ++nInvalidSkipped;
+            continue;
         }
 
         const labelledTri newTri
@@ -381,13 +408,30 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
         );
 
         bool store = true;
+        bool degenerate = false;
         for(label i=0; i<2; ++i)
+        {
             for(label j=i+1; j<3; ++j)
+            {
                 if( newTri[i] == newTri[j] )
                 {
                     store = false;
+                    degenerate = true;
                     break;
                 }
+            }
+            if( degenerate ) break;
+        }
+
+        if( degenerate )
+        {
+            ++nDegenerateRemoved;
+            Info << "mergeApprovedPairs: removing degenerate tri " << triI
+                 << " old=(" << tri[0] << " " << tri[1] << " " << tri[2] << ")"
+                 << " new=(" << newTri[0] << " " << newTri[1] << " " << newTri[2] << ")"
+                 << " region=" << tri.region()
+                 << endl;
+        }
 
         if( store )
         {
@@ -404,6 +448,8 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
     surf_.clearAddressing();
     surf_.clearGeometry();
 
+    Info << "mergeApprovedPairs: invalid tris skipped = " << nInvalidSkipped << endl;
+    Info << "mergeApprovedPairs: degenerate tris removed = " << nDegenerateRemoved << endl;
     Info << "mergeApprovedPairs: " << counter << " facets remaining after degenerate removal" << endl;
 }
 
