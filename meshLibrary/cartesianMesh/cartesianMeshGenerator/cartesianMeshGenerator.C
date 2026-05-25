@@ -126,32 +126,54 @@ static label scanNearCoincidentPoints
                     if( countedPairs.insert(std::make_pair(a, b)).second )
                     {
                         ++nPairs;
+
+                        // Collect patch names — always, not just verbose
+                        DynList<word> pNamesA, pNamesB;
+                        forAllConstIter(labelHashSet, pointPatches[a], it2)
+                        {
+                            const label r = it2.key();
+                            if( r >= 0 && r < label(pNames.size()) )
+                                pNamesA.append(pNames[r]);
+                        }
+                        forAllConstIter(labelHashSet, pointPatches[b], it2)
+                        {
+                            const label r = it2.key();
+                            if( r >= 0 && r < label(pNames.size()) )
+                                pNamesB.append(pNames[r]);
+                        }
+
+                        const scalar d = mag(pts[pointI]-pts[pointJ]);
+                        const scalar ratio = d / tolerance;
+
+                        // Conservative classification
+                        word classification = "UNKNOWN";
+                        bool samePatch = false;
+                        forAll(pNamesA, pi)
+                            forAll(pNamesB, pj)
+                                if( pNamesA[pi] == pNamesB[pj] )
+                                    samePatch = true;
+
+                        if( ratio < 0.20 )
+                            classification = "WELD_SAFE_RATIO";
+                        else if( samePatch && ratio < 0.80 )
+                            classification = "WELD_SAME_PATCH";
+                        else if( !pNamesA.size() || !pNamesB.size() )
+                            classification = "FLAG_INCOMPLETE";
+                        else if( ratio > 0.80 )
+                            classification = "FLAG_HIGH_RATIO";
+                        else
+                            classification = "FLAG_CROSS_PATCH_CANDIDATE";
+
                         if( verbose )
                         {
-                            // Collect patch names for both points
-                            DynList<word> pNamesA, pNamesB;
-                            forAllConstIter(labelHashSet, pointPatches[a], it2)
-                            {
-                                const label r = it2.key();
-                                if( r >= 0 && r < label(pNames.size()) )
-                                    pNamesA.append(pNames[r]);
-                            }
-                            forAllConstIter(labelHashSet, pointPatches[b], it2)
-                            {
-                                const label r = it2.key();
-                                if( r >= 0 && r < label(pNames.size()) )
-                                    pNamesB.append(pNames[r]);
-                            }
-                            const scalar ratio =
-                                mag(pts[pointI]-pts[pointJ]) / tolerance;
                             Info << "  Near-coincident pair: "
                                  << a << " " << b
-                                 << " d="
-                                 << mag(pts[pointI]-pts[pointJ])*1000.0
-                                 << "mm ratio=" << ratio
+                                 << " d=" << d*1000.0 << "mm"
+                                 << " ratio=" << ratio
+                                 << " class=" << classification
                                  << " at " << pts[pointI]
-                                 << " patchesA=" << pNamesA
-                                 << " patchesB=" << pNamesB
+                                 << " pA=" << pNamesA
+                                 << " pB=" << pNamesB
                                  << endl;
                         }
                     }
