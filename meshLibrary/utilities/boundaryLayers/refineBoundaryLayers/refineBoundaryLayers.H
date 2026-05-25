@@ -113,6 +113,8 @@ class refineBoundaryLayers
 
         //- boundary faces forced to single layer treatment
         labelHashSet forceSingleLayerFaces_;
+        labelHashSet blblAcuteCornerPoints_;
+        bool acuteCornerCapLayers_;
 
         //- BL/BL junction points from boundaryLayers - used for wedge topology
         labelHashSet blblJunctionPoints_;
@@ -421,6 +423,8 @@ public:
 
         //- set BL/BL junction points for wedge topology emission
         void setBlblJunctionPoints(const labelHashSet& pts);
+        void setBlblAcuteCornerPoints(const labelHashSet& pts);
+        void setAcuteCornerCapLayers(const bool cap) { acuteCornerCapLayers_ = cap; }
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

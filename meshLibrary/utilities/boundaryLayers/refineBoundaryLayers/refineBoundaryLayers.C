@@ -66,7 +66,8 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     splitEdgesAtPoint_(),
     newVerticesForSplitEdge_(),
     facesFromFace_(),
-    newFaces_()
+    newFaces_(),
+    acuteCornerCapLayers_(false)
 {}
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
@@ -530,6 +531,16 @@ void refineBoundaryLayers::setBlblJunctionPoints
     Info << "refineBoundaryLayers: received "
          << blblJunctionPoints_.size()
          << " BL/BL junction points" << endl;
+}
+void refineBoundaryLayers::setBlblAcuteCornerPoints
+(
+    const labelHashSet& pts
+)
+{
+    blblAcuteCornerPoints_ = pts;
+    Info << "refineBoundaryLayers: received "
+         << blblAcuteCornerPoints_.size()
+         << " acute BL+BL+neutral corner points" << endl;
 }
 
 } // End namespace Foam

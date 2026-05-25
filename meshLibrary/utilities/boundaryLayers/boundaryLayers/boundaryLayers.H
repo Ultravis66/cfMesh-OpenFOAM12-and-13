@@ -87,6 +87,14 @@ class boundaryLayers
         scalar layerScaleRing4_;       // default 1.00
         scalar layerScaleRing5_;       // default 0.80
         scalar layerScaleRing6_;       // default 1.00
+        // Acute corner local taper — stronger suppression seeded from blblAcuteCornerPoints_
+        scalar acuteCornerRing0_;      // default 0.0
+        scalar acuteCornerRing1_;      // default 0.0
+        scalar acuteCornerRing2_;      // default 0.05
+        scalar acuteCornerRing3_;      // default 0.15
+        scalar acuteCornerRing4_;      // default 0.35
+        scalar acuteCornerRing5_;      // default 0.60
+        scalar acuteCornerRing6_;      // default 1.00
 
         //- is it a 2D mesh
         bool is2DMesh_;

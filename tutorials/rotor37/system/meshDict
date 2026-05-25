@@ -44,7 +44,8 @@ boundaryLayers
     terminationPatches (inlet outlet);
     blblFeatureAngleDeg 40;
     blblCornerAcuteThreshold 0.3;
-    lockAcuteCornerPoints  true;  // set true to lock acute corners in final optimizer  // dot product threshold: 0.3=73deg, 0.0=90deg, -0.3=107deg
+    lockAcuteCornerPoints  true;
+    acuteCornerCapLayers    false;  // experimental: cap BL layers near acute corners  // set true to lock acute corners in final optimizer  // dot product threshold: 0.3=73deg, 0.0=90deg, -0.3=107deg
     cornerSnapRelaxation 0.25;
     cornerSnapIterations 1;
     edgeSnapRelaxation 1.0;

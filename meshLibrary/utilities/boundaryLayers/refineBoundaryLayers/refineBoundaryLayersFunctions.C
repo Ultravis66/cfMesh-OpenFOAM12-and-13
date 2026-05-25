@@ -385,6 +385,94 @@ bool refineBoundaryLayers::analyseLayers()
              << " faces capped at 2 layers" << endl;
     }
 
+    // Acute corner face cap: controlled by acuteCornerCapLayers_ member
+    // Set via setAcuteCornerCapLayers() before refineLayers()
+    Info << "Acute corner face cap switch: " << acuteCornerCapLayers_
+         << " acutePts=" << blblAcuteCornerPoints_.size() << endl;
+    if( acuteCornerCapLayers_ && blblAcuteCornerPoints_.size() > 0 )
+    {
+        const meshSurfaceEngine& mseLoc = surfaceEngine();
+        const VRWGraph& ptFaces = mseLoc.pointFaces();
+        const faceList::subList& bFacesLoc = mseLoc.boundaryFaces();
+        labelList meshToBnd2(mesh_.points().size(), -1);
+        const labelList& bPts2 = mseLoc.boundaryPoints();
+        forAll(bPts2, bpI)
+            meshToBnd2[bPts2[bpI]] = bpI;
+
+        boolList acRing0(nLayersAtBndFace_.size(), false);
+        forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+        {
+            const label bpI = it.key();
+            if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+            forAllRow(ptFaces, bpI, pfI)
+            {
+                const label bfI = ptFaces(bpI, pfI);
+                if( bfI < 0 || bfI >= label(nLayersAtBndFace_.size()) ) continue;
+                if( nLayersAtBndFace_[bfI] > 1 )
+                    nLayersAtBndFace_[bfI] = 1;
+                acRing0[bfI] = true;
+            }
+        }
+
+        boolList acRing1(nLayersAtBndFace_.size(), false);
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            if( !acRing0[bfI] ) continue;
+            const face& f = bFacesLoc[bfI];
+            forAll(f, pI)
+            {
+                const label meshPtI = f[pI];
+                if( meshPtI < 0 || meshPtI >= label(meshToBnd2.size()) ) continue;
+                const label bpI = meshToBnd2[meshPtI];
+                if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+                forAllRow(ptFaces, bpI, pfI)
+                {
+                    const label nbfI = ptFaces(bpI, pfI);
+                    if( nbfI < 0 || nbfI >= label(nLayersAtBndFace_.size()) ) continue;
+                    if( acRing0[nbfI] ) continue;
+                    if( nLayersAtBndFace_[nbfI] > 1 )
+                        nLayersAtBndFace_[nbfI] = 1;
+                    acRing1[nbfI] = true;
+                }
+            }
+        }
+
+        boolList acRing2(nLayersAtBndFace_.size(), false);
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            if( !acRing1[bfI] ) continue;
+            const face& f = bFacesLoc[bfI];
+            forAll(f, pI)
+            {
+                const label meshPtI = f[pI];
+                if( meshPtI < 0 || meshPtI >= label(meshToBnd2.size()) ) continue;
+                const label bpI = meshToBnd2[meshPtI];
+                if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+                forAllRow(ptFaces, bpI, pfI)
+                {
+                    const label nbfI = ptFaces(bpI, pfI);
+                    if( nbfI < 0 || nbfI >= label(nLayersAtBndFace_.size()) ) continue;
+                    if( acRing0[nbfI] || acRing1[nbfI] ) continue;
+                    if( nLayersAtBndFace_[nbfI] > 2 )
+                        nLayersAtBndFace_[nbfI] = 2;
+                    acRing2[nbfI] = true;
+                }
+            }
+        }
+
+        label nAC0=0, nAC1=0, nAC2=0;
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            if( acRing0[bfI] ) ++nAC0;
+            else if( acRing1[bfI] ) ++nAC1;
+            else if( acRing2[bfI] ) ++nAC2;
+        }
+        Info << "Acute corner face cap: ring0=" << nAC0
+             << " ring1=" << nAC1
+             << " ring2=" << nAC2
+             << " faces capped" << endl;
+    }
+
     # ifdef DEBUGLayer
     forAll(nLayersAtBndFace_, bfI)
     Pout << "Boundary face " << bfI << " in patch "

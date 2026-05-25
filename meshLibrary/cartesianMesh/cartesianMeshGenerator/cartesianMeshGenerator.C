@@ -379,6 +379,18 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         // Pass BL/BL junction points for wedge topology
         refLayers.setBlblJunctionPoints(blblJunctionPoints_);
+        refLayers.setBlblAcuteCornerPoints(blblAcuteCornerPoints_);
+        {
+            bool capLayers = false;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+                if( bndL.found("acuteCornerCapLayers") )
+                    capLayers = bool(Switch(bndL.lookup("acuteCornerCapLayers")));
+            }
+            refLayers.setAcuteCornerCapLayers(capLayers);
+            Info << "Acute corner face cap: " << (capLayers ? "enabled" : "disabled") << endl;
+        }
 
         refLayers.refineLayers();
 

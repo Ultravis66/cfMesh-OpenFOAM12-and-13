@@ -576,7 +576,14 @@ boundaryLayers::boundaryLayers
     layerScaleRing3_(0.75),
     layerScaleRing4_(0.60),
     layerScaleRing5_(0.80),
-    layerScaleRing6_(1.00)
+    layerScaleRing6_(1.00),
+    acuteCornerRing0_(0.0),
+    acuteCornerRing1_(0.0),
+    acuteCornerRing2_(0.05),
+    acuteCornerRing3_(0.15),
+    acuteCornerRing4_(0.35),
+    acuteCornerRing5_(0.60),
+    acuteCornerRing6_(1.00)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -631,6 +638,20 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("layerScaleRing6") )
             layerScaleRing6_ =
                 readScalar(bndLayers.lookup("layerScaleRing6"));
+        if( bndLayers.found("acuteCornerRing0") )
+            acuteCornerRing0_ = readScalar(bndLayers.lookup("acuteCornerRing0"));
+        if( bndLayers.found("acuteCornerRing1") )
+            acuteCornerRing1_ = readScalar(bndLayers.lookup("acuteCornerRing1"));
+        if( bndLayers.found("acuteCornerRing2") )
+            acuteCornerRing2_ = readScalar(bndLayers.lookup("acuteCornerRing2"));
+        if( bndLayers.found("acuteCornerRing3") )
+            acuteCornerRing3_ = readScalar(bndLayers.lookup("acuteCornerRing3"));
+        if( bndLayers.found("acuteCornerRing4") )
+            acuteCornerRing4_ = readScalar(bndLayers.lookup("acuteCornerRing4"));
+        if( bndLayers.found("acuteCornerRing5") )
+            acuteCornerRing5_ = readScalar(bndLayers.lookup("acuteCornerRing5"));
+        if( bndLayers.found("acuteCornerRing6") )
+            acuteCornerRing6_ = readScalar(bndLayers.lookup("acuteCornerRing6"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -1042,7 +1063,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             const bool isAcute = (minDot < blblCornerAcuteThreshold_ && minDot < GREAT);
 
             zeroDistPoints_[bpI] = true;
-            layerScale_[bpI] = isAcute ? 0.02 : 0.15;
+            layerScale_[bpI] = isAcute ? 0.0 : 0.15;
             zeroPts[bpI] = true;
             blblCornerPoints_.insert(bpI);
             if( isAcute )
@@ -1061,7 +1082,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
          << "nPts2=" << nPts2
          << " nPts3=" << nPts3
          << " nPts4plus=" << nPts4plus
-         << " suppressed=" << nTriple << endl;
+         << " suppressed=" << nTriple
+         << " blblCornerPts=" << blblCornerPoints_.size()
+         << " acuteCornerPts=" << blblAcuteCornerPoints_.size() << endl;
 
     // Topology-aware scale assignment:
     // Upgrade transition point suppression based on point topology class.
@@ -1408,6 +1431,145 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
          << " ring5=" << nRing5
          << " ring6=" << nRing6
          << endl;
+    // Acute corner local taper
+    // Seeded from blblAcuteCornerPoints_ — stronger suppression than general ramp
+    // Propagates along BL wall patches only
+    if( blblAcuteCornerPoints_.size() > 0 )
+    {
+        // Apply ring0 scale to exact acute corner points
+        forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+        {
+            const label bpI = it.key();
+            if( bpI >= 0 && bpI < label(bPoints.size()) )
+                layerScale_[bpI] = Foam::min(layerScale_[bpI], acuteCornerRing0_);
+        }
+
+        // Build acute corner seed set for ring propagation
+        boolList acuteZero(bPoints.size(), false);
+        forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+        {
+            const label bpI = it.key();
+            if( bpI >= 0 && bpI < label(bPoints.size()) )
+                acuteZero[bpI] = true;
+        }
+
+        // Ring 1 from acute corners
+        boolList acuteRing1(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteZero[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing1[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing1_);
+            }
+        }
+
+        // Ring 2
+        boolList acuteRing2(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteRing1[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] || acuteRing1[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing2[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing2_);
+            }
+        }
+
+        // Ring 3
+        boolList acuteRing3(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteRing2[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing3[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing3_);
+            }
+        }
+
+        // Ring 4
+        boolList acuteRing4(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteRing3[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing4[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing4_);
+            }
+        }
+
+        // Ring 5
+        boolList acuteRing5(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteRing4[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] || acuteRing4[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing5[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing5_);
+            }
+        }
+
+        // Ring 6
+        boolList acuteRing6(bPoints.size(), false);
+        forAll(bPoints, bpI)
+        {
+            if( !acuteRing5[bpI] ) continue;
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const label nbpI = pointPoints(bpI, ppI);
+                if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+                if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] || acuteRing4[nbpI] || acuteRing5[nbpI] ) continue;
+                if( !boundaryPointIsBL[nbpI] ) continue;
+                acuteRing6[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing6_);
+            }
+        }
+
+        label nAR0=0, nAR1=0, nAR2=0, nAR3=0, nAR4=0, nAR5=0, nAR6=0;
+        forAll(bPoints, bpI)
+        {
+            if( acuteZero[bpI] ) ++nAR0;
+            else if( acuteRing1[bpI] ) ++nAR1;
+            else if( acuteRing2[bpI] ) ++nAR2;
+            else if( acuteRing3[bpI] ) ++nAR3;
+            else if( acuteRing4[bpI] ) ++nAR4;
+            else if( acuteRing5[bpI] ) ++nAR5;
+            else if( acuteRing6[bpI] ) ++nAR6;
+        }
+        Info << "Acute corner taper: ring0=" << nAR0
+             << " ring1=" << nAR1
+             << " ring2=" << nAR2
+             << " ring3=" << nAR3
+             << " ring4=" << nAR4
+             << " ring5=" << nAR5
+             << " ring6=" << nAR6
+             << endl;
+    }
+
     Info << "terminateLayersAtConcaveEdges: marked "
          << nTransitionEdges << " BL-transition edges." << endl;
 }
