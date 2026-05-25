@@ -73,8 +73,23 @@ static label scanNearCoincidentPoints
 )
 {
     const pointField& pts = surf.points();
+    const wordList pNames = surf.patchNames();
     std::set<std::pair<label,label>> countedPairs;
     label nPairs = 0;
+
+    // Build point-to-patch membership once
+    List<labelHashSet> pointPatches(surf.nPoints());
+    forAll(surf, triI)
+    {
+        const labelledTri& tri = surf[triI];
+        const label region = tri.region();
+        forAll(tri, vi)
+        {
+            const label pI = tri[vi];
+            if( pI >= 0 && pI < label(pointPatches.size()) )
+                pointPatches[pI].insert(region);
+        }
+    }
 
     for(label leafI=0; leafI<octree.numberOfLeaves(); ++leafI)
     {
@@ -112,11 +127,33 @@ static label scanNearCoincidentPoints
                     {
                         ++nPairs;
                         if( verbose )
+                        {
+                            // Collect patch names for both points
+                            DynList<word> pNamesA, pNamesB;
+                            forAllConstIter(labelHashSet, pointPatches[a], it2)
+                            {
+                                const label r = it2.key();
+                                if( r >= 0 && r < label(pNames.size()) )
+                                    pNamesA.append(pNames[r]);
+                            }
+                            forAllConstIter(labelHashSet, pointPatches[b], it2)
+                            {
+                                const label r = it2.key();
+                                if( r >= 0 && r < label(pNames.size()) )
+                                    pNamesB.append(pNames[r]);
+                            }
+                            const scalar ratio =
+                                mag(pts[pointI]-pts[pointJ]) / tolerance;
                             Info << "  Near-coincident pair: "
                                  << a << " " << b
                                  << " d="
                                  << mag(pts[pointI]-pts[pointJ])*1000.0
-                                 << " mm at " << pts[pointI] << endl;
+                                 << "mm ratio=" << ratio
+                                 << " at " << pts[pointI]
+                                 << " patchesA=" << pNamesA
+                                 << " patchesB=" << pNamesB
+                                 << endl;
+                        }
                     }
                 }
             }
