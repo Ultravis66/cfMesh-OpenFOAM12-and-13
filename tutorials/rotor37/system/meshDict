@@ -47,9 +47,11 @@ boundaryLayers
     postBLSnap false;
     postRefineBLOptimisation true;
     layerScaleRing1 0.10;
-    layerScaleRing2 0.30;
-    layerScaleRing3 0.60;
-    layerScaleRing4 1.00;
+    layerScaleRing2 0.25;
+    layerScaleRing3 0.40;
+    layerScaleRing4 0.60;
+    layerScaleRing5 0.80;
+    layerScaleRing6 1.00;
     thicknessRatio 1.3;
     maxFirstLayerThickness 1e-4;
     patchBoundaryLayers

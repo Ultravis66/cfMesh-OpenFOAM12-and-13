@@ -574,7 +574,9 @@ boundaryLayers::boundaryLayers
     layerScaleRing1_(0.25),
     layerScaleRing2_(0.50),
     layerScaleRing3_(0.75),
-    layerScaleRing4_(0.90)
+    layerScaleRing4_(0.60),
+    layerScaleRing5_(0.80),
+    layerScaleRing6_(1.00)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -623,6 +625,12 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("layerScaleRing4") )
             layerScaleRing4_ =
                 readScalar(bndLayers.lookup("layerScaleRing4"));
+        if( bndLayers.found("layerScaleRing5") )
+            layerScaleRing5_ =
+                readScalar(bndLayers.lookup("layerScaleRing5"));
+        if( bndLayers.found("layerScaleRing6") )
+            layerScaleRing6_ =
+                readScalar(bndLayers.lookup("layerScaleRing6"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -1353,7 +1361,35 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         }
     }
 
-    label nZero = 0, nRing1 = 0, nRing2 = 0, nRing3 = 0, nRing4 = 0;
+    boolList ring5(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !ring4[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] || ring4[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring5[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing5_);
+        }
+    }
+    boolList ring6(bPoints.size(), false);
+    forAll(bPoints, bpI)
+    {
+        if( !ring5[bpI] ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
+            if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] || ring4[nbpI] || ring5[nbpI] ) continue;
+            if( !boundaryPointIsBL[nbpI] ) continue;
+            ring6[nbpI] = true;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing6_);
+        }
+    }
+    label nZero = 0, nRing1 = 0, nRing2 = 0, nRing3 = 0, nRing4 = 0, nRing5 = 0, nRing6 = 0;
     forAll(bPoints, bpI)
     {
         if( zeroPts[bpI] ) ++nZero;
@@ -1361,12 +1397,16 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         else if( ring2[bpI] ) ++nRing2;
         else if( ring3[bpI] ) ++nRing3;
         else if( ring4[bpI] ) ++nRing4;
+        else if( ring5[bpI] ) ++nRing5;
+        else if( ring6[bpI] ) ++nRing6;
     }
     Info << "BL layerScale ramp: zero=" << nZero
          << " ring1=" << nRing1
          << " ring2=" << nRing2
          << " ring3=" << nRing3
          << " ring4=" << nRing4
+         << " ring5=" << nRing5
+         << " ring6=" << nRing6
          << endl;
     Info << "terminateLayersAtConcaveEdges: marked "
          << nTransitionEdges << " BL-transition edges." << endl;

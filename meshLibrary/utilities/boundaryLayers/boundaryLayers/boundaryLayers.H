@@ -85,6 +85,8 @@ class boundaryLayers
         scalar layerScaleRing2_;       // default 0.50
         scalar layerScaleRing3_;       // default 0.75
         scalar layerScaleRing4_;       // default 1.00
+        scalar layerScaleRing5_;       // default 0.80
+        scalar layerScaleRing6_;       // default 1.00
 
         //- is it a 2D mesh
         bool is2DMesh_;
