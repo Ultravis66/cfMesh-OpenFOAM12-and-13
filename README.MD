@@ -7,7 +7,8 @@ v0.8.2 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop 
 ---
 ### Known remaining issues
 **Residual minor variance** Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
-Sharp corners where blade, Hub/Shroud/Periodic boundries meet create jank protrusions, currently working on virtual tropology fix for this.
+
+**Sharp corner jank** where blade, Hub/Shroud/Periodic boundries meet create jank protrusions, currently working on virtual tropology fix for this.
 
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
