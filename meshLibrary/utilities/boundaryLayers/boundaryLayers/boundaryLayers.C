@@ -584,7 +584,11 @@ boundaryLayers::boundaryLayers
     acuteCornerRing3_(0.15),
     acuteCornerRing4_(0.35),
     acuteCornerRing5_(0.60),
-    acuteCornerRing6_(1.00)
+    acuteCornerRing6_(1.00),
+    virtualTopologyExclusion_(false),
+    virtualTopoRing0_(0.0),
+    virtualTopoRing1_(0.0),
+    virtualTopoRing2_(0.05)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -653,6 +657,16 @@ boundaryLayers::boundaryLayers
             acuteCornerRing5_ = readScalar(bndLayers.lookup("acuteCornerRing5"));
         if( bndLayers.found("acuteCornerRing6") )
             acuteCornerRing6_ = readScalar(bndLayers.lookup("acuteCornerRing6"));
+
+        if( bndLayers.found("virtualTopologyExclusion") )
+            virtualTopologyExclusion_ =
+                Switch(bndLayers.lookup("virtualTopologyExclusion"));
+        if( bndLayers.found("virtualTopoRing0") )
+            virtualTopoRing0_ = readScalar(bndLayers.lookup("virtualTopoRing0"));
+        if( bndLayers.found("virtualTopoRing1") )
+            virtualTopoRing1_ = readScalar(bndLayers.lookup("virtualTopoRing1"));
+        if( bndLayers.found("virtualTopoRing2") )
+            virtualTopoRing2_ = readScalar(bndLayers.lookup("virtualTopoRing2"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -1631,8 +1645,89 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
              << endl;
     }
 
+    // Virtual topology: zero/taper layerScale_ at acute triple-junctions.
+    // blblAcuteCornerPoints_ and layerScale_ fully built above.
+    // Must run before return — vertex creation reads layerScale_.
+    applyVirtualTopologyExclusion();
+
     Info << "terminateLayersAtConcaveEdges: marked "
          << nTransitionEdges << " BL-transition edges." << endl;
+}
+
+void boundaryLayers::applyVirtualTopologyExclusion() const
+{
+    if( !virtualTopologyExclusion_ )
+        return;
+
+    if( blblAcuteCornerPoints_.size() == 0 )
+        return;
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const labelList& bPoints = mse.boundaryPoints();
+    const VRWGraph& pointPoints = mse.pointPoints();
+
+    const label nBP = bPoints.size();
+
+    if( layerScale_.size() != nBP )
+        return;
+
+    // ringId: -1=untouched, 0=seed, 1=ring1, 2=ring2
+    labelList ringId(nBP, -1);
+
+    // Ring 0: the acute junction point itself — full BL exclusion
+    forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+    {
+        const label bpI = it.key();
+        if( bpI < 0 || bpI >= nBP ) continue;
+        ringId[bpI] = 0;
+        layerScale_[bpI] = Foam::min(layerScale_[bpI], virtualTopoRing0_);
+    }
+
+    // Ring 1: immediate neighbours — full exclusion, prism cannot attach
+    // directly to the topological singularity
+    forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+    {
+        const label bpI = it.key();
+        if( bpI < 0 || bpI >= nBP ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= nBP ) continue;
+            if( ringId[nbpI] >= 0 ) continue;
+            ringId[nbpI] = 1;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], virtualTopoRing1_);
+        }
+    }
+
+    // Ring 2: taper onset — BL restarts gradually, no hard cliff
+    forAll(ringId, bpI)
+    {
+        if( ringId[bpI] != 1 ) continue;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label nbpI = pointPoints(bpI, ppI);
+            if( nbpI < 0 || nbpI >= nBP ) continue;
+            if( ringId[nbpI] >= 0 ) continue;
+            ringId[nbpI] = 2;
+            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], virtualTopoRing2_);
+        }
+    }
+
+    label nR0=0, nR1=0, nR2=0;
+    forAll(ringId, bpI)
+    {
+        if(      ringId[bpI] == 0 ) ++nR0;
+        else if( ringId[bpI] == 1 ) ++nR1;
+        else if( ringId[bpI] == 2 ) ++nR2;
+    }
+
+    Info << "VirtualTopology exclusion: ring0=" << nR0
+         << " ring1=" << nR1
+         << " ring2=" << nR2
+         << " scale=(" << virtualTopoRing0_
+         << " " << virtualTopoRing1_
+         << " " << virtualTopoRing2_ << ")"
+         << endl;
 }
 
 void boundaryLayers::activate2DMode()

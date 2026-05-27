@@ -95,6 +95,13 @@ class boundaryLayers
         scalar acuteCornerRing4_;      // default 0.35
         scalar acuteCornerRing5_;      // default 0.60
         scalar acuteCornerRing6_;      // default 1.00
+        // Virtual topology BL exclusion/taper around pathological
+        // acute triple-junctions. Internal mesher view only:
+        // no STL mutation, no patch renaming, no BL graph surgery.
+        bool virtualTopologyExclusion_; // default false
+        scalar virtualTopoRing0_;       // default 0.0  full exclusion
+        scalar virtualTopoRing1_;       // default 0.0  full exclusion
+        scalar virtualTopoRing2_;       // default 0.05 taper onset
 
         //- is it a 2D mesh
         bool is2DMesh_;
@@ -386,6 +393,9 @@ public:
         //- terminate boundary layers at concave edges (used as a flag)
         void terminateLayersAtConcaveEdges();
         void markConcaveEdgePoints(boolList& skipPoint) const;
+        //- Apply virtual topology BL exclusion zones around acute
+        //- BL triple-junctions before any layer graph is constructed.
+        void applyVirtualTopologyExclusion() const;
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches
