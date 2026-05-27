@@ -1663,67 +1663,145 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
         return;
 
     const meshSurfaceEngine& mse = surfaceEngine();
+
     const labelList& bPoints = mse.boundaryPoints();
-    const VRWGraph& pointPoints = mse.pointPoints();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const VRWGraph& pointFaces = mse.pointFaces();
 
     const label nBP = bPoints.size();
+    const label nBF = bFaces.size();
 
     if( layerScale_.size() != nBP )
         return;
 
-    // ringId: -1=untouched, 0=seed, 1=ring1, 2=ring2
-    labelList ringId(nBP, -1);
+    // Reverse map: mesh point label -> boundary point label.
+    labelList meshToBnd(mesh_.points().size(), -1);
+    forAll(bPoints, bpI)
+        meshToBnd[bPoints[bpI]] = bpI;
 
-    // Ring 0: the acute junction point itself — full BL exclusion
+    // faceRing: -1=untouched, 0=seed, 1=ring1, 2=ring2
+    labelList faceRing(nBF, -1);
+
+    // Ring 0: all boundary faces touching any acute corner seed point.
     forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
     {
         const label bpI = it.key();
         if( bpI < 0 || bpI >= nBP ) continue;
-        ringId[bpI] = 0;
-        layerScale_[bpI] = Foam::min(layerScale_[bpI], virtualTopoRing0_);
-    }
-
-    // Ring 1: immediate neighbours — full exclusion, prism cannot attach
-    // directly to the topological singularity
-    forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
-    {
-        const label bpI = it.key();
-        if( bpI < 0 || bpI >= nBP ) continue;
-        forAllRow(pointPoints, bpI, ppI)
+        forAllRow(pointFaces, bpI, pfI)
         {
-            const label nbpI = pointPoints(bpI, ppI);
-            if( nbpI < 0 || nbpI >= nBP ) continue;
-            if( ringId[nbpI] >= 0 ) continue;
-            ringId[nbpI] = 1;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], virtualTopoRing1_);
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            faceRing[bfI] = 0;
         }
     }
 
-    // Ring 2: taper onset — BL restarts gradually, no hard cliff
-    forAll(ringId, bpI)
+    // Build ring0 point set.
+    boolList ring0pt(nBP, false);
+    forAll(faceRing, bfI)
     {
-        if( ringId[bpI] != 1 ) continue;
-        forAllRow(pointPoints, bpI, ppI)
+        if( faceRing[bfI] != 0 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
         {
-            const label nbpI = pointPoints(bpI, ppI);
-            if( nbpI < 0 || nbpI >= nBP ) continue;
-            if( ringId[nbpI] >= 0 ) continue;
-            ringId[nbpI] = 2;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], virtualTopoRing2_);
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring0pt[bpI] = true;
         }
     }
 
-    label nR0=0, nR1=0, nR2=0;
-    forAll(ringId, bpI)
+    // Ring 1: all faces touching ring0 points.
+    forAll(ring0pt, bpI)
     {
-        if(      ringId[bpI] == 0 ) ++nR0;
-        else if( ringId[bpI] == 1 ) ++nR1;
-        else if( ringId[bpI] == 2 ) ++nR2;
+        if( !ring0pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 1;
+        }
     }
 
-    Info << "VirtualTopology exclusion: ring0=" << nR0
-         << " ring1=" << nR1
-         << " ring2=" << nR2
+    // Build ring1 point set.
+    boolList ring1pt(nBP, false);
+    forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 1 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring1pt[bpI] = true;
+        }
+    }
+
+    // Ring 2: all faces touching ring1 points.
+    forAll(ring1pt, bpI)
+    {
+        if( !ring1pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 2;
+        }
+    }
+
+    // Apply layerScale_ — smallest ring wins for shared points.
+    forAll(faceRing, bfI)
+    {
+        const label ring = faceRing[bfI];
+        if( ring < 0 ) continue;
+        scalar scale = 1.0;
+        if(      ring == 0 ) scale = virtualTopoRing0_;
+        else if( ring == 1 ) scale = virtualTopoRing1_;
+        else if( ring == 2 ) scale = virtualTopoRing2_;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            layerScale_[bpI] = Foam::min(layerScale_[bpI], scale);
+        }
+    }
+
+    // Diagnostics
+    label nF0=0, nF1=0, nF2=0;
+    labelList ptRing(nBP, -1);
+    forAll(faceRing, bfI)
+    {
+        const label ring = faceRing[bfI];
+        if(      ring == 0 ) ++nF0;
+        else if( ring == 1 ) ++nF1;
+        else if( ring == 2 ) ++nF2;
+        if( ring < 0 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            if( ptRing[bpI] < 0 || ring < ptRing[bpI] ) ptRing[bpI] = ring;
+        }
+    }
+    label nP0=0, nP1=0, nP2=0;
+    forAll(ptRing, bpI)
+    {
+        if(      ptRing[bpI] == 0 ) ++nP0;
+        else if( ptRing[bpI] == 1 ) ++nP1;
+        else if( ptRing[bpI] == 2 ) ++nP2;
+    }
+
+    Info << "VirtualTopology face-ring exclusion:"
+         << " faces(r0=" << nF0 << " r1=" << nF1 << " r2=" << nF2 << ")"
+         << " pts(r0=" << nP0 << " r1=" << nP1 << " r2=" << nP2 << ")"
          << " scale=(" << virtualTopoRing0_
          << " " << virtualTopoRing1_
          << " " << virtualTopoRing2_ << ")"

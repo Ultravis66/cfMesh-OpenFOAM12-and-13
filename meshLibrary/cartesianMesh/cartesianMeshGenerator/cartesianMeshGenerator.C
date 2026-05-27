@@ -977,7 +977,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     const pointField& pts = surfacePtr_->points();
                     const wordList pNames = surfacePtr_->patchNames();
 
-                    // Build BL patch index set
+                    // Build BL patch index set — honor both per-patch and global nLayers
                     labelHashSet blPatchIdx;
                     if( meshDict_.isDict("boundaryLayers") )
                     {
@@ -993,6 +993,33 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                                     const label nL = pd.found("nLayers") ?
                                         readLabel(pd.lookup("nLayers")) : 0;
                                     if( nL > 0 ) blPatchIdx.insert(pi);
+                                }
+                            }
+                        }
+                        // Global nLayers fallback — mark all non-explicitly-zero patches as BL
+                        if( bndL.found("nLayers") )
+                        {
+                            const label globalN = readLabel(bndL.lookup("nLayers"));
+                            if( globalN > 0 )
+                            {
+                                forAll(pNames, pi)
+                                {
+                                    bool explicitlyZero = false;
+                                    if( bndL.isDict("patchBoundaryLayers") )
+                                    {
+                                        const dictionary& pbl =
+                                            bndL.subDict("patchBoundaryLayers");
+                                        if( pbl.isDict(pNames[pi]) )
+                                        {
+                                            const dictionary& pd =
+                                                pbl.subDict(pNames[pi]);
+                                            if( pd.found("nLayers")
+                                             && readLabel(pd.lookup("nLayers")) == 0 )
+                                                explicitlyZero = true;
+                                        }
+                                    }
+                                    if( !explicitlyZero )
+                                        blPatchIdx.insert(pi);
                                 }
                             }
                         }
@@ -1044,6 +1071,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
 
                     label nFound = 0;
                     label nAdjacencyRejected = 0;
+                    label nNeutralRejected = 0;
                     label nCrossPatchRejected = 0;
 
                     // Direct O(n^2) scan — safe, deterministic, no octree needed
@@ -1099,23 +1127,28 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                                             isBLorTerm = true;
                                 if( !isBLorTerm ) touchesNeutral = true;
                             }
-                            if( touchesNeutral ) continue;
-
-                            // Require identical patch incidence sets
-                            bool identicalPatchSet = false;
-                            if( ptPatches[a].size() == ptPatches[b].size() )
+                            if( touchesNeutral )
                             {
-                                identicalPatchSet = true;
-                                forAllConstIter(labelHashSet, ptPatches[a], iter)
+                                ++nNeutralRejected;
+                                continue;
+                            }
+
+                            // Require at least one shared BL patch.
+                            // Identical-patch-set is too strict for triple-junction
+                            // points (blade/hub/periodic) where the two near-coincident
+                            // points legitimately have different patch memberships.
+                            // Neutral/termination touches already rejected above.
+                            bool sharedBLPatch = false;
+                            forAllConstIter(labelHashSet, ptPatches[a], iterA)
+                            {
+                                if( blPatchIdx.found(iterA.key())
+                                 && ptPatches[b].found(iterA.key()) )
                                 {
-                                    if( !ptPatches[b].found(iter.key()) )
-                                    {
-                                        identicalPatchSet = false;
-                                        break;
-                                    }
+                                    sharedBLPatch = true;
+                                    break;
                                 }
                             }
-                            if( !identicalPatchSet )
+                            if( !sharedBLPatch )
                             {
                                 ++nCrossPatchRejected;
                                 continue;
@@ -1136,6 +1169,8 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     Info << "  selectiveWeld: " << nFound << " pairs scanned" << endl;
                     Info << "  selectiveWeld: adjacency-rejected = "
                          << nAdjacencyRejected << endl;
+                    Info << "  selectiveWeld: neutral-rejected = "
+                         << nNeutralRejected << endl;
                     Info << "  selectiveWeld: cross-patch-rejected = "
                          << nCrossPatchRejected << endl;
 
