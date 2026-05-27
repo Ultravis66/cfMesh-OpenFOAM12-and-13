@@ -32,6 +32,7 @@ Description
 #include "meshOctreeCreator.H"
 #include "cartesianMeshExtractor.H"
 #include "meshSurfaceEngine.H"
+#include "boundaryLayers.H"
 #include "meshSurfaceMapper.H"
 #include "edgeExtractor.H"
 #include "meshSurfaceEdgeExtractorNonTopo.H"
@@ -347,11 +348,147 @@ void cartesianMeshGenerator::optimiseMeshSurface()
     meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
 }
 
+void cartesianMeshGenerator::detectGapPoints
+(
+    boundaryLayers& bl
+)
+{
+    if( !meshDict_.isDict("boundaryLayers") )
+        return;
+    const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+    if( !bndL.found("detectGaps") )
+        return;
+    if( !Switch(bndL.lookup("detectGaps")) )
+        return;
+    if( !bndL.found("gapPatchPairs") )
+    {
+        Info << "Gap detection: no gapPatchPairs defined, skipping" << endl;
+        return;
+    }
+
+    const scalar gapThreshold =
+        bndL.found("gapThreshold") ?
+        readScalar(bndL.lookup("gapThreshold")) : 5e-4;
+
+    // Read explicit patch pairs
+    const List<Pair<word>> pairList(bndL.lookup("gapPatchPairs"));
+
+    Info << "Gap detection: threshold=" << gapThreshold
+         << " m, " << pairList.size() << " patch pairs" << endl;
+
+    if( !octreePtr_ )
+    {
+        Info << "Gap detection: octreePtr_ is null, skipping" << endl;
+        return;
+    }
+
+    const triSurf& surf = octreePtr_->surface();
+    const wordList pNames = surf.patchNames();
+
+    // Build word->index map
+    Map<label> patchNameToIdx;
+    forAll(pNames, pi)
+        patchNameToIdx.insert(pi, pi);
+    // Rebuild as name->index
+    HashTable<label> nameToIdx;
+    forAll(pNames, pi)
+        nameToIdx.insert(pNames[pi], pi);
+
+    // Build set of pairs as index pairs
+    List<Pair<label>> idxPairs;
+    forAll(pairList, pI)
+    {
+        const word& nameA = pairList[pI].first();
+        const word& nameB = pairList[pI].second();
+        if( !nameToIdx.found(nameA) )
+        {
+            Info << "Gap detection: patch " << nameA << " not found, skipping pair" << endl;
+            continue;
+        }
+        if( !nameToIdx.found(nameB) )
+        {
+            Info << "Gap detection: patch " << nameB << " not found, skipping pair" << endl;
+            continue;
+        }
+        idxPairs.append(Pair<label>(nameToIdx[nameA], nameToIdx[nameB]));
+        Info << "Gap pair: " << nameA << " <-> " << nameB << endl;
+    }
+
+    if( idxPairs.empty() )
+    {
+        Info << "Gap detection: no valid patch pairs, skipping" << endl;
+        return;
+    }
+
+    meshSurfaceEngine mse(mesh_);
+    const labelList& bPoints = mse.boundaryPoints();
+    const pointFieldPMG& points = mesh_.points();
+    const meshSurfacePartitioner mPart(mse);
+    const VRWGraph& pPatches = mPart.pointPatches();
+
+    labelHashSet gapPoints;
+    label nScanned = 0;
+    label nGapHits = 0;
+
+    forAll(bPoints, bpI)
+    {
+        const point& pt = points[bPoints[bpI]];
+        bool isGapPoint = false;
+
+        forAll(idxPairs, pairI)
+        {
+            const label pIdxA = idxPairs[pairI].first();
+            const label pIdxB = idxPairs[pairI].second();
+
+            bool onA = false, onB = false;
+            forAllRow(pPatches, bpI, pI)
+            {
+                if( pPatches(bpI, pI) == pIdxA ) onA = true;
+                if( pPatches(bpI, pI) == pIdxB ) onB = true;
+            }
+            if( !onA && !onB ) continue;
+
+            ++nScanned;
+            const label searchPatch = onA ? pIdxB : pIdxA;
+
+            point nearest;
+            scalar distSq = GREAT;
+            label nearestTri = -1;
+            octreePtr_->findNearestSurfacePointInRegion
+            (
+                nearest, distSq, nearestTri, searchPatch, pt
+            );
+
+            if( distSq < sqr(gapThreshold) )
+            {
+                isGapPoint = true;
+                ++nGapHits;
+                break;
+            }
+        }
+
+        if( isGapPoint )
+            gapPoints.insert(bPoints[bpI]);
+    }
+
+    Info << "Gap detection: scanned " << nScanned
+         << " candidate points, found " << gapPoints.size()
+         << " gap points from " << nGapHits << " hits" << endl;
+
+    if( gapPoints.size() > 0 )
+        bl.setGapPoints(gapPoints);
+}
+
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
     boundaryLayers bl(mesh_, meshDict_);
     bl.terminateLayersAtConcaveEdges();
+
+    // Gap/proximity closure: detect tight BL/BL patch proximity and suppress
+    // BL locally before createNewVertices builds the prism graph.
+    detectGapPoints(bl);
+
     bl.addLayerForAllPatches();
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();

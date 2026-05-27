@@ -49,6 +49,7 @@ namespace Foam
 
 // Forward declarations
 class triSurf;
+class boundaryLayers;
 class meshOctree;
 class Time;
 
@@ -125,6 +126,10 @@ class cartesianMeshGenerator
         void optimiseMeshSurface();
 
         //- add boundary layers
+        //- Detect tight proximity/gap regions between BL patches and
+        //- suppress BL locally through boundaryLayers::setGapPoints().
+        void detectGapPoints(boundaryLayers& bl);
+
         void generateBoundaryLayers();
 
         //- refine boundary layers
