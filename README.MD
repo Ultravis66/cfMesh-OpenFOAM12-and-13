@@ -8,7 +8,7 @@ v0.8.2 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop 
 ### Known remaining issues
 **Residual minor variance** Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
 
-**Sharp corner jank** where blade, Hub/Shroud/Periodic boundries meet create jank protrusions, currently working on virtual tropology fix for this.
+**Blade/shroud contact protrusion** the blade tip is geometrically coincident with the shroud surface (zero tip gap). Virtual topology and gap closure reduce the protrusion but cannot fully eliminate it without a real tip gap in the geometry. Will be resolved when geometry is rebuilt with physical tip clearance.
 
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
@@ -299,18 +299,16 @@ All known race-sensitive OMP apply loops in the surface and mesh optimizer have 
 
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.8.2 current | v0.8.1 | v0.8 | v0.7.1 best case |
-|--------|----------------|--------|------|------------------|
-| Cells | ~2.28M | ~2.28M | ~2.28M | ~2.1M |
-| Average non-orthogonality | 9.88° | 9.86° | 9.86° | 10.6° |
-| Max non-orthogonality | ~90° | ~90° | ~90° | 90–100° |
-| Non-ortho errors | 0 | 1 | 1 | 0–1 |
-| Negative volume cells | 1 | 1 | 1 | 0–2 |
-| Bad pyramid faces | **0** | 6 | 8–11 | 1–9 |
-| Max skewness | **8.74** | 8.74 | 11.1 | 9.3–9.5 |
-| Severely non-ortho faces (>70°) | ~1,696 | ~1,960 | ~1,700 | 1,800–2,100 |
-| Runtime | ~83s | ~83s | ~85–91s | ~75–100s |
-| Deterministic / repeatable major metrics | Yes | Yes | Yes | No |
+| Metric | v0.8.3 current | v0.8.2 | v0.8.1 | v0.8 |
+|--------|----------------|--------|--------|------|
+| Cells | ~1.77M | ~2.28M | ~2.28M | ~2.28M |
+| Average non-orthogonality | 9.77° | 9.88° | 9.86° | 9.86° |
+| Non-ortho errors | 0 | 0 | 1 | 1 |
+| Negative volume cells | 0 | 1 | 1 | 1 |
+| Bad pyramid faces | **0** | **0** | 6 | 8–11 |
+| Max skewness | **9.77** | 8.74 | 8.74 | 11.1 |
+| Runtime | ~90s | ~83s | ~83s | ~85–91s |
+| Deterministic | Yes | Yes | Yes | Yes |
 
 ---
 
@@ -328,6 +326,7 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 | `v0.2` | `openfoam13` | Skewness proxy in quality evaluator |
 | `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
 | `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
+| `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
 
 ---
 ## Running the regression test
