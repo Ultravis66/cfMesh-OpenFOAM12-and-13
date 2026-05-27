@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.8.2 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
+v0.8.3 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
 
 ### NOTE: NASA Rotor 37 is being used as a stress-test case because it is a sufficiently complex turbomachinery geometry, with tight blade/hub/shroud junctions, periodic sector boundaries, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific, but to use this geometry to expose robustness issues that should improve performance on other external and internal CFD geometries. Limited testing on CFD, a few tests have been run just to see if the mesh would work. 
 
@@ -224,27 +224,28 @@ Generic protection system for points where BL patches meet no-BL patches (wall m
 | `meshSurfaceEdgeExtractorNonTopo` | Overloaded constructor accepts and passes through protected point sets |
 
 
-### meshDict geometry controls
+### meshDict controls
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `blblFeatureAngleDeg` | 40 | Angle threshold for detecting sharp BL/BL junction curves |
-| `layerScaleRing1` | 0.25 | BL scale at ring 1 (nearest to transition edge) |
-| `layerScaleRing2` | 0.50 | BL scale at ring 2 |
-| `layerScaleRing3` | 0.75 | BL scale at ring 3 |
-| `layerScaleRing4` | 1.00 | BL scale at ring 4 (full BL thickness) |
-| `cornerSnapRelaxation` | 0.25 | Corner vertex snap damping (0=locked, 1=full snap) |
+| `blblFeatureAngleDeg` | 40 | Junction angle threshold for BL/BL sharp curve detection (degrees) |
+| `blblCornerAcuteThreshold` | 0.3 | Dot product threshold for acute corner classification. 0.5=60°, 0.3=73°, 0.0=90° |
+| `lockAcuteCornerPoints` | true | Lock acute corners in final surface optimizer |
+| `acuteCornerRing0-6` | 0.0/0.0/0.05/0.15/0.35/0.60/1.00 | layerScale taper seeded from acute corner points |
+| `acuteCornerCapLayers` | false | Cap layer count near acute corners (experimental) |
+| `virtualTopologyExclusion` | false | Enable commercial-style BL exclusion face-rings at acute junctions |
+| `virtualTopoRing0-2` | 0.05/0.15/0.40 | layerScale for VT face-ring suppression zones |
+| `detectGaps` | false | Enable gap/contact proximity detection |
+| `gapThreshold` | 5e-4 | Proximity distance threshold in metres |
+| `gapPatchPairs` | none | Explicit patch pairs to check for proximity |
+| `gapSuppressPatches` | none | Patches to suppress BL on (others are protected) |
+| `gapFaceRingExclusion` | true | Enable face-ring BFS around gap points (suppresses prism topology) |
+| `gapFaceRing0-2Scale` | 0.02/0.05/0.20 | layerScale for gap face-ring suppression zones |
+| `layerScaleRing1-6` | 0.10/0.25/0.45/0.65/0.80/1.00 | BL/no-BL transition ramp scales |
+| `terminationPatches` | none | Patches with no BL (inlet/outlet) |
 | `postBLSnap` | false | Post-BL surface re-projection (experimental) |
-| `gapDetection` | false | Enable gap detection pre-pass (diagnostic only) |
-| `gapSuppression` | false | Suppress BL at detected gap-risk points |
-| `gapDetectionDistance` | 1e-4 | Absolute gap width threshold for detection |
-| `gapProbeDistance` | 1e-6 | Inward normal probe distance for gap measurement |
-| `geometryPreprocessing { active true; weldTolerance 1e-4; }` | off | Pre-mesh STL near-coincident vertex welding. Fixes knife-edge TE defects below mesh resolution. |
-| `blblCornerAcuteThreshold` | 0.3 | Dot product threshold for acute BL+BL+neutral corner classification. 0.3=73°, 0.0=90°, -0.3=107°. |
-| `lockAcuteCornerPoints` | true | Lock acute BL+BL+neutral corners in final surface optimizer. Prevents post-BL smoothing from pushing corners across patch boundaries. |
-| `layerScaleRing1` | 0.10 | Updated default — softer taper start |
-| `layerScaleRing2` | 0.30 | Updated default |
-| `layerScaleRing3` | 0.60 | Updated default |
+| `postRefineBLOptimisation` | true | Run surface optimizer after BL refinement |
+
 
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
@@ -266,7 +267,7 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 > **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
 
 ---
-## What's new in v0.7.1
+## What's new
 
 ### Patch-role classification system
 Patches are now classified into three roles driven by meshDict:
@@ -346,7 +347,7 @@ cfMesh Rotor 37 Regression Test
 PASS: cartesianMesh completed in ~85–95s
 PASS: Bad faces after untangling: 0 (limit: 10)
 [ 2/3 ] Running checkMesh...
-PASS: Cell count: ~2.0M (baseline: 2100000 +/-10%)
+PASS: Cell count: ~1.8 (baseline: 2100000 +/-10%)
 PASS: Average non-orthogonality: ~10deg (limit: 15deg)
 PASS: High aspect ratio cells: 3-5 (known limit: 10)
 PASS: Negative volume cells: 0-2 (known limit: 5)
