@@ -356,6 +356,7 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
     blblAcuteCornerPoints_ = bl.blblAcuteCornerPoints();
+    vtFaceRing_ = bl.vtFaceRing();
     Info << "Acute BL+BL+neutral corners captured: "
          << blblAcuteCornerPoints_.size() << endl;
 
@@ -380,6 +381,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
         // Pass BL/BL junction points for wedge topology
         refLayers.setBlblJunctionPoints(blblJunctionPoints_);
         refLayers.setBlblAcuteCornerPoints(blblAcuteCornerPoints_);
+        refLayers.setVtFaceRing(vtFaceRing_);
         {
             bool capLayers = false;
             if( meshDict_.isDict("boundaryLayers") )

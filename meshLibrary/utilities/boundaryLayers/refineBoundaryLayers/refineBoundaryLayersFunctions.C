@@ -338,6 +338,8 @@ bool refineBoundaryLayers::analyseLayers()
             {
                 const label bfI = ptFaces(bpI, pfI);
                 if( bfI < 0 || bfI >= label(nLayersAtBndFace_.size()) ) continue;
+                // Virtual topology takes priority — skip VT-handled faces
+                if( bfI < label(vtFaceRing_.size()) && vtFaceRing_[bfI] >= 0 ) continue;
                 if( nLayersAtBndFace_[bfI] > 1 )
                 {
                     ring0face[bfI] = true;
@@ -365,6 +367,8 @@ bool refineBoundaryLayers::analyseLayers()
                     const label nbfI = ptFaces(bpI, pfI);
                     if( nbfI < 0 || nbfI >= label(nLayersAtBndFace_.size()) ) continue;
                     if( ring0face[nbfI] ) continue;
+                    // Virtual topology takes priority — skip VT-handled faces
+                    if( nbfI < label(vtFaceRing_.size()) && vtFaceRing_[nbfI] >= 0 ) continue;
                     if( nLayersAtBndFace_[nbfI] > 2 )
                     {
                         ring1face[nbfI] = true;
@@ -400,7 +404,7 @@ bool refineBoundaryLayers::analyseLayers()
             meshToBnd2[bPts2[bpI]] = bpI;
 
         boolList acRing0(nLayersAtBndFace_.size(), false);
-        forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+        forAllConstIter(labelHashSet, blblJunctionPoints_, it)
         {
             const label bpI = it.key();
             if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;

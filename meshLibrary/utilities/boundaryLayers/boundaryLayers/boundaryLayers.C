@@ -1771,6 +1771,9 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
         }
     }
 
+    // Export face ring for refineBoundaryLayers — BL/BL ramp skips VT-handled faces
+    vtFaceRing_ = faceRing;
+
     // Diagnostics
     label nF0=0, nF1=0, nF2=0;
     labelList ptRing(nBP, -1);

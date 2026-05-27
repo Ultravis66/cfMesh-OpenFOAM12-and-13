@@ -543,6 +543,19 @@ void refineBoundaryLayers::setBlblAcuteCornerPoints
          << " acute BL+BL+neutral corner points" << endl;
 }
 
+void refineBoundaryLayers::setVtFaceRing
+(
+    const labelList& ring
+)
+{
+    vtFaceRing_ = ring;
+    label nHandled = 0;
+    forAll(vtFaceRing_, fI)
+        if( vtFaceRing_[fI] >= 0 ) ++nHandled;
+    Info << "refineBoundaryLayers: received vtFaceRing, "
+         << nHandled << " faces under virtual topology control" << endl;
+}
+
 } // End namespace Foam
 
 // ************************************************************************* //

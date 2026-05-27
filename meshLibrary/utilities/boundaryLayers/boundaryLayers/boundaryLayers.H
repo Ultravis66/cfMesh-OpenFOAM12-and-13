@@ -146,6 +146,10 @@ class boundaryLayers
         mutable labelHashSet blblCornerPoints_;
         mutable labelHashSet blblAcuteCornerPoints_;
 
+        //- Per-face virtual topology ring assignment (-1=untouched, 0/1/2=ring)
+        //- Populated by applyVirtualTopologyExclusion, consumed by refineBoundaryLayers
+        mutable labelList vtFaceRing_;
+
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
 
@@ -340,6 +344,12 @@ public:
         const labelHashSet& blblAcuteCornerPoints() const
         {
             return blblAcuteCornerPoints_;
+        }
+
+        //- Return virtual topology face ring assignments
+        const labelList& vtFaceRing() const
+        {
+            return vtFaceRing_;
         }
 
         //- return edges where BL and no-BL patches meet
