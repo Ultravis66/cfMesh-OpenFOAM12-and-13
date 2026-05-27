@@ -76,6 +76,10 @@ void boundaryLayers::createNewFacesAndCells(const boolList& treatPatches)
     forAll(bFaces, bfI)
         if( treatPatches[boundaryFacePatches[bfI]] )
         {
+            // Skip faces marked for complete BL suppression by gap/VT policy
+            if( suppressLayerAtBndFace_.size() > bfI
+             && suppressLayerAtBndFace_[bfI] )
+                continue;
             const face& f = bFaces[bfI];
 
             faceList cellFaces(f.size() + 2);

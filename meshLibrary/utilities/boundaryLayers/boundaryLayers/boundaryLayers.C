@@ -588,7 +588,11 @@ boundaryLayers::boundaryLayers
     virtualTopologyExclusion_(false),
     virtualTopoRing0_(0.0),
     virtualTopoRing1_(0.0),
-    virtualTopoRing2_(0.05)
+    virtualTopoRing2_(0.05),
+    gapFaceRingExclusion_(true),
+    gapFaceRing0Scale_(0.02),
+    gapFaceRing1Scale_(0.05),
+    gapFaceRing2Scale_(0.20)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -667,6 +671,14 @@ boundaryLayers::boundaryLayers
             virtualTopoRing1_ = readScalar(bndLayers.lookup("virtualTopoRing1"));
         if( bndLayers.found("virtualTopoRing2") )
             virtualTopoRing2_ = readScalar(bndLayers.lookup("virtualTopoRing2"));
+        if( bndLayers.found("gapFaceRingExclusion") )
+            gapFaceRingExclusion_ = Switch(bndLayers.lookup("gapFaceRingExclusion"));
+        if( bndLayers.found("gapFaceRing0Scale") )
+            gapFaceRing0Scale_ = readScalar(bndLayers.lookup("gapFaceRing0Scale"));
+        if( bndLayers.found("gapFaceRing1Scale") )
+            gapFaceRing1Scale_ = readScalar(bndLayers.lookup("gapFaceRing1Scale"));
+        if( bndLayers.found("gapFaceRing2Scale") )
+            gapFaceRing2Scale_ = readScalar(bndLayers.lookup("gapFaceRing2Scale"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -953,6 +965,63 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         Info << "Gap detection: suppressed "
              << nGapSuppressed
              << " BL points in thin clearance regions" << endl;
+
+        // Gap taper rings: BFS outward from gap points to create smooth
+        // BL restart instead of hard zero cliff
+        const VRWGraph& ptPts = pointPoints;
+        const label nBP = bPoints.size();
+
+        // Ring 1: immediate neighbours — strong suppression
+        boolList gapRing0(nBP, false);
+        forAllConstIter(labelHashSet, gapPoints_, it)
+        {
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) gapRing0[bpI] = true;
+        }
+
+        boolList gapRing1(nBP, false);
+        forAll(gapRing0, bpI)
+        {
+            if( !gapRing0[bpI] ) continue;
+            forAllRow(ptPts, bpI, ppI)
+            {
+                const label nbpI = ptPts(bpI, ppI);
+                if( nbpI < 0 || nbpI >= nBP ) continue;
+                if( gapRing0[nbpI] ) continue;
+                gapRing1[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], 0.05);
+            }
+        }
+
+        // Ring 2: taper onset
+        boolList gapRing2(nBP, false);
+        forAll(gapRing1, bpI)
+        {
+            if( !gapRing1[bpI] ) continue;
+            forAllRow(ptPts, bpI, ppI)
+            {
+                const label nbpI = ptPts(bpI, ppI);
+                if( nbpI < 0 || nbpI >= nBP ) continue;
+                if( gapRing0[nbpI] || gapRing1[nbpI] ) continue;
+                gapRing2[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], 0.20);
+            }
+        }
+
+        // Ring 3: gentle restart
+        forAll(gapRing2, bpI)
+        {
+            if( !gapRing2[bpI] ) continue;
+            forAllRow(ptPts, bpI, ppI)
+            {
+                const label nbpI = ptPts(bpI, ppI);
+                if( nbpI < 0 || nbpI >= nBP ) continue;
+                if( gapRing0[nbpI] || gapRing1[nbpI] || gapRing2[nbpI] ) continue;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], 0.50);
+            }
+        }
     }
 
     // Mark exact transition edge points
@@ -1650,6 +1719,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // Must run before return — vertex creation reads layerScale_.
     applyVirtualTopologyExclusion();
 
+    // Gap face-ring: taper layerScale_ around gap contact points
+    applyGapFaceRingExclusion();
+
     Info << "terminateLayersAtConcaveEdges: marked "
          << nTransitionEdges << " BL-transition edges." << endl;
 }
@@ -1809,6 +1881,144 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
          << " " << virtualTopoRing1_
          << " " << virtualTopoRing2_ << ")"
          << endl;
+}
+
+void boundaryLayers::applyGapFaceRingExclusion() const
+{
+    if( !gapFaceRingExclusion_ )
+        return;
+    if( gapPoints_.size() == 0 )
+        return;
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const labelList& bPoints     = mse.boundaryPoints();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const VRWGraph& pointFaces   = mse.pointFaces();
+
+    const label nBP = bPoints.size();
+    const label nBF = bFaces.size();
+
+    if( layerScale_.size() != nBP ) return;
+
+    // Reverse map: mesh point -> boundary point
+    labelList meshToBnd(mesh_.points().size(), -1);
+    forAll(bPoints, bpI)
+        meshToBnd[bPoints[bpI]] = bpI;
+
+    // faceRing: -1=untouched, 0=seed, 1=ring1, 2=ring2
+    labelList faceRing(nBF, -1);
+
+    // Ring 0: all boundary faces touching any gap point
+    forAllConstIter(labelHashSet, gapPoints_, it)
+    {
+        const label meshPtI = it.key();
+        if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+        const label bpI = meshToBnd[meshPtI];
+        if( bpI < 0 || bpI >= nBP ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            faceRing[bfI] = 0;
+        }
+    }
+
+    // Build ring0 point set
+    boolList ring0pt(nBP, false);
+    forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 0 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring0pt[bpI] = true;
+        }
+    }
+
+    // Ring 1
+    forAll(ring0pt, bpI)
+    {
+        if( !ring0pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 1;
+        }
+    }
+
+    // Build ring1 point set
+    boolList ring1pt(nBP, false);
+    forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 1 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring1pt[bpI] = true;
+        }
+    }
+
+    // Ring 2
+    forAll(ring1pt, bpI)
+    {
+        if( !ring1pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 2;
+        }
+    }
+
+    // Populate face-level suppression mask for ring0 faces
+    // createNewFacesAndCells will skip these entirely — no prism topology
+    suppressLayerAtBndFace_.setSize(nBF, false);
+    forAll(faceRing, bfI)
+        if( faceRing[bfI] == 0 )
+            suppressLayerAtBndFace_[bfI] = true;
+
+    // Apply layerScale_ — scales configurable via meshDict
+    forAll(faceRing, bfI)
+    {
+        const label ring = faceRing[bfI];
+        if( ring < 0 ) continue;
+        scalar scale = 1.0;
+        if(      ring == 0 ) scale = gapFaceRing0Scale_;
+        else if( ring == 1 ) scale = gapFaceRing1Scale_;
+        else if( ring == 2 ) scale = gapFaceRing2Scale_;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            layerScale_[bpI] = Foam::min(layerScale_[bpI], scale);
+        }
+    }
+
+    // Diagnostics
+    label nF0=0, nF1=0, nF2=0;
+    forAll(faceRing, bfI)
+    {
+        if(      faceRing[bfI] == 0 ) ++nF0;
+        else if( faceRing[bfI] == 1 ) ++nF1;
+        else if( faceRing[bfI] == 2 ) ++nF2;
+    }
+    Info << "Gap face-ring exclusion:"
+         << " faces(r0=" << nF0 << " r1=" << nF1 << " r2=" << nF2 << ")"
+         << " scale=(" << gapFaceRing0Scale_
+         << " " << gapFaceRing1Scale_
+         << " " << gapFaceRing2Scale_ << ")" << endl;
 }
 
 void boundaryLayers::activate2DMode()

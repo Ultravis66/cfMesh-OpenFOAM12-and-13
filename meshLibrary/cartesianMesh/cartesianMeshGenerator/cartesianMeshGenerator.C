@@ -426,6 +426,18 @@ void cartesianMeshGenerator::detectGapPoints
     const meshSurfacePartitioner mPart(mse);
     const VRWGraph& pPatches = mPart.pointPatches();
 
+    // Side-aware suppression: only suppress designated patches
+    labelHashSet suppressPatchIdx;
+    if( bndL.found("gapSuppressPatches") )
+    {
+        wordList suppressNames(bndL.lookup("gapSuppressPatches"));
+        forAll(suppressNames, si)
+            if( nameToIdx.found(suppressNames[si]) )
+                suppressPatchIdx.insert(nameToIdx[suppressNames[si]]);
+        Info << "Gap detection: suppress-side patches: " << suppressNames << endl;
+    }
+    const bool sideAware = suppressPatchIdx.size() > 0;
+
     labelHashSet gapPoints;
     label nScanned = 0;
     label nGapHits = 0;
@@ -447,6 +459,17 @@ void cartesianMeshGenerator::detectGapPoints
                 if( pPatches(bpI, pI) == pIdxB ) onB = true;
             }
             if( !onA && !onB ) continue;
+
+
+            // Side-aware: skip if not on suppress side
+            if( sideAware )
+            {
+                bool onSuppressSide = false;
+                forAllRow(pPatches, bpI, pI)
+                    if( suppressPatchIdx.found(pPatches(bpI, pI)) )
+                        { onSuppressSide = true; break; }
+                if( !onSuppressSide ) continue;
+            }
 
             ++nScanned;
             const label searchPatch = onA ? pIdxB : pIdxA;

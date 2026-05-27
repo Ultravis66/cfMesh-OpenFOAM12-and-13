@@ -103,6 +103,12 @@ class boundaryLayers
         scalar virtualTopoRing1_;       // default 0.0  full exclusion
         scalar virtualTopoRing2_;       // default 0.05 taper onset
 
+        // Gap face-ring exclusion controls
+        bool   gapFaceRingExclusion_;  // default true
+        scalar gapFaceRing0Scale_;     // default 0.02
+        scalar gapFaceRing1Scale_;     // default 0.05
+        scalar gapFaceRing2Scale_;     // default 0.20
+
         //- is it a 2D mesh
         bool is2DMesh_;
 
@@ -152,6 +158,10 @@ class boundaryLayers
 
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
+
+        //- face-level BL suppression mask — set by gap/VT detection
+        //- createNewFacesAndCells skips faces where this is true
+        mutable boolList suppressLayerAtBndFace_;
 
         //- edges where at least one adjacent patch requests BL and
         //- at least one adjacent patch requests zero layers.
@@ -406,6 +416,8 @@ public:
         //- Apply virtual topology BL exclusion zones around acute
         //- BL triple-junctions before any layer graph is constructed.
         void applyVirtualTopologyExclusion() const;
+        //- Apply face-ring BL suppression/taper around gap points
+        void applyGapFaceRingExclusion() const;
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches
