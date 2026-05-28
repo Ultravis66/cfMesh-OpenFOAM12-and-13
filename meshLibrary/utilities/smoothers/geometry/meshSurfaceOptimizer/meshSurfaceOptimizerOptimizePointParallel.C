@@ -406,8 +406,10 @@ void meshSurfaceOptimizer::edgeNodeDisplacementParallel
     forAll(receivedData, prI)
     {
         const refLabelledPoint& lp = receivedData[prI];
-        DynList<labelledPoint, 2>& lPts = mPts[lp.objectLabel()];
-        lPts.appendIfNotIn(receivedData[prI].lPoint());
+        std::map<label, DynList<labelledPoint, 2> >::iterator iter =
+            mPts.find(lp.objectLabel());
+        if( iter == mPts.end() ) continue;
+        iter->second.appendIfNotIn(lp.lPoint());
     }
 
     //- Finally, the data is ready to start smoothing
