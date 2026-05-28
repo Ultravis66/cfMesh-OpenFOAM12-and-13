@@ -65,9 +65,7 @@ void checkBoundaryFacesSharingTwoEdges::findFacesAtBndEdge()
     removeBndPoint_.setSize(pointEdges.size());
     removeBndPoint_ = true;
 
-    # ifdef USE_OMP
-    # pragma omp parallel for if( nIntFaces > 100 ) schedule(dynamic, 20)
-    # endif
+    // Serial: removeBndPoint_[bpI]=false races on shared boundary points
     for(label fI=0;fI<nIntFaces;++fI)
     {
         const face& f = faces[fI];

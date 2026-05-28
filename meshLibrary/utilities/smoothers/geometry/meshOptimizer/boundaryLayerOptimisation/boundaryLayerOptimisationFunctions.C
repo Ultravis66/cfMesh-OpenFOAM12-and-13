@@ -271,9 +271,7 @@ void boundaryLayerOptimisation::calculateHairEdges()
     isExitFace_.setSize(isBndLayerBase_.size());
     isExitFace_ = false;
 
-    # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 100)
-    # endif
+    // Serial: isExitFace_[f0/f1]=true races on shared faces
     forAll(edgeFaces, edgeI)
     {
         //- avoid edges at inter-processor boundaries
@@ -501,9 +499,7 @@ bool boundaryLayerOptimisation::optimiseLayersAtExittingFaces()
     //- in the previous procedure
     boolList thinnedPoints(mesh_.points().size(), false);
 
-    # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 50)
-    # endif
+    // Serial: modified=true is a shared bool write
     forAll(thinnedHairEdge_, heI)
     {
         if
