@@ -75,7 +75,7 @@ void meshOptimizer::laplaceSmoother::laplacian
             const label nPointPoints = pPoints.sizeOfRow(pointI);
 
             if( nPointPoints == 0 )
-                return;
+                continue;
 
             for(label pI=0;pI<nPointPoints;++pI)
                 newP += points[pPoints(pointI, pI)];
