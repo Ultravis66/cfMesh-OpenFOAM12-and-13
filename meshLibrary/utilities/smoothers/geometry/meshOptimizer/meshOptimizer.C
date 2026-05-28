@@ -241,7 +241,7 @@ void meshOptimizer::lockPointsInSubset(const word& subsetName)
         labelLongList lp;
         mesh_.pointsInSubset(subsetI, lp);
 
-        lockCells(lp);
+        lockPoints(lp);
     }
     else
     {

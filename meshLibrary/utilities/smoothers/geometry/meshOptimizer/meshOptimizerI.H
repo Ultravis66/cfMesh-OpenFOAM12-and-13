@@ -88,7 +88,7 @@ inline void meshOptimizer::lockCells(const labelListType& l)
             fromOtherProc >> receivedData;
 
             forAll(receivedData, i)
-                lockedFace[start+receivedData[i]];
+                lockedFace[start+receivedData[i]] = true;
         }
     }
 
@@ -168,7 +168,7 @@ inline void meshOptimizer::lockFaces(const labelListType& lf)
             fromOtherProc >> receivedData;
 
             forAll(receivedData, i)
-                lockedFace[start+receivedData[i]];
+                lockedFace[start+receivedData[i]] = true;
         }
     }
 
@@ -224,9 +224,9 @@ inline void meshOptimizer::lockPoints(const labelListType& lp)
 
                 forAll(f, pI)
                 {
-                    if( vertexLocation_[pI] & LOCKED )
+                    if( vertexLocation_[f[pI]] & LOCKED )
                     {
-                        // send the face lable and the location in the face
+                        // send the face label and the location in the face
                         dataToSend.append(faceI-start);
                         dataToSend.append((f.size()-pI)%f.size());
                     }

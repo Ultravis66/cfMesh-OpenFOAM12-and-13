@@ -145,6 +145,7 @@ label meshSurfaceOptimizer::findInvertedVertices
 
             forAll(receivedData, j)
             {
+                if( !globalToLocal.found(receivedData[j]) ) continue;
                 const label bpI = globalToLocal[receivedData[j]];
 
                 smoothVertex[bpI] = true;
@@ -516,6 +517,13 @@ bool meshSurfaceOptimizer::untangleSurface
             forAll(smoothVertex, bpI)
                 if( smoothVertex[bpI] )
                 {
+                    // Fallback: only smooth PARTITION points here.
+                    // EDGE points must not be Laplacian-smoothed as surface
+                    // points — that moves them off feature curves.
+                    // mapVerticesOntoSurface is also unsafe for edge points
+                    // (global projection); use patch-constrained version.
+                    if( !(vertexType_[bpI] & PARTITION) ) continue;
+
                     movedPoints.append(bpI);
 
                     if( vertexType_[bpI] & PROCBND )
@@ -524,8 +532,10 @@ bool meshSurfaceOptimizer::untangleSurface
 
             smoothLaplacianFC(movedPoints, procBndPoints, false);
 
+            // Use patch-constrained projection — mapVerticesOntoSurface
+            // uses global nearest-surface which is unsafe near junctions.
             if( remapVertex && mapperPtr )
-                mapperPtr->mapVerticesOntoSurface(movedPoints);
+                mapperPtr->mapVerticesOntoSurfacePatches(movedPoints);
 
             //- update normals and other geometric data
             surfaceModifier.updateGeometry(movedPoints);
