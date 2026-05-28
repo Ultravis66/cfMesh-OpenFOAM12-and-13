@@ -492,8 +492,11 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label gpI_recv = receivedData[counter++];
             const label nFaces = receivedData[counter++];
+            if( !globalToLocal.found(gpI_recv) )
+            { counter += nFaces; continue; }
+            const label bpI = globalToLocal[gpI_recv];
             for(label fI=0;fI<nFaces;++fI)
             {
                 DynList<label, 8> f(receivedData[counter++]);
@@ -800,6 +803,7 @@ void boundaryLayers::createNewFacesFromPointsParallel
         {
             const labelledPair& lpp = receivedData[i];
             const label gpI = lpp.pairLabel();
+            if( !globalToLocal.found(gpI) ) continue;
             const label pointI = bPoints[globalToLocal[gpI]];
             const labelPair& lp = lpp.pair();
 

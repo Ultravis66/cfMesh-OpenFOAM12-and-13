@@ -166,7 +166,8 @@ partTriMesh::partTriMesh
 
             forAll(receivedData, i)
             {
-                const label bpI = globalToLocal[receivedData[i]];
+                if( !globalToLocal.found(receivedData[i]) ) continue;
+            const label bpI = globalToLocal[receivedData[i]];
 
                 forAllRow(pointFaces, bpI, pfI)
                 {
@@ -323,6 +324,7 @@ void partTriMesh::updateVerticesSMP(const List<LongList<labelledPoint> >& np)
         {
             const labelledPoint& lp = receivedData[i];
 
+            if( !globalToLocal.found(lp.pointLabel()) ) continue;
             const label triPointI = globalToLocal[lp.pointLabel()];
             pts[triPointI] = lp.coordinates();
 
@@ -462,6 +464,7 @@ void partTriMesh::updateVertices(const labelLongList& movedPoints)
         {
             const labelledPoint& lp = receivedData[i];
 
+            if( !globalToLocal.found(lp.pointLabel()) ) continue;
             const label triPointI = globalToLocal[lp.pointLabel()];
             pts[triPointI] = lp.coordinates();
 

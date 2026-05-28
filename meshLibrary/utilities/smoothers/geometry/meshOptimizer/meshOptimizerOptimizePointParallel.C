@@ -181,6 +181,7 @@ void meshOptimizer::laplaceSmoother::laplacianParallel
 
     forAll(data, i)
     {
+        if( !globalToLocal.found(data[i].pointLabel()) ) continue;
         const label pointI = globalToLocal[data[i].pointLabel()];
 
         if( mag(points[pointI] - data[i].coordinates()) > SMALL )
@@ -313,6 +314,7 @@ void meshOptimizer::laplaceSmoother::laplacianPCParallel
 
     forAll(data, i)
     {
+        if( !globalToLocal.found(data[i].pointLabel()) ) continue;
         const label pointI = globalToLocal[data[i].pointLabel()];
 
         if( mag(points[pointI] - data[i].coordinates()) > SMALL )
@@ -457,6 +459,7 @@ void meshOptimizer::laplaceSmoother::laplacianWPCParallel
 
     forAll(data, i)
     {
+        if( !globalToLocal.found(data[i].pointLabel()) ) continue;
         const label pointI = globalToLocal[data[i].pointLabel()];
 
         if( mag(points[pointI] - data[i].coordinates()) > SMALL )

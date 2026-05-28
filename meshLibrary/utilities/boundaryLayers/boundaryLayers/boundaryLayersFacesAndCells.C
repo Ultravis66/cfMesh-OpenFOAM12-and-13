@@ -250,6 +250,7 @@ void boundaryLayers::createNewFacesParallel
     //- create additional processor patches if needed
     forAll(treatedEdgeLabels, eI)
     {
+        if( !globalToLocal.found(treatedEdgeLabels[eI]) ) continue;
         const label beI = globalToLocal[treatedEdgeLabels[eI]];
 
         if( !otherProcToProcPatch.found(otherFaceProc[beI]) )
@@ -271,6 +272,7 @@ void boundaryLayers::createNewFacesParallel
     FixedList<label, 4> newF;
     forAll(treatedEdgeLabels, geI)
     {
+        if( !globalToLocal.found(treatedEdgeLabels[geI]) ) continue;
         const label beI = globalToLocal[treatedEdgeLabels[geI]];
 
         if( edgeFaces.sizeOfRow(beI) == 0 )

@@ -95,6 +95,7 @@ void meshSurfaceMapper2D::findActiveBoundaryEdges()
 
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             const label beI = globalToLocal[receivedData[i]];
 
             if( activeFace[startFace + edgeFaces(beI, 0)] )

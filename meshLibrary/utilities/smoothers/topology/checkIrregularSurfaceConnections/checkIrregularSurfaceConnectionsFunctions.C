@@ -328,6 +328,7 @@ bool checkIrregularSurfaceConnections::checkAndFixCellGroupsAtBndVertices
                 continue;
             }
 
+            if( !globalToLocal.found(gp) ) continue;
             const label bpI = globalToLocal[gp];
             for(label i=0;i<nEdges;++i)
             {
@@ -847,6 +848,7 @@ bool checkIrregularSurfaceConnections::checkFaceGroupsAtBndVertices
                 continue;
             }
 
+            if( !globalToLocal.found(gp) ) continue;
             const label bpI = globalToLocal[gp];
             for(label i=0;i<nEdges;++i)
             {

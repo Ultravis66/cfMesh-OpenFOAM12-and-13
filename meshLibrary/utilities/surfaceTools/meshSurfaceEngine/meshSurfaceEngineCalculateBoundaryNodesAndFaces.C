@@ -610,7 +610,8 @@ void meshSurfaceEngine::calculatePointPatches() const
                 continue;
             }
 
-            const label bpI = globalToLocal[gp];
+            if( !globalToLocal.found(gp) ) continue;
+        const label bpI = globalToLocal[gp];
             for(label i=0;i<nPatches;++i)
                 pPatches.appendIfNotIn(bpI, receivedData[counter++]);
         }
@@ -754,7 +755,8 @@ void meshSurfaceEngine::calculatePointPoints() const
                 continue;
             }
 
-            const label bpI = globalToLocal[gp];
+            if( !globalToLocal.found(gp) ) continue;
+        const label bpI = globalToLocal[gp];
             for(label i=0;i<size;++i)
             {
                 const label gpI = receivedData[counter++];
@@ -910,6 +912,7 @@ void meshSurfaceEngine::updatePointNormalsAtProcBoundaries() const
     {
         if( !globalToLocal.found(receivedData[i].pointLabel()) )
             continue;
+        if( !globalToLocal.found(receivedData[i].pointLabel()) ) continue;
         const label bpI = globalToLocal[receivedData[i].pointLabel()];
         pNormals[bpI] += receivedData[i].coordinates();
     }

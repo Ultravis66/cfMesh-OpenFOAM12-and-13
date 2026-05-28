@@ -197,6 +197,7 @@ public:
         {
             const labelPair& lp = receivedData[i];
 
+            if( !globalToLocal.found(lp.first()) ) continue;
             const label beI = globalToLocal[lp.first()];
 
             const cell& c = cells[faceOwner[edgeFaces(beI, 0)]];

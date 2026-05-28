@@ -127,6 +127,7 @@ void meshSurfaceMapper2D::findMappingDistance
         {
             const labelledScalar& ls = receivedData[i];
 
+            if( !globalToLocal.found(ls.scalarLabel()) ) continue;
             const label beI = globalToLocal[ls.scalarLabel()];
 
             //- choose the maximum value for the mapping distance
@@ -194,6 +195,7 @@ void meshSurfaceMapper2D::mapToSmallestDistance(LongList<parMapperHelper>& parE)
     {
         const parMapperHelper& ph = receivedData[i];
 
+        if( !globalToLocal.found(ph.globalLabel()) ) continue;
         const label beI = globalToLocal[ph.globalLabel()];
 
         parMapperHelper& phOrig = parE[beToList[beI]];

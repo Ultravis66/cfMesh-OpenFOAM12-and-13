@@ -737,7 +737,9 @@ void meshSurfaceEngine::calcAddressingForProcEdges() const
     help::exchangeMap(exchangeData, receivedData);
     for(label counter=0;counter<receivedData.size();)
     {
-        const label beI = globalToLocal[receivedData[counter++]];
+        const label geI_par = receivedData[counter++];
+        if( !globalToLocal.found(geI_par) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_par];
         nFacesAtEdge[beI] += receivedData[counter++];
     }
 
@@ -800,7 +802,9 @@ void meshSurfaceEngine::calcAddressingForProcEdges() const
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocal[receivedData[counter++]];
+            const label geI_par = receivedData[counter++];
+        if( !globalToLocal.found(geI_par) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_par];
             const label patch = receivedData[counter++];
             if( eFaces.sizeOfRow(beI) == 1 )
             {

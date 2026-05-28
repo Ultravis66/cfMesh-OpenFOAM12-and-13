@@ -270,6 +270,7 @@ void extrudeLayer::createNewVertices()
         # endif
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             frontPoints[globalToLocal[receivedData[i]]] =
                 FRONTVERTEX+FRONTVERTEXPROCBND;
         }
@@ -474,11 +475,13 @@ void extrudeLayer::createNewVertices()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label pointI = globalToLocal[receivedData[counter++]];
+            const label gpI_ext = receivedData[counter++];
+            const label nDualEdges = receivedData[counter++];
+            if( !globalToLocal.found(gpI_ext) )
+            { counter += nDualEdges*2; continue; }
+            const label pointI = globalToLocal[gpI_ext];
 
             DynList<edge>& dualEdges = procPointsDual[pointI];
-
-            const label nDualEdges = receivedData[counter++];
             for(label eI=0;eI<nDualEdges;++eI)
             {
                 edge e;
@@ -845,6 +848,7 @@ void extrudeLayer::movePoints()
         forAll(receivedData, i)
         {
             const labelledPointScalar& lps = receivedData[i];
+            if( !globalToLocal.found(lps.pointLabel()) ) continue;
             const label pointI = globalToLocal[lps.pointLabel()];
 
             normals[pointI] += lps.coordinates();

@@ -159,7 +159,8 @@ void meshSurfaceCheckInvertedVertices::checkVertices()
         forAll(receivedData, i)
         {
             const refLabelledPoint& rlp = receivedData[i];
-            const label bpI = globalToLocal[rlp.objectLabel()];
+            if( !globalToLocal.found(rlp.objectLabel()) ) continue;
+        const label bpI = globalToLocal[rlp.objectLabel()];
 
             ltvMap& patchNormal = pointPatchNormal[bpI];
 
@@ -397,6 +398,7 @@ void meshSurfaceCheckInvertedVertices::checkVertices()
 
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             const label bpI = globalToLocal[receivedData[i]];
             invertedVertices_.insert(bPoints[bpI]);
         }

@@ -181,6 +181,7 @@ partTetMesh::partTetMesh
 
             forAll(receivedData, i)
             {
+                if( !globalToLocal.found(receivedData[i]) ) continue;
                 const label pointI = globalToLocal[receivedData[i]];
 
                 forAllRow(pointCells, pointI, pcI)
@@ -308,6 +309,7 @@ partTetMesh::partTetMesh
 
             forAll(receivedData, i)
             {
+                if( !globalToLocal.found(receivedData[i]) ) continue;
                 const label pointI = globalToLocal[receivedData[i]];
 
                 forAllRow(pointCells, pointI, pcI)

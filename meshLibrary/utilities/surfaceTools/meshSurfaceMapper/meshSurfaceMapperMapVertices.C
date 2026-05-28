@@ -91,6 +91,7 @@ void meshSurfaceMapper::selectNodesAtParallelBnd(const labelLongList& selNodes)
 
     forAll(receivedData, i)
     {
+            if( !globalToLocal.found(receivedData[i]) ) { ++i; continue; }
         if( !selectedNode[globalToLocal[receivedData[i]]] )
         {
             selectedNode[globalToLocal[receivedData[i]]] = true;
@@ -157,6 +158,7 @@ void meshSurfaceMapper::mapToSmallestDistance(LongList<parMapperHelper>& parN)
     {
         const parMapperHelper& ph = receivedData[i];
 
+        if( !globalToLocal.found(ph.globalLabel()) ) continue;
         const label bpI = globalToLocal[ph.globalLabel()];
 
         parMapperHelper& phOrig = parN[bpToList[bpI]];

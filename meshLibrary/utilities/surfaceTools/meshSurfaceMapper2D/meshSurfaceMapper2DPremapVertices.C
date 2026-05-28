@@ -150,6 +150,7 @@ void meshSurfaceMapper2D::preMapVertices(const label nIterations)
                 const refLabelledPoint& rlp = receivedData[i];
                 const labelledPoint& lps = rlp.lPoint();
 
+                if( !globalToLocal.found(rlp.objectLabel()) ) continue;
                 const label beI = globalToLocal[rlp.objectLabel()];
                 const label eI = edgeToActiveAddressing[beI];
 

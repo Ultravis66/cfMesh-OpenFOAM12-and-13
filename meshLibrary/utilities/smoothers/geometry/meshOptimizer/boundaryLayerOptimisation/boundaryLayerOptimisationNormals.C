@@ -156,7 +156,8 @@ void boundaryLayerOptimisation::calculateNormalVectors
         forAll(receivedData, i)
         {
             const refLabelledPointScalar& rlps = receivedData[i];
-            const label bpI = globalToLocal[rlps.objectLabel()];
+            if( !globalToLocal.found(rlps.objectLabel()) ) continue;
+        const label bpI = globalToLocal[rlps.objectLabel()];
 
             patchNormalType& patchNormal = pointPatchNormal[bpI];
 

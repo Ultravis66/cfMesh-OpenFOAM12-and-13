@@ -99,7 +99,9 @@ void edgeExtractor::faceEvaluator::calculateNeiPatchesParallel()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocal[receivedData[counter++]];
+            const label geI_ec = receivedData[counter++];
+        if( !globalToLocal.found(geI_ec) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_ec];
             const label fPatch = receivedData[counter++];
 
             otherFacePatch_.insert(beI, fPatch);
@@ -162,7 +164,9 @@ void edgeExtractor::faceEvaluator::calculateNeiPatchesParallelNewPatches()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocal[receivedData[counter++]];
+            const label geI_ec = receivedData[counter++];
+        if( !globalToLocal.found(geI_ec) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_ec];
             const label fPatch = receivedData[counter++];
 
             otherFacePatch.insert(beI, fPatch);
@@ -545,6 +549,7 @@ void edgeExtractor::cornerEvaluator::createParallelAddressing()
 
         for(label i=0;i<receivedData.size();)
         {
+            if( !globalToLocal.found(receivedData[i].pointLabel()) ) { ++i; continue; }
             const label bpI = globalToLocal[receivedData[i++].pointLabel()];
 
             const label nFaces = receivedData[i++].pointLabel();
@@ -895,6 +900,7 @@ bool edgeExtractor::findCornerCandidates()
 
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i].scalarLabel()) ) continue;
             const label bpI = globalToLocal[receivedData[i].scalarLabel()];
 
             searchRange[bpI] =

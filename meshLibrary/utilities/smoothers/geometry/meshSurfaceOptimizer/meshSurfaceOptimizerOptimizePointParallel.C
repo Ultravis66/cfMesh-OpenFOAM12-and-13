@@ -139,6 +139,7 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianParallel
         if( !globalToLocal.found(lp.objectLabel()) )
             continue;
 
+        if( !globalToLocal.found(lp.objectLabel()) ) continue;
         const label bpI = globalToLocal[lp.objectLabel()];
 
         labelledPoint& lpd = localData[bpI];
@@ -251,6 +252,7 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianFCParallel
         const refLabelledPoint& lp = receivedData[i];
         if( !globalToLocal.found(lp.objectLabel()) )
             continue;
+        if( !globalToLocal.found(lp.objectLabel()) ) continue;
         const label bpI = globalToLocal[lp.objectLabel()];
 
         labelledPoint& lpd = localData[bpI];

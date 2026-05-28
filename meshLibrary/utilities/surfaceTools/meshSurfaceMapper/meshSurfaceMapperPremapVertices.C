@@ -222,6 +222,7 @@ void meshSurfaceMapper::preMapVertices(const label nIterations)
                 const labelledPointScalar& lps = receivedData[i];
                 if( !globalToLocal.found(lps.pointLabel()) ) continue;
 
+                if( !globalToLocal.found(lps.pointLabel()) ) continue;
                 const label bpI = globalToLocal[lps.pointLabel()];
 
                 labelledPointScalar& lp = preMapPositions[bpI];

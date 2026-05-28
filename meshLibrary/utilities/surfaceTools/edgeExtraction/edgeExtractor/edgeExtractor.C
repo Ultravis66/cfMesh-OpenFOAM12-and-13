@@ -115,7 +115,8 @@ void edgeExtractor::calculateValence()
         {
             const labelPair& lp = receivedData[i];
 
-            pointValence_[globalToLocal[lp.first()]] += lp.second();
+            if( !globalToLocal.found(lp.first()) ) continue;
+        pointValence_[globalToLocal[lp.first()]] += lp.second();
         }
     }
 }
@@ -385,7 +386,9 @@ void edgeExtractor::markPatchPoints(boolList& patchPoint)
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocal[receivedData[counter++]];
+            const label geI_ee = receivedData[counter++];
+        if( !globalToLocal.found(geI_ee) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_ee];
             const label fPatch = receivedData[counter++];
 
             otherProcPatch[beI] = fPatch;
@@ -459,7 +462,8 @@ void edgeExtractor::markPatchPoints(boolList& patchPoint)
         help::exchangeMap(sendData, receivedData);
 
         forAll(receivedData, i)
-                patchPoint[globalToLocal[receivedData[i]]] = false;
+                if( !globalToLocal.found(receivedData[i]) ) continue;
+            patchPoint[globalToLocal[receivedData[i]]] = false;
     }
 }
 
@@ -645,7 +649,9 @@ void edgeExtractor::findOtherFacePatchesParallel
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocal[receivedData[counter++]];
+            const label geI_ee = receivedData[counter++];
+        if( !globalToLocal.found(geI_ee) ) { ++counter; continue; }
+        const label beI = globalToLocal[geI_ee];
             const label fPatch = receivedData[counter++];
 
             otherFacePatch.insert(beI, fPatch);
@@ -805,7 +811,8 @@ void edgeExtractor::moveVerticesTowardsDiscontinuities(const label nIterations)
                 const label globalLabel = receivedData[i].objectLabel();
                 const labelledPoint& lp = receivedData[i].lPoint();
 
-                const label bpI = globalToLocal[globalLabel];
+                if( !globalToLocal.found(globalLabel) ) continue;
+            const label bpI = globalToLocal[globalLabel];
 
                 pointDisplacements[bpI].coordinates() += lp.coordinates();
                 pointDisplacements[bpI].pointLabel() += lp.pointLabel();
@@ -1908,7 +1915,8 @@ class featureEdgesNeiOp
                 {
                     const labelPair& lp = receivedData[i];
 
-                    nFeatureEdgesAtPoint_[globalToLocal[lp.first()]] +=
+                    if( !globalToLocal.found(lp.first()) ) continue;
+            nFeatureEdgesAtPoint_[globalToLocal[lp.first()]] +=
                         lp.second();
                 }
             }
@@ -2029,6 +2037,7 @@ public:
         forAll(receivedData, i)
         {
             const labelPair& lp = receivedData[i];
+            if( !globalToLocal.found(lp.first()) ) continue;
             const label groupI = elementInGroup[globalToLocal[lp.first()]];
 
             DynList<label>& ng = neiGroups[localGroupLabel[groupI]];
@@ -2320,6 +2329,7 @@ void edgeExtractor::projectDeterminedFeatureVertices()
         {
             const labelPair& lp = receivedData[i];
 
+            if( !globalToLocal.found(lp.first()) ) continue;
             pointPatches[globalToLocal[lp.first()]].appendIfNotIn(lp.second());
         }
     }

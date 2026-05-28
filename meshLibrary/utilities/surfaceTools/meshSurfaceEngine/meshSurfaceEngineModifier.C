@@ -248,6 +248,7 @@ void meshSurfaceEngineModifier::syncVerticesAtParallelBoundaries
         const labelledPoint& lp = receivedData[i];
         if( !globalToLocal.found(lp.pointLabel()) )
             continue;
+        if( !globalToLocal.found(lp.pointLabel()) ) continue;
         const label bpI = globalToLocal[lp.pointLabel()];
         const point newP = points[bPoints[bpI]] + lp.coordinates();
         moveBoundaryVertexNoUpdate(bpI, newP);
@@ -416,6 +417,7 @@ void meshSurfaceEngineModifier::updateGeometry
             {
                 if( !globalToLocal.found(receivedNodes[i]) )
                     continue;
+                if( !globalToLocal.found(receivedNodes[i]) ) continue;
                 updateBndPoint[globalToLocal[receivedNodes[i]]] = true;
             }
 
@@ -457,6 +459,7 @@ void meshSurfaceEngineModifier::updateGeometry
             {
                 if( !globalToLocal.found(receivedData[i].pointLabel()) )
                     continue;
+                if( !globalToLocal.found(receivedData[i].pointLabel()) ) continue;
                 const label bpI = globalToLocal[receivedData[i].pointLabel()];
                 pn[bpI] += receivedData[i].coordinates();
             }

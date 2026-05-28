@@ -204,6 +204,7 @@ void meshSurfaceMapper::findMappingDistance
         {
             const labelledScalar& ls = receivedData[i];
 
+            if( !globalToLocal.found(ls.scalarLabel()) ) continue;
             const label nI = globalToLocal[ls.scalarLabel()];
 
             //- choose the maximum value for the mapping distance

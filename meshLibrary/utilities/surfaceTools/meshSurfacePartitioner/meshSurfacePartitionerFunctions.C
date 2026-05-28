@@ -187,7 +187,9 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label gpI_sp2 = receivedData[counter++];
+            if( !globalToLocal.found(gpI_sp2) ) { counter += receivedData[counter]; ++counter; continue; }
+            const label bpI = globalToLocal[gpI_sp2];
             const label nEdges = receivedData[counter++];
 
             nEdgesAtPoint_[bpI] += nEdges;
@@ -248,6 +250,7 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
                 counter += size;
                 continue;
             }
+            if( !globalToLocal.found(glbI) ) continue;
             const label bpI = globalToLocal[glbI];
             for(label i=0;i<size;++i)
                 pointPatches_.appendIfNotIn(bpI, receivedData[counter++]);

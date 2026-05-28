@@ -858,6 +858,7 @@ void meshSurfaceOptimizer::untangleSurface2D()
             //- ensure that all processors have the same Pts active
             forAll(receivedData, i)
             {
+                if( !globalToLocal.found(receivedData[i]) ) continue;
                 const label bpI = globalToLocal[receivedData[i]];
 
                 //- activate this boundary point

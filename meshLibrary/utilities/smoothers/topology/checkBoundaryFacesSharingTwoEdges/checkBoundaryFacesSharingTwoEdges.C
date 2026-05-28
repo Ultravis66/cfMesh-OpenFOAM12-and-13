@@ -199,6 +199,7 @@ void checkBoundaryFacesSharingTwoEdges::findFacesAtBndEdge()
 
         //- set remove flag to false
         forAll(receivedData, i)
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             removeBndPoint_[globalToLocal[receivedData[i]]] = false;
     }
 }
@@ -248,7 +249,9 @@ void checkBoundaryFacesSharingTwoEdges::findBndFacesAtBndVertex()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label gpI_cb = receivedData[counter++];
+            if( !globalToLocal.found(gpI_cb) ) { ++counter; continue; }
+            const label bpI = globalToLocal[gpI_cb];
             nBndFacesAtBndPoint_[bpI] += receivedData[counter++];
         }
     }

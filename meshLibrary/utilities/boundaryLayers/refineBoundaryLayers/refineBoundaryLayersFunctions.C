@@ -680,6 +680,7 @@ void refineBoundaryLayers::generateNewVertices()
         forAll(receivedNumLayers, i)
         {
             const labelPair& lp = receivedNumLayers[i];
+            if( !globalToLocal.found(lp.first()) ) continue;
             const label eI = globalToLocal[lp.first()];
             const edge& e = edges[eI];
             label seI(-1);
@@ -702,6 +703,7 @@ void refineBoundaryLayers::generateNewVertices()
         forAll(receivedNumLayers, i)
         {
             const labelPair& lp = receivedNumLayers[i];
+            if( !globalToLocal.found(lp.first()) ) continue;
             const label eI = globalToLocal[lp.first()];
             const edge& e = edges[eI];
             label seI(-1);
@@ -724,6 +726,7 @@ void refineBoundaryLayers::generateNewVertices()
         forAll(receivedScalar, i)
         {
             const labelledScalar& ls = receivedScalar[i];
+            if( !globalToLocal.found(ls.scalarLabel()) ) continue;
             const label eI = globalToLocal[ls.scalarLabel()];
             const edge& e = edges[eI];
             label seI(-1);
@@ -746,6 +749,7 @@ void refineBoundaryLayers::generateNewVertices()
         forAll(receivedScalar, i)
         {
             const labelledScalar& ls = receivedScalar[i];
+            if( !globalToLocal.found(ls.scalarLabel()) ) continue;
             const label eI = globalToLocal[ls.scalarLabel()];
             const edge& e = edges[eI];
             label seI(-1);

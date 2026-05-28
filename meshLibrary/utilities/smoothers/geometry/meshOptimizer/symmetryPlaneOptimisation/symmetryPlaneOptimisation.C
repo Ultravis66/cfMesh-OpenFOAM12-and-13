@@ -167,7 +167,9 @@ void symmetryPlaneOptimisation::pointInPlanes(VRWGraph& pointInPlanes) const
 
         for(label counter=0;counter<receivedData.size();)
         {
-            const label pointI = globalToLocal[receivedData[counter++]];
+            const label gpI_sym = receivedData[counter++];
+            if( !globalToLocal.found(gpI_sym) ) { ++counter; continue; }
+            const label pointI = globalToLocal[gpI_sym];
 
             const label size = receivedData[counter++];
             for(label i=0;i<size;++i)
