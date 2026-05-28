@@ -699,6 +699,30 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     if( enforceConstraints )
         optimizer.enforceConstraints();
 
+    // Lock acute corner points in volume optimizer.
+    // Surface optimizer above locked them but volume optimizer is a fresh
+    // instance — without this, untangleMeshFV moves junction points that
+    // the surface optimizer carefully positioned, recreating skewed faces.
+    if( lockAcuteCorners && !blblAcuteCornerPoints_.empty() )
+    {
+        const meshSurfaceEngine mseForLock(mesh_);
+        const labelList& bPoints = mseForLock.boundaryPoints();
+        labelLongList acuteGlobalPts;
+        forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+        {
+            const label bpI = it.key();
+            if( bpI >= 0 && bpI < label(bPoints.size()) )
+                acuteGlobalPts.append(bPoints[bpI]);
+        }
+        if( acuteGlobalPts.size() > 0 )
+        {
+            optimizer.lockPoints(acuteGlobalPts);
+            Info << "optimiseFinalMesh: locked "
+                 << acuteGlobalPts.size()
+                 << " acute corner points in volume optimizer" << endl;
+        }
+    }
+
     optimizer.optimizeMeshFV();
     optimizer.optimizeLowQualityFaces();
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
