@@ -124,7 +124,9 @@ void correctEdgesBetweenPatches::decomposeProblematicFaces()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            featureBndEdge[globalToLocalEdge[receivedData[counter++]]] = true;
+            const label geI = receivedData[counter++];
+            if( !globalToLocalEdge.found(geI) ) continue;
+            featureBndEdge[globalToLocalEdge[geI]] = true;
         }
     }
 
@@ -345,8 +347,10 @@ void correctEdgesBetweenPatches::decomposeConcaveFaces()
 
         for(label i=0;i<receivedData.size();)
         {
-            const label beI = globalToLocal[receivedData[i++]];
+            const label geI = receivedData[i++];
             const label patchI = receivedData[i++];
+            if( !globalToLocal.found(geI) ) continue;
+            const label beI = globalToLocal[geI];
             if( edgeInPatch[beI] == -1 )
             {
                 edgeInPatch[beI] = patchI;
