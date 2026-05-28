@@ -1193,6 +1193,7 @@ void boundaryLayers::createNewPartitionVerticesParallel
     help::exchangeMap(exchangeDistances, receivedData);
     forAll(receivedData, i)
     {
+        if( !globalToLocal.found(receivedData[i].scalarLabel()) ) continue;
         const label bpI = globalToLocal[receivedData[i].scalarLabel()];
 
         if( penetrationDistances[bpI] > receivedData[i].value() )
@@ -1486,6 +1487,7 @@ void boundaryLayers::createNewEdgeVerticesParallel
         const labelledPoint& otherNormal = receivedData[counter++];
         const labelledPoint& otherV = receivedData[counter++];
 
+        if( !globalToLocal.found(otherNormal.pointLabel()) ) continue;
         const label bpI = globalToLocal[otherNormal.pointLabel()];
         normal[bpToEdgePoint[bpI]] += otherNormal.coordinates();
         v[bpToEdgePoint[bpI]] += otherV.coordinates();
@@ -1607,6 +1609,7 @@ void boundaryLayers::createNewEdgeVerticesParallel
 
     forAll(receivedDistances, i)
     {
+        if( !globalToLocal.found(receivedDistances[i].scalarLabel()) ) continue;
         const label bpI = globalToLocal[receivedDistances[i].scalarLabel()];
         const label epI = bpToEdgePoint[bpI];
         if( dist[epI] > receivedDistances[i].value() )
