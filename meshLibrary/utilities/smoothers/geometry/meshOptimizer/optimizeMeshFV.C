@@ -258,7 +258,9 @@ void meshOptimizer::untangleMeshFV
             }
 
             //- create tethrahedral mesh from the cells which shall be smoothed
-            partTetMesh tetMesh(mesh_, lockedPoints, badFaces, 0);
+            // Use 1 layer of neighbours so optimizer has non-locked interior
+            // points to work with when bad faces touch locked junction points.
+            partTetMesh tetMesh(mesh_, lockedPoints, badFaces, 1);
 
             //- contruct tetMeshOptimisation
             tetMeshOptimisation tmo(tetMesh);
