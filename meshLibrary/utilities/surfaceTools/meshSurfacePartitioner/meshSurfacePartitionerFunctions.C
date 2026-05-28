@@ -194,20 +194,8 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
         }
     }
 
-    //- mark edges and corners
-    forAll(nEdgesAtPoint_, bpI)
-    {
-        if( nEdgesAtPoint_[bpI] > 2 )
-        {
-            corners_.insert(bpI);
-        }
-        else if( nEdgesAtPoint_[bpI] == 2 )
-        {
-            edgePoints_.insert(bpI);
-        }
-    }
-
-    //- find patches at a surface points
+    //- find patches at a surface points — build BEFORE classification
+    //- so patch-count can be used to promote corners/edges robustly
     pointPatches_.setSize(pointFaces.size());
     forAll(pointFaces, bpI)
     {
@@ -246,19 +234,82 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
             }
         }
 
-        //- exchange data with other prcessors
+        //- exchange data with other processors
         labelLongList receivedData;
         help::exchangeMap(exchangeData, receivedData);
 
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label bpI = globalToLocal[receivedData[counter++]];
+            const label glbI = receivedData[counter++];
             const label size = receivedData[counter++];
-
+            if( !globalToLocal.found(glbI) )
+            {
+                counter += size;
+                continue;
+            }
+            const label bpI = globalToLocal[glbI];
             for(label i=0;i<size;++i)
                 pointPatches_.appendIfNotIn(bpI, receivedData[counter++]);
         }
+    }
+
+    //- mark edges and corners using BOTH feature-edge count AND patch count.
+    //- Patch count is more reliable near periodic/non-manifold junctions where
+    //- edgeFaces.sizeOfRow==2 filter may undercount feature edges.
+    //- Classification order: corners_ first, then edgePoints_ for remainder.
+    forAll(nEdgesAtPoint_, bpI)
+    {
+        const label nPatches = pointPatches_.sizeOfRow(bpI);
+
+        // Patch-count rule: 3+ patches always a corner.
+        // Feature-edge count may undercount at periodic/boundary junctions.
+        if( nPatches >= 3 || nEdgesAtPoint_[bpI] > 2 )
+        {
+            corners_.insert(bpI);
+        }
+        else if( nEdgesAtPoint_[bpI] == 2 || nPatches == 2 )
+        {
+            // Promote 2-patch points to edgePoints_ even if feature-edge
+            // count is only 1 (dangling edge at patch boundary).
+            // Conservative: named patch boundary = constrained point.
+            edgePoints_.insert(bpI);
+        }
+    }
+
+    // Ensure corners_ and edgePoints_ are mutually exclusive
+    // (corners_ takes priority)
+    forAllConstIter(labelHashSet, corners_, it)
+        edgePoints_.erase(it.key());
+
+    // Topology audit diagnostics
+    {
+        label nPatch0=0, nPatch1=0, nPatch2=0, nPatch3=0;
+        label nMismatchCorner=0, nMismatchEdge=0;
+        label nCornerLowPatch=0, nEdgeLowPatch=0;
+        forAll(nEdgesAtPoint_, bpI)
+        {
+            const label nP = pointPatches_.sizeOfRow(bpI);
+            if( nP == 0 ) ++nPatch0;
+            else if( nP == 1 ) ++nPatch1;
+            else if( nP == 2 ) ++nPatch2;
+            else ++nPatch3;
+
+            if( nP >= 3 && !corners_.found(bpI) ) ++nMismatchCorner;
+            if( nP == 2 && !edgePoints_.found(bpI)
+                && !corners_.found(bpI) ) ++nMismatchEdge;
+            if( corners_.found(bpI) && nP < 3 ) ++nCornerLowPatch;
+            if( edgePoints_.found(bpI) && nP < 2 ) ++nEdgeLowPatch;
+        }
+        Info << "PartitionerAudit:"
+             << " patchCount(0/1/2/3+)=("
+             << nPatch0 << "/" << nPatch1 << "/"
+             << nPatch2 << "/" << nPatch3 << ")"
+             << " mismatch(corner/edge)=("
+             << nMismatchCorner << "/" << nMismatchEdge << ")"
+             << " cornerLowPatch=" << nCornerLowPatch
+             << " edgeLowPatch=" << nEdgeLowPatch
+             << endl;
     }
 
     label counter = corners_.size();
