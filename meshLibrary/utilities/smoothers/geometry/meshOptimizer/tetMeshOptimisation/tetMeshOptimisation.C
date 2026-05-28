@@ -185,6 +185,7 @@ void tetMeshOptimisation::optimiseUsingKnuppMetric(const label nIterations)
             if( invertedTets[tetI] && (tets[tetI].mag(points) < VSMALL) )
             {
                 helper[tetI] = true;
+                ++nNegative;
 
                 const partTet& tet = tets[tetI];
 
@@ -198,7 +199,7 @@ void tetMeshOptimisation::optimiseUsingKnuppMetric(const label nIterations)
         if( nNegative == 0 )
             return;
 
-    } while( (nNegative < nNegativeBefore) || (++nIter < nIterations) );
+    } while( (nNegative < nNegativeBefore) && (++nIter < nIterations) );
 }
 
 void tetMeshOptimisation::optimiseUsingMeshUntangler(const label nIterations)
@@ -331,7 +332,7 @@ void tetMeshOptimisation::optimiseUsingMeshUntangler(const label nIterations)
             return;
         invertedTets.transfer(helper);
 
-    } while( (nNegative < nNegativeBefore) || (++nIter < nIterations) );
+    } while( (nNegative < nNegativeBefore) && (++nIter < nIterations) );
 }
 
 void tetMeshOptimisation::optimiseUsingVolumeOptimizer(const label nIterations)
