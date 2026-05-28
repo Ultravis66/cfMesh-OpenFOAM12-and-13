@@ -219,9 +219,17 @@ void meshSurfaceEngine::calculateBoundaryNodes() const
                     const label fI = receiveData[counter++];
                     const label pI = receiveData[counter++];
 
-                    if( bp[faces[start+fI][pI]] == -1 )
+                    if( fI < 0 || fI >= procBoundaries[patchI].patchSize() )
+                        continue;
+
+                    const face& f = faces[start+fI];
+
+                    if( pI < 0 || pI >= label(f.size()) )
+                        continue;
+
+                    if( bp[f[pI]] == -1 )
                     {
-                        bp[faces[start+fI][pI]] = pointI++;
+                        bp[f[pI]] = pointI++;
                         found = true;
                     }
                 }
@@ -610,8 +618,7 @@ void meshSurfaceEngine::calculatePointPatches() const
                 continue;
             }
 
-            if( !globalToLocal.found(gp) ) continue;
-        const label bpI = globalToLocal[gp];
+            const label bpI = globalToLocal[gp];
             for(label i=0;i<nPatches;++i)
                 pPatches.appendIfNotIn(bpI, receivedData[counter++]);
         }
@@ -754,9 +761,7 @@ void meshSurfaceEngine::calculatePointPoints() const
                 counter += size;
                 continue;
             }
-
-            if( !globalToLocal.found(gp) ) continue;
-        const label bpI = globalToLocal[gp];
+            const label bpI = globalToLocal[gp];
             for(label i=0;i<size;++i)
             {
                 const label gpI = receivedData[counter++];
@@ -1115,8 +1120,14 @@ void meshSurfaceEngine::calculateEdgesAndAddressing() const
             label nReceivedEdges(0);
             while( nReceivedEdges < receivedEdges.size() )
             {
-                const face& f = faces[start+receivedEdges[nReceivedEdges++]];
-                const label eI = receivedEdges[nReceivedEdges++];
+                const label fIdx = receivedEdges[nReceivedEdges++];
+                const label eI   = receivedEdges[nReceivedEdges++];
+
+                const label patchSize = procBoundaries[patchI].patchSize();
+                if( fIdx < 0 || fIdx >= patchSize ) continue;
+
+                const face& f = faces[start+fIdx];
+                if( eI < 0 || eI >= label(f.size()) ) continue;
 
                 const edge e = f.faceEdge(eI);
                 const label s = bp[e.start()];
