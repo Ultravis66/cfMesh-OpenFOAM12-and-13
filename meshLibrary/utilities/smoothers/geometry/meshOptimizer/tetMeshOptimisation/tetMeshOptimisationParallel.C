@@ -83,7 +83,10 @@ void tetMeshOptimisation::unifyNegativePoints(boolList& negativeNode) const
     help::exchangeMap(selectedNegativeNodes, receivedNodes);
 
     forAll(receivedNodes, i)
+    {
+        if( !globalToLocal.found(receivedNodes[i]) ) continue;
         negativeNode[globalToLocal[receivedNodes[i]]] = true;
+    }
 }
 
 void tetMeshOptimisation::exchangeData
@@ -249,6 +252,8 @@ void tetMeshOptimisation::updateBufferLayerPoints()
     {
         const labelledPoint& lp = receivedData[i];
 
+        if( !globalToLocal.found(lp.pointLabel()) ) continue;
+
         tetMesh_.updateVertex
         (
             globalToLocal[lp.pointLabel()],
@@ -314,6 +319,8 @@ void tetMeshOptimisation::unifyCoordinatesParallel
     forAll(receivedData, i)
     {
         const labelledPoint& lp = receivedData[i];
+
+        if( !globalToLocal.found(lp.pointLabel()) ) continue;
 
         std::map<label, labelledPoint>::iterator iter =
             parallelBndPoints.find(globalToLocal[lp.pointLabel()]);
