@@ -499,6 +499,8 @@ void boundaryLayerOptimisation::optimiseThicknessVariation
             forAll(receivedData, i)
             {
                 const labelledScalar& lScalar = receivedData[i];
+                if( !globalToLocalEdge.found(lScalar.scalarLabel()) ) continue;
+                if( !globalToLocalEdge.found(lScalar.scalarLabel()) ) continue;
                 const label edgeI = globalToLocalEdge[lScalar.scalarLabel()];
                 const edge& e = edges[edgeI];
 

@@ -779,7 +779,9 @@ bool checkIrregularSurfaceConnections::checkFaceGroupsAtBndVertices
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI = globalToLocalEdge[receivedData[counter++]];
+            const label geI_irr = receivedData[counter++];
+            if( !globalToLocalEdge.found(geI_irr) ) { ++counter; continue; }
+            const label beI = globalToLocalEdge[geI_irr];
             const label fLabel = receivedData[counter++];
 
             const edge& e = edges[beI];

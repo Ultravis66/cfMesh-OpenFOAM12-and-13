@@ -157,7 +157,7 @@ void boundaryLayerOptimisation::calculateNormalVectors
         {
             const refLabelledPointScalar& rlps = receivedData[i];
             if( !globalToLocal.found(rlps.objectLabel()) ) continue;
-        const label bpI = globalToLocal[rlps.objectLabel()];
+            const label bpI = globalToLocal[rlps.objectLabel()];
 
             patchNormalType& patchNormal = pointPatchNormal[bpI];
 
@@ -504,6 +504,8 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
         forAll(receivedData, i)
         {
             const labelledPoint& lp = receivedData[i];
+            if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
+            if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
             const label edgeI = globalToLocalEdge[lp.pointLabel()];
             const edge& e = edges[edgeI];
 
@@ -744,7 +746,9 @@ void boundaryLayerOptimisation::optimiseHairNormalsAtTheBoundary()
             forAll(receivedData, i)
             {
                 const labelledPoint& lp = receivedData[i];
-                const label edgeI = globalToLocalEdge[lp.pointLabel()];
+                if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
+                if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
+            const label edgeI = globalToLocalEdge[lp.pointLabel()];
                 const edge& e = edges[edgeI];
 
                 bool found(false);
@@ -1092,7 +1096,8 @@ void boundaryLayerOptimisation::optimiseHairNormalsInside()
             forAll(receivedData, i)
             {
                 const labelledPoint& lp = receivedData[i];
-                const label edgeI = globalToLocalEdge[lp.pointLabel()];
+                if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
+            const label edgeI = globalToLocalEdge[lp.pointLabel()];
                 const edge& e = edges[edgeI];
 
                 bool found(false);

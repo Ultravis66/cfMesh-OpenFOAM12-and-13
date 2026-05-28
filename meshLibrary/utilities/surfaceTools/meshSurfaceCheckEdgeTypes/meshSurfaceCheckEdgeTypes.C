@@ -216,6 +216,7 @@ void meshSurfaceCheckEdgeTypes::classifyEdges()
         forAll(receiveCentres, i)
         {
             const labelledPoint& lp = receiveCentres[i];
+            if( !globalToLocalEdge.found(lp.pointLabel()) ) continue;
             const label edgeI = globalToLocalEdge[lp.pointLabel()];
 
             // TODO: this is valid for manifold meshes, only

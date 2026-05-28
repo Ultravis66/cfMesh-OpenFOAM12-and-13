@@ -126,6 +126,7 @@ void correctEdgesBetweenPatches::decomposeProblematicFaces()
         {
             const label geI = receivedData[counter++];
             if( !globalToLocalEdge.found(geI) ) continue;
+            if( !globalToLocalEdge.found(geI) ) continue;
             featureBndEdge[globalToLocalEdge[geI]] = true;
         }
     }
