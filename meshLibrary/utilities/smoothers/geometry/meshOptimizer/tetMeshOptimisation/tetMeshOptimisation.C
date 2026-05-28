@@ -319,6 +319,7 @@ void tetMeshOptimisation::optimiseUsingMeshUntangler(const label nIterations)
 
             if( invertedTets[tetI] && (tets[tetI].mag(points) < VSMALL) )
             {
+                helper[tetI] = true;
                 ++nNegative;
                 const partTet& tet = tets[tetI];
 

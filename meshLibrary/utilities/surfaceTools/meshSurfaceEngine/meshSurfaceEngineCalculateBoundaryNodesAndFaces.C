@@ -139,8 +139,8 @@ void meshSurfaceEngine::calculateBoundaryNodes() const
 
     # ifdef USE_OMP
     const label nThreads = omp_get_max_threads();
-    # pragma omp parallel for num_threads(nThreads) schedule(static, 1)
     # endif
+    // Serial: multiple faces share points, parallel write to isBndPoint races
     forAll(boundaryFaces, bfI)
     {
         const face& bf = boundaryFaces[bfI];

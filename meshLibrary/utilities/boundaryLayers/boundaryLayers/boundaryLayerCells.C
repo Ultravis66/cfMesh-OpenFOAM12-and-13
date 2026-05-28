@@ -495,7 +495,17 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             const label gpI_recv = receivedData[counter++];
             const label nFaces = receivedData[counter++];
             if( !globalToLocal.found(gpI_recv) )
-            { counter += nFaces; continue; }
+            {
+                // Skip all face data for this point.
+                // Each face packet: face_size + patch_label + face_size points
+                for(label fI=0;fI<nFaces;++fI)
+                {
+                    const label fSize = receivedData[counter++];
+                    ++counter; // patch label
+                    counter += fSize; // face points
+                }
+                continue;
+            }
             const label bpI = globalToLocal[gpI_recv];
             for(label fI=0;fI<nFaces;++fI)
             {

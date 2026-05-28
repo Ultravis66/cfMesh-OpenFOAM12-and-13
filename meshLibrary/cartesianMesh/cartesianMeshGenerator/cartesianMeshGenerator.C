@@ -699,15 +699,14 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     if( enforceConstraints )
         optimizer.enforceConstraints();
 
-    // Lock acute corner points in volume optimizer.
-    // Surface optimizer above locked them but volume optimizer is a fresh
-    // instance — without this, untangleMeshFV moves junction points that
-    // the surface optimizer carefully positioned, recreating skewed faces.
+    // Compute acute corner global point list once — reused before both
+    // optimizeMeshFV and untangleMeshFV since optimizeBoundaryLayer
+    // calls removeUserConstraints() internally, wiping the first lock.
+    labelLongList acuteGlobalPts;
     if( lockAcuteCorners && !blblAcuteCornerPoints_.empty() )
     {
         const meshSurfaceEngine mseForLock(mesh_);
         const labelList& bPoints = mseForLock.boundaryPoints();
-        labelLongList acuteGlobalPts;
         forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
         {
             const label bpI = it.key();
@@ -726,6 +725,12 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     optimizer.optimizeMeshFV();
     optimizer.optimizeLowQualityFaces();
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
+
+    // Final untangle intentionally runs after optimizeBoundaryLayer has
+    // cleared user constraints via removeUserConstraints(). Acute corner
+    // locks are useful during broad optimization phases but hard-locking
+    // them during final untangle prevents closure of cells adjacent to
+    // junctions. The natural constraint reset is the correct policy here.
     optimizer.untangleMeshFV();
 
     mesh_.clearAddressingData();

@@ -267,18 +267,19 @@ void meshOptimizer::untangleMeshFV
 
             if( nGlobalIter < 2 )
             {
-                //- the point stays in the plane determined by the point normal
-                tmo.optimiseBoundaryVolumeOptimizer(true);
+                //- constrained: keep boundary movement non-shrinking
+                tmo.optimiseBoundaryVolumeOptimizer(1, true);
             }
             else if( nGlobalIter < 5 )
             {
-                //- move points without any constraints on the movement
-                tmo.optimiseBoundarySurfaceLaplace();
+                //- constrained fallback: avoid unconstrained tet-space drift
+                //- near feature/corner junctions (replaces surface Laplace)
+                tmo.optimiseBoundaryVolumeOptimizer(1, true);
             }
             else
             {
-                //- move boundary points without any constraints
-                tmo.optimiseBoundaryVolumeOptimizer(false);
+                //- unconstrained boundary volume optimizer
+                tmo.optimiseBoundaryVolumeOptimizer(1, false);
             }
 
             tetMesh.updateOrigMesh(&changedFace);
@@ -506,7 +507,7 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
         if( nBadFaces == 0 )
             break;
 
-        partTetMesh tetMesh(mesh_, lockedPoints, lowQualityFaces, 2);
+        partTetMesh tetMesh(mesh_, lockedPoints, lowQualityFaces, 1);
 
         //- construct tetMeshOptimisation and improve positions
         //- of points in the tet mesh

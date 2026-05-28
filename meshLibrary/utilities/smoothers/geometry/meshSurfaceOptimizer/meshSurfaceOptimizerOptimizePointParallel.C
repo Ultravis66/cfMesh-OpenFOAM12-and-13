@@ -291,9 +291,7 @@ void meshSurfaceOptimizer::nodeDisplacementLaplacianFCParallel
     }
 
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
-    # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
-    # endif
+    // Serial apply: moveBoundaryVertexNoUpdate is not thread-safe
     forAll(newPositions, pI)
     {
         surfaceModifier.moveBoundaryVertexNoUpdate
@@ -441,9 +439,7 @@ void meshSurfaceOptimizer::edgeNodeDisplacementParallel
         }
     }
 
-    # ifdef USE_OMP
-    # pragma omp parallel for schedule(dynamic, 20)
-    # endif
+    // Serial apply: moveBoundaryVertexNoUpdate is not thread-safe
     forAll(newPositions, pI)
         sm.moveBoundaryVertexNoUpdate(nodesToSmooth[pI], newPositions[pI]);
 }
