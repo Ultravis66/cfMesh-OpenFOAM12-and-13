@@ -93,10 +93,7 @@ void tetMeshOptimisation::optimiseUsingKnuppMetric(const label nIterations)
         //- find the number of inverted tets
         nNegative = 0;
         negativeNode = false;
-        # ifdef USE_OMP
-        # pragma omp parallel for if( tets.size() > 100 ) \
-        schedule(dynamic, 10) reduction(+ : nNegative)
-        # endif
+        // Serial: negativeNode[tet[i]] races on shared nodes under OMP
         forAll(invertedTets, tetI)
         {
             if( invertedTets[tetI] )
@@ -174,10 +171,7 @@ void tetMeshOptimisation::optimiseUsingKnuppMetric(const label nIterations)
         nNegativeBefore = nNegative;
         nNegative = 0;
 
-        # ifdef USE_OMP
-        # pragma omp parallel for if( tets.size() > 100 ) \
-        schedule(dynamic, 10) reduction(+ : nNegative)
-        # endif
+        // Serial: negativeNode[tet[i]] races on shared nodes under OMP
         forAll(tets, tetI)
         {
             helper[tetI] = false;
@@ -230,10 +224,7 @@ void tetMeshOptimisation::optimiseUsingMeshUntangler(const label nIterations)
         //- find the number of inverted tets
         nNegative = 0;
         negativeNode = false;
-        # ifdef USE_OMP
-        # pragma omp parallel for if( tets.size() > 100 ) \
-        schedule(dynamic, 10) reduction(+ : nNegative)
-        # endif
+        // Serial: negativeNode[tet[i]] races on shared nodes under OMP
         forAll(invertedTets, tetI)
         {
             if( invertedTets[tetI] )
@@ -309,10 +300,7 @@ void tetMeshOptimisation::optimiseUsingMeshUntangler(const label nIterations)
         boolList helper(invertedTets.size());
         nNegativeBefore = nNegative;
         nNegative = 0;
-        # ifdef USE_OMP
-        # pragma omp parallel for if( tets.size() > 100 ) \
-        schedule(dynamic, 10) reduction(+ : nNegative)
-        # endif
+        // Serial: negativeNode[tet[i]] races on shared nodes under OMP
         forAll(tets, tetI)
         {
             helper[tetI] = false;
