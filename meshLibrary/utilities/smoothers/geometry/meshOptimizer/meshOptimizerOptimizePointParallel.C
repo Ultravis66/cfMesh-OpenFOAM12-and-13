@@ -129,7 +129,9 @@ void meshOptimizer::laplaceSmoother::laplacianParallel
     forAll(receivedData, i)
     {
         const refLabelledPoint& lp = receivedData[i];
+        if( !globalToLocal.found(lp.objectLabel()) ) continue;
         const label pointI = globalToLocal[lp.objectLabel()];
+        if( localData.find(pointI) == localData.end() ) continue;
 
         labelledPoint& lpd = localData[pointI];
 
@@ -259,7 +261,9 @@ void meshOptimizer::laplaceSmoother::laplacianPCParallel
     forAll(receivedData, i)
     {
         const refLabelledPoint& lp = receivedData[i];
+        if( !globalToLocal.found(lp.objectLabel()) ) continue;
         const label pointI = globalToLocal[lp.objectLabel()];
+        if( localData.find(pointI) == localData.end() ) continue;
 
         labelledPoint& lpd = localData[pointI];
 
@@ -398,7 +402,9 @@ void meshOptimizer::laplaceSmoother::laplacianWPCParallel
     forAll(receivedData, i)
     {
         const labelledPointScalar& lps = receivedData[i];
+        if( !globalToLocal.found(lps.pointLabel()) ) continue;
         const label pointI = globalToLocal[lps.pointLabel()];
+        if( localData.find(pointI) == localData.end() ) continue;
 
         labelledPointScalar& lp = localData[pointI];
 
@@ -416,7 +422,7 @@ void meshOptimizer::laplaceSmoother::laplacianWPCParallel
 
         const labelledPointScalar& lp = localData[pointI];
 
-        if( lp.pointLabel() != 0 )
+        if( lp.scalarValue() > VSMALL )
         {
             const point newP = lp.coordinates() / lp.scalarValue();
 
