@@ -491,6 +491,7 @@ inline void meshSurfaceOptimizer::lockBoundaryFaces(const labelListType& l)
 
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             const label bpI = globalToLocal[receivedData[i]];
 
             vertexType_[bpI] |= LOCKED;
@@ -546,6 +547,7 @@ inline void meshSurfaceOptimizer::lockBoundaryPoints(const labelListType& l)
 
         forAll(receivedData, i)
         {
+            if( !globalToLocal.found(receivedData[i]) ) continue;
             const label bpI = globalToLocal[receivedData[i]];
 
             vertexType_[bpI] |= LOCKED;
