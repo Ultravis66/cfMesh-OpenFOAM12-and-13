@@ -131,6 +131,7 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
             const label geI = receivedData[i++];
             const label patchI = receivedData[i++];
 
+            if( !globalToLocalEdges.found(geI) ) { ++i; continue; }
             otherFacePatch.insert(globalToLocalEdges[geI], patchI);
         }
 

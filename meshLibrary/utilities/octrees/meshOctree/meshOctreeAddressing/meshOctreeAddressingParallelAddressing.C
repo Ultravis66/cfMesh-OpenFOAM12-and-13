@@ -177,7 +177,9 @@ void meshOctreeAddressing::calcGlobalPointLabels() const
         label counter(0);
         while( counter < receivedLabels.size() )
         {
-            const label leafI = globalToLocalLeaf[receivedLabels[counter++]];
+            const label glbl = receivedLabels[counter++];
+            if( !globalToLocalLeaf.found(glbl) ) { ++counter; continue; }
+            const label leafI = globalToLocalLeaf[glbl];
 
             if( nodeLabels.sizeOfRow(leafI) == 0 )
                 FatalErrorIn
@@ -261,7 +263,9 @@ void meshOctreeAddressing::calcGlobalPointLabels() const
         label counter(0);
         while( counter < receivedLabels.size() )
         {
-            const label leafI = globalToLocalLeaf[receivedLabels[counter++]];
+            const label glbl = receivedLabels[counter++];
+            if( !globalToLocalLeaf.found(glbl) ) { ++counter; continue; }
+            const label leafI = globalToLocalLeaf[glbl];
 
             if( nodeLabels.sizeOfRow(leafI) == 0 )
                 FatalErrorIn

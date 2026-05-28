@@ -125,6 +125,7 @@ void partTriMesh::createParallelAddressing
     //- set the values according to other processors
     forAll(receivedData, i)
     {
+        if( !globalToLocalPointAddressing.found(receivedData[i]) ) continue;
         const label pointI = globalToLocalPointAddressing[receivedData[i]];
 
         if( nodeLabelForPoint[pointI] == -1 )
@@ -220,6 +221,7 @@ void partTriMesh::createParallelAddressing
         const label gpI = receivedData[counter++];
         const label tgI = receivedData[counter++];
         const label pLabel =
+            if( !globalToLocalPointAddressing.found(gpI) ) continue;
             nodeLabelForPoint[globalToLocalPointAddressing[gpI]];
 
         globalPointLabel[pLabel] = tgI;

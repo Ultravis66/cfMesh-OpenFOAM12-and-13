@@ -552,6 +552,7 @@ bool checkIrregularSurfaceConnections::checkEdgeFaceConnections
 
             if( numFacesAtEdge[geI] > 2 )
             {
+                if( !globalToLocalEdgeLabel.found(geI) ) continue;
                 const label edgeI = globalToLocalEdgeLabel[geI];
                 badVertices.insert(edges[edgeI].start());
                 badVertices.insert(edges[edgeI].end());
