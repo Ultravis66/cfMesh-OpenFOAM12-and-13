@@ -1,14 +1,14 @@
 # cfMesh for OpenFOAM 13
 
-v0.8.3 BETA: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
+v0.9 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
 
 ### NOTE: NASA Rotor 37 is being used as a stress-test case because it is a sufficiently complex turbomachinery geometry, with tight blade/hub/shroud junctions, periodic sector boundaries, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific, but to use this geometry to expose robustness issues that should improve performance on other external and internal CFD geometries. Limited testing on CFD, a few tests have been run just to see if the mesh would work. 
 
 ---
 ### Known remaining issues
-**Residual minor variance** Core OMP apply-loop nondeterminism fixed in v0.8. Small run-to-run variance in severely non-ortho face count (~1,650–1,760) remains from dynamic scheduling in the untangling termination logic. Under investigation.
+**Residual minor variance** Major OMP races fixed in v0.8–v0.9. Core negativeNode/isExitFace/isBndPoint marking loops now serial. Minor residual variance from dynamic scheduling in untangling termination still under investigation. Serial (OMP=1) runs are fully deterministic.
 
-**Blade/shroud contact protrusion** the blade tip is geometrically coincident with the shroud surface (zero tip gap). Virtual topology and gap closure reduce the protrusion but cannot fully eliminate it without a real tip gap in the geometry. Will be resolved when geometry is rebuilt with physical tip clearance.
+**optimiseBoundaryVolumeOptimizer call-site bug (fixed v0.9)** Original code passed `true`/`false` as iteration count to a function expecting `(nIterations, nonShrinking)`. Early boundary motion was unconstrained instead of non-shrinking; late boundary fallback was doing zero iterations. Fixed to `(1, true)` and `(1, false)`.
 
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
@@ -194,7 +194,7 @@ After global projection, points that failed the validity check are collected. Th
 ### Bisection backtracking (experimental, gated off)
 Binary search along the snap vector for points that fail full projection. Gated behind `useBisectionBacktracking = false` pending stronger quality bundle (skewness + non-ortho comparison against old position required before enabling).
 
-### Version history
+### Version
 
 | Tag | Description |
 |-----|-------------|
@@ -293,24 +293,23 @@ Blade/periodic junction points where a BL wall patch meets a periodic/symmetry p
 ### Topology-aware BL suppression
 Corner points (3+ patches) at BL/termination junctions are fully suppressed (`layerScale_ = 0.0`). Sharp two-patch BL/termination edges are suppressed based on patch normal angle (75° default threshold). Periodic/neutral patches never trigger suppression regardless of angle.
 
-### Full deterministic optimizer (v0.8)
-All known race-sensitive OMP apply loops in the surface and mesh optimizer have been serialized. Major run-to-run quality spikes have been eliminated on Rotor 37; minor residual variance in severe non-orthogonality counts remains under investigation.
+### Full deterministic optimizer (v0.8–v0.9)
+All known race-sensitive OMP apply loops have been serialized across the full meshLibrary. v0.9 adds: negativeNode tet-marking loops (primary source of OMP=32 nondeterminism), isExitFace/isBndPoint/removeBndPoint shared-write races, and 100+ globalToLocal guards across 30+ files. Serial (OMP=1) runs are now fully deterministic. Minor residual variance at OMP=32 under continued investigation.
 ---
-## Mesh quality on NASA Rotor 37 (v0.8)
+## Mesh quality on NASA Rotor 37 (v0.9)
 
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.8.3 current | v0.8.2 | v0.8.1 | v0.8 |
-|--------|----------------|--------|--------|------|
-| Cells | ~1.77M | ~2.28M | ~2.28M | ~2.28M |
-| Average non-orthogonality | 9.77° | 9.88° | 9.86° | 9.86° |
-| Non-ortho errors | 0 | 0 | 1 | 1 |
-| Negative volume cells | 0 | 1 | 1 | 1 |
-| Bad pyramid faces | **0** | **0** | 6 | 8–11 |
-| Max skewness | **9.77** | 8.74 | 8.74 | 11.1 |
-| Runtime | ~90s | ~83s | ~83s | ~85–91s |
-| Deterministic | Yes | Yes | Yes | Yes |
-
+| Metric | v0.9 (current) | v0.8.3 | v0.8.2 | v0.8.1 | v0.8 |
+|--------|----------------|--------|--------|--------|------|
+| Cells | ~1.77M | ~1.77M | ~2.28M | ~2.28M | ~2.28M |
+| Average non-orthogonality | TBD | 9.77° | 9.88° | 9.86° | 9.86° |
+| Non-ortho errors | TBD | 0 | 0 | 1 | 1 |
+| Negative volume cells | TBD | 0 | 1 | 1 | 1 |
+| Bad pyramid faces | TBD | **0** | **0** | 6 | 8–11 |
+| Max skewness | TBD | 9.77 | 8.74 | 8.74 | 11.1 |
+| Runtime | ~90s | ~90s | ~83s | ~83s | ~85–91s |
+| Deterministic | Improving | Yes | Yes | Yes | Yes |
 ---
 
 ## Version history
@@ -328,6 +327,7 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 | `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
 | `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
 | `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
+| `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, 4 tetMesh OMP race fixes, call-site bug fix in optimiseBoundaryVolumeOptimizer (bool→nIter), MeshUntangler convergence tracking fix, acute corner lock policy clarified, OMP serialization of negativeNode/isExitFace/removeBndPoint/isBndPoint marking loops. |
 
 ---
 ## Running the regression test
@@ -438,10 +438,10 @@ checkMesh -case ~/rotor37_mesh 2>&1 | grep -E "cells:|average non-orth|Failed|as
 ```
 
 Expected output:
-cells:            ~2.1M
-Mesh non-orthogonality Max: ~90 degrees  average: ~9.9 degrees
-***High aspect ratio cells found, number of cells 3
-***Zero or negative cell volume detected, Number of negative volume cells: 1
+cells:            ~1.77M
+Mesh non-orthogonality Max: ~89 degrees  average: ~8.6 degrees
+*Number of severely non-orthogonal (> 70 degrees) faces: ~600
+***Max skewness = ~8.2-8.4
 Failed 1 mesh checks.
 
 ### 5. Visualize in ParaView
