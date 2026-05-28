@@ -103,6 +103,19 @@ void boundaryLayers::findPatchesToBeTreatedTogether()
     {
         const label bpI = it.key();
 
+        // Diagnostic: log exact triple-junction corners (nFeat==3)
+        // These are blade/hub/periodic junctions missed by > 3 condition.
+        // Evaluate before changing to >= 3 to avoid over-grouping BL patches.
+        if( mPart.numberOfFeatureEdgesAtPoint(bpI) == 3 )
+        {
+            Info << "BL triple-corner bpI=" << bpI
+                 << " nPatches=" << pPatches.sizeOfRow(bpI)
+                 << " patches=(";
+            forAllRow(pPatches, bpI, ppI)
+                Info << pPatches(bpI, ppI)
+                     << (ppI+1<pPatches.sizeOfRow(bpI) ? "," : "");
+            Info << ")" << endl;
+        }
         if( mPart.numberOfFeatureEdgesAtPoint(bpI) > 3 )
         {
             labelHashSet commonPatches;
@@ -273,8 +286,16 @@ void boundaryLayers::findPatchesToBeTreatedTogether()
         label counter(0);
         while( counter < receivedData.size() )
         {
-            const label beI =
-                globalToLocal[receivedData[counter++].pointLabel()];
+            const label geI = receivedData[counter++].pointLabel();
+            if( !globalToLocal.found(geI) )
+            {
+                // Skip — unknown edge label on this processor.
+                // Consume face-size + face-point entries to keep counter in sync.
+                const label fSize = receivedData[counter++].pointLabel();
+                counter += fSize;
+                continue;
+            }
+            const label beI = globalToLocal[geI];
 
             DynList<label> f(receivedData[counter++].pointLabel());
             forAll(f, pI)
