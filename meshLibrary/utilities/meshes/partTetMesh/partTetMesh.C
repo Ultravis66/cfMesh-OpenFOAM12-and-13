@@ -467,21 +467,32 @@ void partTetMesh::updateVerticesSMP(const List<LongList<labelledPoint> >& np)
         const LongList<labelledPoint>& newPoints = np[0];
         # endif
 
+        // Point writes: each pointI is unique per thread list — safe
         forAll(newPoints, i)
+            points_[newPoints[i].pointLabel()] = newPoints[i].coordinates();
+
+        // Serial: updateType |= races on shared tet centre nodes.
+        // One thread scans all thread lists to build updateType safely.
+        # ifdef USE_OMP
+        # pragma omp barrier
+        # pragma omp single
+        # endif
         {
-            const labelledPoint& lp = newPoints[i];
-            const label pointI = lp.pointLabel();
-
-            points_[pointI] = lp.coordinates();
-
-            forAllRow(pointTets_, pointI, ptI)
+            forAll(np, threadI)
             {
-                const partTet& pt = tets_[pointTets_(pointI, ptI)];
-
-                if( smoothVertex_[pt[3]] & CELLCENTRE )
-                    updateType[pt[3]] |= CELLCENTRE;
-                if( smoothVertex_[pt[2]] & FACECENTRE )
-                    updateType[pt[2]] |= FACECENTRE;
+                const LongList<labelledPoint>& tpts = np[threadI];
+                forAll(tpts, i)
+                {
+                    const label pointI = tpts[i].pointLabel();
+                    forAllRow(pointTets_, pointI, ptI)
+                    {
+                        const partTet& pt = tets_[pointTets_(pointI, ptI)];
+                        if( smoothVertex_[pt[3]] & CELLCENTRE )
+                            updateType[pt[3]] |= CELLCENTRE;
+                        if( smoothVertex_[pt[2]] & FACECENTRE )
+                            updateType[pt[2]] |= FACECENTRE;
+                    }
+                }
             }
         }
 
