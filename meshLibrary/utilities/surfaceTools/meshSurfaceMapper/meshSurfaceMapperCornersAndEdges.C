@@ -321,6 +321,11 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         const DynList<label> patches = pPatches[bpI];
         if( patches.size() == 0 ) continue;  // guard: no patches = no valid snap
 
+        // Lock multi-patch corners (3+ patches) — blade/hub/periodic triple
+        // junctions must not move. Averaged patch projection is not a valid
+        // feature target and can create protrusions at turbomachinery corners.
+        if( patches.size() >= 3 ) continue;
+
         point mapPointApprox(p);
         scalar distSqApprox;
 
@@ -563,10 +568,15 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         meshOctree_.findNearestEdgePoint(mapPoint, distSq, nse, p, patches);
 
         //- use the vertex with the smallest mapping distance
+        // Do NOT fall back to mapPointApprox if findNearestEdgePoint fails.
+        // mapPointApprox is an average of patch projections — not guaranteed
+        // to lie on the feature curve. Near blade/hub/periodic corners this
+        // creates protrusions. If true edge projection fails, skip this point.
         if( distSq > 1.2 * distSqApprox )
         {
-            mapPoint = mapPointApprox;
-            distSq = distSqApprox;
+            projectedPoints[i] = point::zero;
+            projectedDistSq[i] = scalar(-1);
+            continue;
         }
 
         //- check if the mapping distance is within the given tolerances

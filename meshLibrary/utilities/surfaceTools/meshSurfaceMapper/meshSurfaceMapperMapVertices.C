@@ -324,9 +324,13 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
         label nInvalid = 0;
         rejectedBpI_.clear();
-        forAll(nodesToMap, i)
+        // Only evaluate points that were actually moved.
+        // nodesToMap includes protected/unmoved points which can have
+        // pre-existing invalid faces — flagging them seeds repairRejectedPoints()
+        // with a large 2-ring neighborhood near corners/junctions.
+        forAll(filteredNodes, i)
         {
-            const label bpI = nodesToMap[i];
+            const label bpI = filteredNodes[i];
             bool validMove = true;
             forAllRow(pFaces, bpI, pfI)
             {
@@ -947,9 +951,14 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         }
         else
         {
-            // Generic single-patch projection
-            // Guard: non-manifold points may have zero patch rows
-            if( pointPatches.sizeOfRow(bpI) == 0 ) continue;
+            // Generic single-patch projection only.
+            // Multi-patch points must not be projected onto pointPatches(bpI,0)
+            // because that pulls feature-edge/corner points off their intersection.
+            // Edge/corner handling is done later by mapEdgeNodes()/mapCorners().
+            // Also skips non-manifold (sizeOfRow==0) cleanly.
+            if( pointPatches.sizeOfRow(bpI) != 1 )
+                continue;
+
             meshOctree_.findNearestSurfacePointInRegion
             (
                 mapPoint,
