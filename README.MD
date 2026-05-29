@@ -6,7 +6,7 @@ v0.9 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop ra
 
 ---
 ### Known remaining issues
-**Residual minor variance** Major OMP races fixed in v0.8–v0.9. Core negativeNode/isExitFace/isBndPoint marking loops now serial. Minor residual variance from dynamic scheduling in untangling termination still under investigation. Serial (OMP=1) runs are fully deterministic.
+**Residual minor variance** Major OMP races fixed in v0.8–v0.9. Serial (OMP=1) runs fully deterministic. OMP=32 variance substantially reduced — primary races (updateType, otherVrts_, frontPoints) fixed. Minor residual variance remains under investigation.
 
 **optimiseBoundaryVolumeOptimizer call-site bug (fixed v0.9)** Original code passed `true`/`false` as iteration count to a function expecting `(nIterations, nonShrinking)`. Early boundary motion was unconstrained instead of non-shrinking; late boundary fallback was doing zero iterations. Fixed to `(1, true)` and `(1, false)`.
 
@@ -116,7 +116,14 @@ checkMesh
 | `findLeafContainingVertex` throws raw `char const*` for points near octree boundary — process terminates on fine meshes | Replace `FatalErrorIn` + `throw` with `WarningIn` + `return -1`; all callers already handle `-1` gracefully |
 | Near-coincident STL vertices below mesh resolution cause protrusions at sharp trailing-edge corners | meshDict-controlled geometry preprocessing pass: octree-based vertex weld before octree generation (geometryPreprocessing { active true; weldTolerance 1e-4; }) |
 | BL+BL+neutral 3-way corners (blade/shroud/periodic, blade/hub/periodic) extruded with averaged bisector normal causing protrusions | Acute corner classifier measures patch-normal dot product; acute corners (dot < threshold) get 0.02 layerScale + projection guard; mild corners get 0.15 + ring taper |
-
+| `partTetMesh::updateVerticesSMP` updateType |= CELLCENTRE/FACECENTRE race on shared tet centre nodes | Serialize updateType marking with omp single — primary cause of OMP=32 vs serial quality divergence |
+| `partTriMesh::updateVerticesSMP` / `updateVertices` updateType |= FACECENTRE/SMOOTH race | Serialize updateType marking |
+| `boundaryLayersCreateVertices` concurrent std::map find/insert/[] on otherVrts_ during OMP parallel BL vertex creation | Serialize otherVrts_ access; add FatalError guard for missing map entries |
+| `extrudeLayer` frontPoints[f[pI]] |= FRONTVERTEX race on shared point indices | Serialize front point marking — was corrupting BL front layer detection |
+| `meshSurfaceEngineModifier` updateFaces/updateBndPoint shared boolList marking races | Serialize marking loops |
+| `optimiseBoundaryVolumeOptimizer` call-site bug — true/false passed as nIterations not nonShrinking | Fix to (1,true) and (1,false) |
+| `tetMeshOptimisation::optimiseUsingMeshUntangler` missing helper[tetI]=true — false convergence declaration | Add missing assignment |
+| Untangle stagnation deadlock at small residual bad-face count | Detect stuck iterations, switch to unconstrained fallback after 4 unchanged iterations with ≤8 bad faces |
 
 ---
 
@@ -263,9 +270,6 @@ Initial infrastructure exists for detecting degenerate layer-cell candidates and
 **Blade TE singularity** One residual high-aspect cell and one near-zero volume cell at the blade trailing-edge geometric singularity (knife-edge meeting shroud+periodic). This is a CAD/STL limitation — the feature is below mesh resolution. The geometry preprocessing weld mitigates but cannot fully resolve a true zero-thickness trailing edge.
 
 **BL/BL feature-edge rounding** Blade/hub and blade/shroud feature curves can be slightly rounded by the surface smoother. Fix in progress: feature-curve locking during smooth passes.
-
-> **Diagnostic note:** SnappyHexMesh produces clean geometry at the same patch junctions using the same STL, confirming the protrusions are cfMesh-specific and not a geometry defect.
-
 ---
 ## What's new
 
@@ -327,7 +331,7 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 | `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
 | `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
 | `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
-| `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, 4 tetMesh OMP race fixes, call-site bug fix in optimiseBoundaryVolumeOptimizer (bool→nIter), MeshUntangler convergence tracking fix, acute corner lock policy clarified, OMP serialization of negativeNode/isExitFace/removeBndPoint/isBndPoint marking loops. |
+| `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, partTetMesh/partTriMesh updateType races, otherVrts_ std::map race in BL vertex creation, frontPoints extrusion race, meshSurfaceEngineModifier marking races, optimiseBoundaryVolumeOptimizer call-site bug, MeshUntangler convergence fix, untangle stagnation detection. Serial runs fully deterministic; OMP=32 quality substantially improved. |
 
 ---
 ## Running the regression test
