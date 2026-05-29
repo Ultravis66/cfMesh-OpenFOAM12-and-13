@@ -109,9 +109,8 @@ void extrudeLayer::createDuplicateFrontFaces(const LongList<labelPair>& front)
     extrudedFaces_.setSize(counter);
     pairOrientation_.setSize(counter);
 
-    # ifdef USE_OMP
-    # pragma omp parallel for if( faceInFront.size() > 100 ) schedule(guided)
-    # endif
+    // Serial: faces[], extrudedFaces_[], pairOrientation_[] write races —
+    // multiple faceI can map to same fOwn/fNei; transfer() especially unsafe
     forAll(faceInFront, faceI)
     {
         if( faceInFront[faceI] < 0 )
@@ -175,9 +174,8 @@ void extrudeLayer::createDuplicateFrontFaces(const LongList<labelPair>& front)
     }
 
     //- renumber the cells
-    # ifdef USE_OMP
-    # pragma omp parallel for if( faceInFront.size() > 100 ) schedule(guided)
-    # endif
+    // Serial: multiple faces share owner/neighbour cells —
+    // concurrent writes to c[fI] corrupt cell-face connectivity
     forAll(faceInFront, faceI)
     {
         if( faceInFront[faceI] < 0 )
