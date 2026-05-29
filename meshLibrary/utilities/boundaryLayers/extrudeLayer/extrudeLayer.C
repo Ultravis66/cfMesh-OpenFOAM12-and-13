@@ -219,9 +219,8 @@ void extrudeLayer::createNewVertices()
     //- find the points in the marked front
     List<direction> frontPoints(points.size(), NONE);
 
-    # ifdef USE_OMP
-    # pragma omp parallel for if( points.size() > 1000 ) schedule(guided)
-    # endif
+    // Serial: multiple extruded faces share points —
+    // frontPoints[f[pI]] |= FRONTVERTEX races on shared point indices
     forAll(extrudedFaces_, efI)
     {
         const face& f = faces[extrudedFaces_[efI].first()];
