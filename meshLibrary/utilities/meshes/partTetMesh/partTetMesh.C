@@ -571,6 +571,7 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
         const VRWGraph& pointCells = origMesh_.addressingData().pointCells();
 
         # ifdef USE_OMP
+        # ifdef USE_OMP
         # pragma omp parallel for if( pointCells.size() > 100 ) \
         schedule(dynamic, 20)
         # endif

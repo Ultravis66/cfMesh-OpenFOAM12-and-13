@@ -195,6 +195,8 @@ void meshOptimizer::untangleMeshFV
 
         // move boundary vertices
         nIter = 0;
+        label nSurfStuck(0);
+        label prevSurfBadFaces(-1);
 
         while( nIter++ < maxNumSurfaceIterations )
         {
@@ -265,20 +267,29 @@ void meshOptimizer::untangleMeshFV
             //- contruct tetMeshOptimisation
             tetMeshOptimisation tmo(tetMesh);
 
-            if( nGlobalIter < 2 )
+            // Track surface-loop stagnation. If constrained boundary
+            // optimizer cannot reduce bad faces for several iterations,
+            // allow unconstrained fallback to break junction deadlock.
+            // Guard: only activate for small residual counts (<=8),
+            // not during large early repair phase.
+            if( nBadFaces == prevSurfBadFaces )
+                ++nSurfStuck;
+            else
+                nSurfStuck = 0;
+            prevSurfBadFaces = nBadFaces;
+
+            const bool useUnconstrained =
+                (nBadFaces <= 8 && nSurfStuck >= 4) || (nGlobalIter >= 5);
+
+            if( !useUnconstrained )
             {
-                //- constrained: keep boundary movement non-shrinking
-                tmo.optimiseBoundaryVolumeOptimizer(1, true);
-            }
-            else if( nGlobalIter < 5 )
-            {
-                //- constrained fallback: avoid unconstrained tet-space drift
-                //- near feature/corner junctions (replaces surface Laplace)
                 tmo.optimiseBoundaryVolumeOptimizer(1, true);
             }
             else
             {
-                //- unconstrained boundary volume optimizer
+                Info << "Surface untangle stagnation: nBadFaces="
+                     << nBadFaces << " nSurfStuck=" << nSurfStuck
+                     << " — using unconstrained fallback." << endl;
                 tmo.optimiseBoundaryVolumeOptimizer(1, false);
             }
 
