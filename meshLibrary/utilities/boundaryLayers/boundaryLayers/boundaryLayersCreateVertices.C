@@ -333,10 +333,27 @@ point boundaryLayers::createNewVertex
         {
             // Multi-patch singularity: 3+ non-treated patches meet here
             // (e.g. blade/root/periodic triple junction). A single prism
-            // extrusion direction is not well-defined. Force local layer
-            // termination — let neighbouring BL faces form the transition.
+            // extrusion direction is not well-defined. Use surface normal
+            // with a minimal safe distance to avoid zero-volume collapse
+            // while keeping the extrusion within the local cell geometry.
             normal = pNormals[bpI];
-            dist = 0.0;
+
+            // Find minimum neighbour edge length as safe distance reference
+            scalar minEdge(GREAT);
+            forAllRow(pointPoints, bpI, ppI)
+            {
+                const scalar d = mag
+                (
+                    points[bPoints[pointPoints(bpI, ppI)]] - p
+                );
+                if( d > VSMALL && d < minEdge )
+                    minEdge = d;
+            }
+            // Use 2% of minimum edge with absolute floor — small enough
+            // to avoid topology conflicts, nonzero to prevent volume collapse.
+            dist = (minEdge < GREAT)
+                 ? Foam::max(scalar(0.02) * minEdge, scalar(100) * VSMALL)
+                 : 0.0;
         }
 
         //- limit distances
