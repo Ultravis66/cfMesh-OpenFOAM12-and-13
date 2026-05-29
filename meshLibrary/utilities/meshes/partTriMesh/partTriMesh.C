@@ -260,20 +260,30 @@ void partTriMesh::updateVerticesSMP(const List<LongList<labelledPoint> >& np)
         const LongList<labelledPoint>& newPoints = np[0];
         # endif
 
+        // Point writes parallel — each pointI unique per thread
         forAll(newPoints, i)
+            pts[newPoints[i].pointLabel()] = newPoints[i].coordinates();
+
+        // Serial: updateType |= races on shared tri face-centre nodes
+        # ifdef USE_OMP
+        # pragma omp barrier
+        # pragma omp single
+        # endif
         {
-            const labelledPoint& lp = newPoints[i];
-            const label pointI = lp.pointLabel();
-
-            pts[pointI] = lp.coordinates();
-            updateType[pointI] |= SMOOTH;
-
-            forAllRow(pointFacets, pointI, ptI)
+            forAll(np, threadI)
             {
-                const labelledTri& tri = surf_[pointFacets(pointI, ptI)];
-
-                if( pointType_[tri[2]] & FACECENTRE )
-                    updateType[tri[2]] |= FACECENTRE;
+                const LongList<labelledPoint>& tpts = np[threadI];
+                forAll(tpts, i)
+                {
+                    const label pointI = tpts[i].pointLabel();
+                    updateType[pointI] |= SMOOTH;
+                    forAllRow(pointFacets, pointI, ptI)
+                    {
+                        const labelledTri& tri = surf_[pointFacets(pointI, ptI)];
+                        if( pointType_[tri[2]] & FACECENTRE )
+                            updateType[tri[2]] |= FACECENTRE;
+                    }
+                }
             }
         }
     }
@@ -394,6 +404,7 @@ void partTriMesh::updateVertices(const labelLongList& movedPoints)
 
     //- update coordinates of vertices which exist in the surface
     //- of the volume mesh
+    // Parallel: point position writes — each triPointI unique — safe
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif
@@ -402,11 +413,19 @@ void partTriMesh::updateVertices(const labelLongList& movedPoints)
         const label bpI = movedPoints[i];
         const label pointI = bPoints[bpI];
         const label triPointI = meshSurfacePointLabelInTriMesh_[bpI];
+        if( triPointI < 0 ) continue;
+        pts[triPointI] = points[pointI];
+    }
+
+    // Serial: updateType |= races on shared face-centre nodes
+    forAll(movedPoints, i)
+    {
+        const label bpI = movedPoints[i];
+        const label triPointI = meshSurfacePointLabelInTriMesh_[bpI];
 
         if( triPointI < 0 )
             continue;
 
-        pts[triPointI] = points[pointI];
         updateType[triPointI] |= SMOOTH;
 
         forAllRow(pointFacets, triPointI, ptI)
