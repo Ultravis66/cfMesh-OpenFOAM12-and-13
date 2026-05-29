@@ -462,8 +462,10 @@ void edgeExtractor::markPatchPoints(boolList& patchPoint)
         help::exchangeMap(sendData, receivedData);
 
         forAll(receivedData, i)
+                {
                 if( !globalToLocal.found(receivedData[i]) ) continue;
             patchPoint[globalToLocal[receivedData[i]]] = false;
+                }
     }
 }
 

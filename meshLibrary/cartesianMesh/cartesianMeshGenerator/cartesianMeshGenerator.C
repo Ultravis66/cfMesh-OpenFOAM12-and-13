@@ -662,6 +662,16 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             readBool(meshDict_.lookup("enforceGeometryConstraints"));
     }
 
+        bool lockAcuteCorners = false;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndL =
+                meshDict_.subDict("boundaryLayers");
+            if( bndL.found("lockAcuteCornerPoints") )
+                lockAcuteCorners =
+                    bool(Switch(bndL.lookup("lockAcuteCornerPoints")));
+        }
+
     {
         meshSurfaceEngine mse(mesh_);
         meshSurfaceOptimizer surfOpt(mse, *octreePtr_);
@@ -674,15 +684,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         //- lock acute BL+BL+neutral corners: prevent optimizer
         //- from moving these points across patch boundaries
         //- controlled by meshDict: lockAcuteCornerPoints true/false
-        bool lockAcuteCorners = false;
-        if( meshDict_.isDict("boundaryLayers") )
-        {
-            const dictionary& bndL =
-                meshDict_.subDict("boundaryLayers");
-            if( bndL.found("lockAcuteCornerPoints") )
-                lockAcuteCorners =
-                    bool(Switch(bndL.lookup("lockAcuteCornerPoints")));
-        }
         if( lockAcuteCorners && blblAcuteCornerPoints_.size() )
         {
             Info << "Locking " << blblAcuteCornerPoints_.size()

@@ -331,15 +331,12 @@ point boundaryLayers::createNewVertex
         }
         else
         {
-            FatalErrorIn
-            (
-                "void boundaryLayers::createNewVertices"
-                "("
-                    "const boolList& treatPatches,"
-                    "labelList& newLabelForVertex"
-                ") const"
-            ) << "There are more than 3 patches meeting at this vertex!"
-                << pPatches[bpI] << abort(FatalError);
+            // Multi-patch singularity: 3+ non-treated patches meet here
+            // (e.g. blade/root/periodic triple junction). A single prism
+            // extrusion direction is not well-defined. Force local layer
+            // termination — let neighbouring BL faces form the transition.
+            normal = pNormals[bpI];
+            dist = 0.0;
         }
 
         //- limit distances
@@ -1442,16 +1439,10 @@ void boundaryLayers::createNewEdgeVerticesParallel
         }
         else
         {
-            FatalErrorIn
-            (
-                "void boundaryLayers::createNewEdgeVerticesParallel("
-                    "const labelLongList& procPoints,"
-                    "const List<direction>& pVertices,"
-                    "const boolList& treatPatches,"
-                    "labelList& newLabelForVertex"
-                ") const"
-            ) << "There are more than 3 patches meeting at this vertex!"
-                << abort(FatalError);
+            // Multi-patch singularity in parallel edge vertex creation.
+            // Force local termination — zero extrusion at this point.
+            normal[epI] = mse.pointNormals()[bpI];
+            dist[epI] = 0.0;
         }
     }
 

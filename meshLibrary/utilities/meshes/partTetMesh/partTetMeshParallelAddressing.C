@@ -217,8 +217,8 @@ void partTetMesh::createParallelAddressing
     {
         const label gpI = receivedData[counter++];
         const label tgI = receivedData[counter++];
+        if( !globalToLocalPointAddressing.found(gpI) ) continue;
         const label pLabel =
-            if( !globalToLocalPointAddressing.found(gpI) ) continue;
             nodeLabelForPoint[globalToLocalPointAddressing[gpI]];
         
         globalTetPointLabel[pLabel] = tgI;

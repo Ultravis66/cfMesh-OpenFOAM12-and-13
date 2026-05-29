@@ -197,8 +197,10 @@ void checkBoundaryFacesSharingTwoEdges::findFacesAtBndEdge()
 
         //- set remove flag to false
         forAll(receivedData, i)
+        {
             if( !globalToLocal.found(receivedData[i]) ) continue;
             removeBndPoint_[globalToLocal[receivedData[i]]] = false;
+        }
     }
 }
 
