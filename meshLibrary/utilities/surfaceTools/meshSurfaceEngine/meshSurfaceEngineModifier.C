@@ -266,9 +266,7 @@ void meshSurfaceEngineModifier::updateGeometry
     const labelList& bp = surfaceEngine_.bp();
 
     boolList updateFaces(bFaces.size(), false);
-    # ifdef USE_OMP
-    # pragma omp parallel for if( updateBndNodes.size() > 1000 )
-    # endif
+    // Serial: multiple bpI share faces — updateFaces[...]=true races
     forAll(updateBndNodes, i)
     {
         const label bpI = updateBndNodes[i];
@@ -333,9 +331,7 @@ void meshSurfaceEngineModifier::updateGeometry
         const vectorField& faceNormals = surfaceEngine_.faceNormals();
 
         boolList updateBndPoint(pFaces.size(), false);
-        # ifdef USE_OMP
-        # pragma omp parallel for schedule(dynamic, 50)
-        # endif
+        // Serial: multiple bpI share face points — updateBndPoint[...]=true races
         forAll(updateBndNodes, i)
         {
             const label bpI = updateBndNodes[i];

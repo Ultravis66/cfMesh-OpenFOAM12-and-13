@@ -230,6 +230,26 @@ bool checkClosedCells
             }
 
             ++nOpen;
+            if( report )
+            {
+                Pout<< "OPEN_CELL_DIAG cell=" << cellI
+                    << " opennessRatio="
+                    << mag(sumClosed[cellI])
+                       /(mag(sumMagClosed[cellI]) + VSMALL)
+                    << " volume=" << vols[cellI]
+                    << " nFaces=" << mesh.cells()[cellI].size()
+                    << " sumClosed=" << sumClosed[cellI]
+                    << endl;
+                const cell& c = mesh.cells()[cellI];
+                forAll(c, fI)
+                {
+                    const face& f = mesh.faces()[c[fI]];
+                    Pout<< "  face=" << c[fI]
+                        << " nPts=" << f.size()
+                        << " pts=" << f
+                        << endl;
+                }
+            }
         }
 
         scalar aspectRatio =

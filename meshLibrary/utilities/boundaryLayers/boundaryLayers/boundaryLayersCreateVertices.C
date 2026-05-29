@@ -869,9 +869,8 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
         points.setSize(nPoints_);
 
         //- calculate coordinates of new points
-        # ifdef USE_OMP
-        # pragma omp parallel for schedule(dynamic, 50)
-        # endif
+        // Serial: otherVrts_ is shared std::map — concurrent find/insert/[]
+        // is not thread-safe. Races corrupt BL edge/corner vertex positions.
         forAll(patchPoints, i)
         {
             const label bpI = patchPoints[i];
@@ -892,7 +891,15 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
                 }
 
                 std::pair<label, label> pr(pKey, pKey);
-                const label npI = otherVrts_[pointI][pr];
+                std::map<std::pair<label,label>,label>::const_iterator npIter =
+                    otherVrts_[pointI].find(pr);
+                if( npIter == otherVrts_[pointI].end() )
+                {
+                    FatalErrorIn("boundaryLayers::createNewVertices")
+                        << "Missing otherVrts_ entry for point " << pointI
+                        << abort(FatalError);
+                }
+                const label npI = npIter->second;
                 points[npI] = p;
             }
             else
