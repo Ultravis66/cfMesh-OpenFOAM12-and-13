@@ -818,6 +818,31 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 const pointField gate2PointsBefore(mesh_.points());
 
                 meshOptimizer gate2Optimizer(mesh_);
+
+                // Lock all points NOT adjacent to periodic bad faces.
+                // This constrains the optimizer to only move junction points,
+                // preventing nonOrtho85 from jumping 12->34 globally.
+                if( gate2PeriodicBadFaces.size() > 0 )
+                {
+                    const meshSurfaceEngine mseG2(mesh_);
+                    const labelList& bPoints = mseG2.boundaryPoints();
+
+                    // Collect all faces NOT in gate2PeriodicBadFaces
+                    const faceListPMG& allFaces = mesh_.faces();
+                    labelLongList nonPeriodicFaces;
+                    forAll(allFaces, faceI)
+                        if( !gate2PeriodicBadFaces.found(faceI) )
+                            nonPeriodicFaces.append(faceI);
+
+                    gate2Optimizer.lockFaces(nonPeriodicFaces);
+
+                    Info << "Gate2 local repair: locked "
+                         << nonPeriodicFaces.size()
+                         << " non-periodic faces, freeing "
+                         << gate2PeriodicBadFaces.size()
+                         << " periodic junction faces for repair" << endl;
+                }
+
                 gate2Optimizer.optimizeLowQualityFaces(3);
 
                 const bool gate2UnusedAfter =
