@@ -860,12 +860,11 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         const scalar maxSkewAfter =
             skewAfter.size() > 0 ? max(skewAfter) : scalar(0.0);
 
+        // Hard cap: reject if skew exceeds 20 regardless of before/after ratio.
+        // Relative cap: reject if untangle more than doubles existing skew.
         const bool skewOK =
-            maxSkewAfter <= Foam::max
-            (
-                scalar(20.0),
-                scalar(2.0) * Foam::max(maxSkewBefore, scalar(1.0))
-            );
+            maxSkewAfter <= scalar(20.0)
+         && maxSkewAfter <= scalar(2.0) * Foam::max(maxSkewBefore, scalar(1.0));
 
         const bool untangleOK =
             badAfter.size() <= badBefore.size()
