@@ -559,7 +559,35 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         refLayers.refineLayers();
 
-             refLayers.pointsInBndLayer(blPoints_);
+        refLayers.pointsInBndLayer(blPoints_);
+
+        {
+            mesh_.clearAddressingData();
+            const bool hadUnusedBefore =
+                polyMeshGenChecks::checkPoints(mesh_, false);
+            if( hadUnusedBefore )
+            {
+                labelHashSet negBefore;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+                polyMeshGenModifier(mesh_).removeUnusedVertices();
+                mesh_.clearAddressingData();
+                labelHashSet negAfter;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+                const bool hasUnusedAfter =
+                    polyMeshGenChecks::checkPoints(mesh_, false);
+                Info << "Post-BL cleanup: removeUnusedVertices unusedPoints "
+                     << "bad->" << (hasUnusedAfter ? "bad" : "ok")
+                     << " negVol " << negBefore.size() << "->" << negAfter.size()
+                     << endl;
+                if( negAfter.size() > negBefore.size() )
+                    Info << "Post-BL cleanup warning: removeUnusedVertices "
+                         << "worsened negative-volume count" << endl;
+            }
+            else
+            {
+                Info << "Post-BL cleanup: no unused vertices found" << endl;
+            }
+        }
 
 
         // 3-gate post-refinement diagnostic (non-mutating)
@@ -589,6 +617,275 @@ void cartesianMeshGenerator::refBoundaryLayers()
             Pout << "  Gate 1 (neg vol cells):    " << badCells.size() << endl;
             Pout << "  Gate 2 (bad pyramids):     " << badPyramidFaces.size() << endl;
             Pout << "  Gate 3 (non-ortho >85deg): " << nonOrthoFaces.size() << endl;
+
+            // Final bad-pyramid classifier. Non-mutating diagnostic only.
+            // This classifies the remaining post-refinement bad faces by
+            // nearby patch contact so we know whether the residual defect is
+            // periodic-transition, blade-wall, hub/shroud, or generic volume.
+            if( badPyramidFaces.size() > 0 )
+            {
+                const faceListPMG& faces = mesh_.faces();
+                const pointFieldPMG& points = mesh_.points();
+                const labelList& owner = mesh_.owner();
+                const labelList& neighbour = mesh_.neighbour();
+                const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+
+                boolList cellTouchesPeriodic(mesh_.cells().size(), false);
+                boolList cellTouchesBlade(mesh_.cells().size(), false);
+                boolList cellTouchesHub(mesh_.cells().size(), false);
+                boolList cellTouchesShroud(mesh_.cells().size(), false);
+                boolList cellTouchesInletOutlet(mesh_.cells().size(), false);
+
+                forAll(boundaries, patchI)
+                {
+                    const word& pName = boundaries[patchI].patchName();
+
+                    const bool isPeriodic =
+                        (pName == "periodic_1" || pName == "periodic_2");
+                    const bool isBlade = pName.find("blade") == 0;
+                    const bool isHub = (pName == "hub");
+                    const bool isShroud = (pName == "shroud");
+                    const bool isInletOutlet =
+                        (pName == "inlet" || pName == "outlet");
+
+                    if( !isPeriodic && !isBlade && !isHub
+                     && !isShroud && !isInletOutlet )
+                        continue;
+
+                    const label start = boundaries[patchI].patchStart();
+                    const label size  = boundaries[patchI].patchSize();
+
+                    for(label pfI=0; pfI<size; ++pfI)
+                    {
+                        const label faceJ = start + pfI;
+                        if( faceJ < 0 || faceJ >= label(owner.size()) )
+                            continue;
+
+                        const label cellI = owner[faceJ];
+                        if( cellI < 0 || cellI >= label(cellTouchesBlade.size()) )
+                            continue;
+
+                        if( isPeriodic )    cellTouchesPeriodic[cellI] = true;
+                        if( isBlade )       cellTouchesBlade[cellI] = true;
+                        if( isHub )         cellTouchesHub[cellI] = true;
+                        if( isShroud )      cellTouchesShroud[cellI] = true;
+                        if( isInletOutlet ) cellTouchesInletOutlet[cellI] = true;
+                    }
+                }
+
+                label nPeriodicClass(0);
+                label nBladeClass(0);
+                label nHubClass(0);
+                label nShroudClass(0);
+                label nInletOutletClass(0);
+                label nGenericClass(0);
+
+                // Candidate subset for future localized Gate 2 repair.
+                // These are final bad-pyramid faces adjacent to periodic/
+                // neutral patches, separated from the mixed global bad set.
+                labelHashSet gate2PeriodicBadFaces;
+
+                label nPrinted(0);
+
+                forAllConstIter(labelHashSet, badPyramidFaces, it)
+                {
+                    const label faceI = it.key();
+                    if( faceI < 0 || faceI >= label(faces.size()) )
+                        continue;
+
+                    const label ownCell =
+                        faceI < label(owner.size()) ? owner[faceI] : -1;
+                    const label neiCell =
+                        faceI < label(neighbour.size()) ? neighbour[faceI] : -1;
+
+                    const bool touchPeriodic =
+                        (ownCell >= 0 && ownCell < label(cellTouchesPeriodic.size())
+                      && cellTouchesPeriodic[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesPeriodic.size())
+                      && cellTouchesPeriodic[neiCell]);
+
+                    const bool touchBlade =
+                        (ownCell >= 0 && ownCell < label(cellTouchesBlade.size())
+                      && cellTouchesBlade[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesBlade.size())
+                      && cellTouchesBlade[neiCell]);
+
+                    const bool touchHub =
+                        (ownCell >= 0 && ownCell < label(cellTouchesHub.size())
+                      && cellTouchesHub[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesHub.size())
+                      && cellTouchesHub[neiCell]);
+
+                    const bool touchShroud =
+                        (ownCell >= 0 && ownCell < label(cellTouchesShroud.size())
+                      && cellTouchesShroud[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesShroud.size())
+                      && cellTouchesShroud[neiCell]);
+
+                    const bool touchInletOutlet =
+                        (ownCell >= 0 && ownCell < label(cellTouchesInletOutlet.size())
+                      && cellTouchesInletOutlet[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesInletOutlet.size())
+                      && cellTouchesInletOutlet[neiCell]);
+
+                    if( touchPeriodic )
+                    {
+                        ++nPeriodicClass;
+                        gate2PeriodicBadFaces.insert(faceI);
+                    }
+                    else if( touchBlade ) ++nBladeClass;
+                    else if( touchHub ) ++nHubClass;
+                    else if( touchShroud ) ++nShroudClass;
+                    else if( touchInletOutlet ) ++nInletOutletClass;
+                    else ++nGenericClass;
+
+                    if( nPrinted < 25 )
+                    {
+                        const face& f = faces[faceI];
+
+                        point c(point::zero);
+                        forAll(f, fpI)
+                        {
+                            const label pI = f[fpI];
+                            if( pI >= 0 && pI < label(points.size()) )
+                                c += points[pI];
+                        }
+
+                        if( f.size() > 0 )
+                            c /= scalar(f.size());
+
+                        const scalar r = Foam::sqrt(c.x()*c.x() + c.y()*c.y());
+                        const scalar theta =
+                            Foam::atan2(c.y(), c.x()) * 180.0 / constant::mathematical::pi;
+
+                        Pout << "  Gate2 badFace faceI=" << faceI
+                             << " nPts=" << f.size()
+                             << " owner=" << ownCell
+                             << " neighbour=" << neiCell
+                             << " centroid=" << c
+                             << " r=" << r
+                             << " theta=" << theta
+                             << " class="
+                             << (touchPeriodic ? "periodic" :
+                                 touchBlade ? "blade" :
+                                 touchHub ? "hub" :
+                                 touchShroud ? "shroud" :
+                                 touchInletOutlet ? "inletOutlet" : "generic")
+                             << endl;
+
+                        ++nPrinted;
+                    }
+                }
+
+                Pout << "  Gate2 bad pyramid classes:"
+                     << " periodic=" << nPeriodicClass
+                     << " blade=" << nBladeClass
+                     << " hub=" << nHubClass
+                     << " shroud=" << nShroudClass
+                     << " inletOutlet=" << nInletOutletClass
+                     << " generic=" << nGenericClass
+                     << endl;
+
+                Pout << "  Gate2 periodic-local repair candidate faces: "
+                     << gate2PeriodicBadFaces.size()
+                     << endl;
+
+                // Gate 2 final repair pass. This is intentionally motion-only:
+                // snapshot points, attempt a local low-quality optimization,
+                // then accept only if bad pyramids improve and no hard quality
+                // metric regresses. Do not flip faces here; remaining Gate 2
+                // defects include boundary faces and mixed transition classes.
+                const bool gate2UnusedBefore =
+                    polyMeshGenChecks::checkPoints(mesh_, false);
+
+                labelHashSet gate2NegBefore;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &gate2NegBefore);
+
+                labelHashSet gate2OpenBefore;
+                polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &gate2OpenBefore);
+
+                labelHashSet gate2NonOrthoBefore;
+                polyMeshGenChecks::checkFaceDotProduct
+                (mesh_, false, 85.0, &gate2NonOrthoBefore);
+
+                scalarField gate2SkewBefore;
+                polyMeshGenChecks::checkFaceSkewness(mesh_, gate2SkewBefore);
+                const scalar gate2MaxSkewBefore =
+                    gate2SkewBefore.size() > 0
+                  ? max(gate2SkewBefore)
+                  : scalar(0.0);
+
+                const pointField gate2PointsBefore(mesh_.points());
+
+                meshOptimizer gate2Optimizer(mesh_);
+                gate2Optimizer.optimizeLowQualityFaces(3);
+
+                const bool gate2UnusedAfter =
+                    polyMeshGenChecks::checkPoints(mesh_, false);
+
+                labelHashSet gate2BadAfter;
+                polyMeshGenChecks::checkFacePyramids
+                (mesh_, false, -SMALL, &gate2BadAfter);
+
+                labelHashSet gate2NegAfter;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &gate2NegAfter);
+
+                labelHashSet gate2OpenAfter;
+                polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &gate2OpenAfter);
+
+                labelHashSet gate2NonOrthoAfter;
+                polyMeshGenChecks::checkFaceDotProduct
+                (mesh_, false, 85.0, &gate2NonOrthoAfter);
+
+                scalarField gate2SkewAfter;
+                polyMeshGenChecks::checkFaceSkewness(mesh_, gate2SkewAfter);
+                const scalar gate2MaxSkewAfter =
+                    gate2SkewAfter.size() > 0
+                  ? max(gate2SkewAfter)
+                  : scalar(0.0);
+
+                const bool gate2RepairOK =
+                    gate2BadAfter.size() < badPyramidFaces.size()
+                 && (!gate2UnusedAfter || gate2UnusedBefore)
+                 && gate2NegAfter.size() <= gate2NegBefore.size()
+                 && gate2OpenAfter.size() <= gate2OpenBefore.size()
+                 && gate2NonOrthoAfter.size() <= gate2NonOrthoBefore.size()
+                 && gate2MaxSkewAfter <= scalar(20.0);
+
+                if( gate2RepairOK )
+                {
+                    Pout << "  Gate2 final repair accepted: badPyramids "
+                         << badPyramidFaces.size() << "->" << gate2BadAfter.size()
+                         << " unusedPoints " << (gate2UnusedBefore ? "bad" : "ok")
+                         << "->" << (gate2UnusedAfter ? "bad" : "ok")
+                         << " negVol " << gate2NegBefore.size() << "->" << gate2NegAfter.size()
+                         << " openCells " << gate2OpenBefore.size() << "->" << gate2OpenAfter.size()
+                         << " nonOrtho85 " << gate2NonOrthoBefore.size() << "->" << gate2NonOrthoAfter.size()
+                         << " skew " << gate2MaxSkewBefore << "->" << gate2MaxSkewAfter
+                         << endl;
+
+                    badPyramidFaces = gate2BadAfter;
+                    badCells = gate2NegAfter;
+                }
+                else
+                {
+                    Pout << "  Gate2 final repair rejected: badPyramids "
+                         << badPyramidFaces.size() << "->" << gate2BadAfter.size()
+                         << " unusedPoints " << (gate2UnusedBefore ? "bad" : "ok")
+                         << "->" << (gate2UnusedAfter ? "bad" : "ok")
+                         << " negVol " << gate2NegBefore.size() << "->" << gate2NegAfter.size()
+                         << " openCells " << gate2OpenBefore.size() << "->" << gate2OpenAfter.size()
+                         << " nonOrtho85 " << gate2NonOrthoBefore.size() << "->" << gate2NonOrthoAfter.size()
+                         << " skew " << gate2MaxSkewBefore << "->" << gate2MaxSkewAfter
+                         << " -- rolling back"
+                         << endl;
+
+                    polyMeshGenModifier gate2MeshModifier(mesh_);
+                    pointFieldPMG& pts = gate2MeshModifier.pointsAccess();
+                    pts = gate2PointsBefore;
+                    mesh_.clearAddressingData();
+                }
+            }
 
             if( hasNegVol || hasBadPyramids || hasNonOrtho )
             {
@@ -814,7 +1111,82 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             label currentNeg  = negBefore.size();
             label currentOpen = openBefore.size();
 
+            const labelList& owner = mesh_.owner();
             const labelList& neighbour = mesh_.neighbour();
+
+            // Build cell -> boundary patch contact map. Periodic transition
+            // bad faces are usually internal triangular faces adjacent to
+            // cells touching neutral/periodic patches. These are not ordinary
+            // orientation errors; flipping them tends to open the adjacent
+            // transition cells.
+            bool periodicTransitionProtection(true);
+            bool periodicTransitionSkipFlip(true);
+
+            wordHashSet periodicTransitionPatches;
+            periodicTransitionPatches.insert("periodic_1");
+            periodicTransitionPatches.insert("periodic_2");
+
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+
+                if( bndL.found("periodicTransitionProtection") )
+                    periodicTransitionProtection =
+                        bool(Switch(bndL.lookup("periodicTransitionProtection")));
+
+                if( bndL.found("periodicTransitionSkipFlip") )
+                    periodicTransitionSkipFlip =
+                        bool(Switch(bndL.lookup("periodicTransitionSkipFlip")));
+
+                if( bndL.found("periodicTransitionPatches") )
+                {
+                    periodicTransitionPatches.clear();
+
+                    const wordList pNames(bndL.lookup("periodicTransitionPatches"));
+                    forAll(pNames, pI)
+                        periodicTransitionPatches.insert(pNames[pI]);
+                }
+            }
+
+            const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+            boolList cellTouchesPeriodic(mesh_.cells().size(), false);
+
+            if( periodicTransitionProtection )
+            {
+                forAll(boundaries, patchI)
+                {
+                    const word& pName = boundaries[patchI].patchName();
+
+                    if( !periodicTransitionPatches.found(pName) )
+                        continue;
+
+                    const label start = boundaries[patchI].patchStart();
+                    const label size  = boundaries[patchI].patchSize();
+
+                    for(label pfI=0; pfI<size; ++pfI)
+                    {
+                        const label faceJ = start + pfI;
+                        if( faceJ < 0 || faceJ >= label(owner.size()) ) continue;
+
+                        const label c = owner[faceJ];
+                        if( c >= 0 && c < label(cellTouchesPeriodic.size()) )
+                            cellTouchesPeriodic[c] = true;
+                    }
+                }
+            }
+
+            Info << "Post-BL periodic transition protection: "
+                 << (periodicTransitionProtection ? "enabled" : "disabled")
+                 << ", skipFlip=" << (periodicTransitionSkipFlip ? "true" : "false")
+                 << ", nPatches=" << periodicTransitionPatches.size()
+                 << ", patches=(";
+
+            forAllConstIter(wordHashSet, periodicTransitionPatches, pIt)
+                Info << " " << pIt.key();
+
+            Info << " )" << endl;
+
+            label nPeriodicTransitionSkipped(0);
 
             forAllConstIter(labelHashSet, badFaces, it)
             {
@@ -828,6 +1200,41 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 // patch orientation worse instead of repairing a cell.
                 if( faceI >= label(neighbour.size()) || neighbour[faceI] < 0 )
                 { ++nRejected; continue; }
+
+                const label ownCell = owner[faceI];
+                const label neiCell = neighbour[faceI];
+
+                const bool periodicTransitionFace =
+                    faces[faceI].size() <= 4
+                 && (
+                        (ownCell >= 0 && ownCell < label(cellTouchesPeriodic.size())
+                      && cellTouchesPeriodic[ownCell])
+                     || (neiCell >= 0 && neiCell < label(cellTouchesPeriodic.size())
+                      && cellTouchesPeriodic[neiCell])
+                    );
+
+                if
+                (
+                    periodicTransitionProtection
+                 && periodicTransitionSkipFlip
+                 && periodicTransitionFace
+                )
+                {
+                    ++nPeriodicTransitionSkipped;
+                    ++nRejected;
+
+                    if( nPeriodicTransitionSkipped <= 10 )
+                    {
+                        Info << "Post-BL audit: periodic transition bad face faceI="
+                             << faceI
+                             << " owner=" << ownCell
+                             << " neighbour=" << neiCell
+                             << " nPts=" << faces[faceI].size()
+                             << " — skipping flip" << endl;
+                    }
+
+                    continue;
+                }
 
                 faces[faceI] = faces[faceI].reverseFace();
                 mesh_.clearAddressingData();
@@ -881,6 +1288,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             Info << "Post-BL audit: fixed=" << nFixed
                  << " rejected=" << nRejected
                  << " invalid=" << nInvalid
+                 << " periodicTransitionSkipped=" << nPeriodicTransitionSkipped
                  << " remainingBad=" << currentBad
                  << " negVol=" << currentNeg
                  << " openCells=" << currentOpen << endl;

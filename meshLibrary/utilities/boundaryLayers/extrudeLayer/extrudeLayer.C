@@ -1238,8 +1238,11 @@ void extrudeLayer::createLayerCells()
                         }
                     }
                     const scalar areaMag = mag(baseArea);
+                    const bool validApex =
+                        pointI >= 0 && pointI < label(pts.size());
+
                     const scalar apexHeight =
-                        validRing && areaMag > VSMALL
+                        validRing && validApex && areaMag > VSMALL
                       ? mag(((pts[pointI] - baseCtr) & (baseArea / areaMag)))
                       : scalar(0.0);
                     Info << "CAP_CANDIDATE pointI=" << pointI
@@ -1268,87 +1271,7 @@ void extrudeLayer::createLayerCells()
         }
 
         if( !createCell )
-        {
-            // Pyramid cap at tri-patch BL singularity with geometric validation.
-            bool validRing = (origFacePoints.size() >= 3);
-            for(label i=0; i<origFacePoints.size() && validRing; ++i)
-            {
-                if( origFacePoints[i] < 0 ) { validRing = false; break; }
-                for(label j=i+1; j<origFacePoints.size(); ++j)
-                    if( origFacePoints[i] == origFacePoints[j] )
-                    { validRing = false; break; }
-            }
-
-            if( validRing )
-            {
-                const label N = origFacePoints.size();
-                const pointFieldPMG& pts = mesh_.points();
-
-                // Compute base centroid and area vector
-                point baseCtr(point::zero);
-                forAll(origFacePoints, opI)
-                    baseCtr += pts[origFacePoints[opI]];
-                baseCtr /= scalar(N);
-
-                vector baseArea(vector::zero);
-                for(label i=0; i<N; ++i)
-                {
-                    const point& a = pts[origFacePoints[i]];
-                    const point& b = pts[origFacePoints[(i+1)%N]];
-                    baseArea += (a - baseCtr) ^ (b - baseCtr);
-                }
-
-                const scalar areaMag = mag(baseArea);
-                if( areaMag < VSMALL )
-                {
-                    continue;
-                }
-
-                const vector n = baseArea / areaMag;
-                const scalar signedHeight = (pts[pointI] - baseCtr) & n;
-
-                if( mag(signedHeight) < SMALL )
-                {
-                    continue;
-                }
-
-                // Base normal must point away from apex (into cell interior).
-                // If it points toward apex, reverse base ring orientation.
-                const bool reverseBase = (signedHeight > 0);
-
-                DynList<DynList<label> > capCell;
-
-                // Base face
-                DynList<label> baseFace;
-                baseFace.setSize(N);
-                for(label i=0; i<N; ++i)
-                    baseFace[i] = reverseBase
-                        ? origFacePoints[N-1-i]
-                        : origFacePoints[i];
-                capCell.append(baseFace);
-
-                // N triangular side faces
-                for(label i=0; i<N; ++i)
-                {
-                    const label a = reverseBase
-                        ? origFacePoints[N-1-i]
-                        : origFacePoints[i];
-                    const label b = reverseBase
-                        ? origFacePoints[(N-i-2+N)%N]
-                        : origFacePoints[(i+1)%N];
-
-                    DynList<label> tri;
-                    tri.setSize(3);
-                    tri[0] = pointI;
-                    tri[1] = a;
-                    tri[2] = b;
-                    capCell.append(tri);
-                }
-
-                newCells.appendGraph(capCell);
-            }
             continue;
-        }
 
         //- close the cell by creating new faces from the existing
         //- faces which obey pre-determined order. If a face contains

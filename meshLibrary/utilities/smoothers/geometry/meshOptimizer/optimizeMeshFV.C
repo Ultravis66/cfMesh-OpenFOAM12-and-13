@@ -321,6 +321,7 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
             mesh_.returnTime().lookupObject<IOdictionary>("meshDict");
 
         bool smoothLayer(false);
+        bool addOptimisationBufferLayer(false);
 
         if( meshDict.found("boundaryLayers") )
         {
@@ -328,12 +329,19 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
 
             if( layersDict.found("optimiseLayer") )
                 smoothLayer = readBool(layersDict.lookup("optimiseLayer"));
+
+            // Keep BL smoothing separate from the optional buffer-refinement
+            // pre-pass. The buffer path uses refineBoundaryLayers special mode
+            // and is more fragile near BL/BL/neutral transition junctions.
+            if( layersDict.found("optimiseLayerBuffer") )
+                addOptimisationBufferLayer =
+                    readBool(layersDict.lookup("optimiseLayerBuffer"));
         }
 
         if( !smoothLayer )
             return;
 
-        if( addBufferLayer )
+        if( addBufferLayer && addOptimisationBufferLayer )
         {
             //- create a buffer layer which will not be modified by the smoother
             refineBoundaryLayers refLayers(mesh_);
@@ -356,6 +364,26 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
         boundaryLayerOptimisation optimiser(mesh_, mse);
 
         boundaryLayerOptimisation::readSettings(meshDict, optimiser);
+
+        // Transactional BL optimisation: this pass can improve BL smoothness,
+        // but on acute BL/periodic transition zones it can also create
+        // negative-volume or highly skewed cells. Snapshot before the pass
+        // so it can be rejected if quality worsens.
+        labelHashSet blOptBadBefore;
+        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &blOptBadBefore);
+
+        labelHashSet blOptNegBefore;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &blOptNegBefore);
+
+        labelHashSet blOptOpenBefore;
+        polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &blOptOpenBefore);
+
+        scalarField blOptSkewBefore;
+        polyMeshGenChecks::checkFaceSkewness(mesh_, blOptSkewBefore);
+        const scalar blOptMaxSkewBefore =
+            blOptSkewBefore.size() > 0 ? max(blOptSkewBefore) : scalar(0.0);
+
+        const pointField blOptPointsBefore(mesh_.points());
 
         optimiser.optimiseLayer();
 
@@ -396,6 +424,50 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
 
         //- untangle remaining faces and lock the boundary layer cells
         untangleMeshFV(2, 50, 0);
+
+        labelHashSet blOptBadAfter;
+        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &blOptBadAfter);
+
+        labelHashSet blOptNegAfter;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &blOptNegAfter);
+
+        labelHashSet blOptOpenAfter;
+        polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &blOptOpenAfter);
+
+        scalarField blOptSkewAfter;
+        polyMeshGenChecks::checkFaceSkewness(mesh_, blOptSkewAfter);
+        const scalar blOptMaxSkewAfter =
+            blOptSkewAfter.size() > 0 ? max(blOptSkewAfter) : scalar(0.0);
+
+        const bool blOptOK =
+            blOptBadAfter.size() <= blOptBadBefore.size()
+         && blOptNegAfter.size() <= blOptNegBefore.size()
+         && blOptOpenAfter.size() <= blOptOpenBefore.size()
+         && blOptMaxSkewAfter <= scalar(20.0);
+
+        if( !blOptOK )
+        {
+            Info << "Boundary layer optimisation rejected: badFaces "
+                 << blOptBadBefore.size() << "->" << blOptBadAfter.size()
+                 << ", negVol " << blOptNegBefore.size() << "->" << blOptNegAfter.size()
+                 << ", openCells " << blOptOpenBefore.size() << "->" << blOptOpenAfter.size()
+                 << ", skew " << blOptMaxSkewBefore << "->" << blOptMaxSkewAfter
+                 << " — rolling back" << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = blOptPointsBefore;
+            mesh_.clearAddressingData();
+        }
+        else
+        {
+            Info << "Boundary layer optimisation accepted: badFaces "
+                 << blOptBadBefore.size() << "->" << blOptBadAfter.size()
+                 << ", negVol " << blOptNegBefore.size() << "->" << blOptNegAfter.size()
+                 << ", openCells " << blOptOpenBefore.size() << "->" << blOptOpenAfter.size()
+                 << ", skew " << blOptMaxSkewBefore << "->" << blOptMaxSkewAfter
+                 << endl;
+        }
 
         # ifdef DEBUGSmooth
         forAll(vertexLocation_, pI)
