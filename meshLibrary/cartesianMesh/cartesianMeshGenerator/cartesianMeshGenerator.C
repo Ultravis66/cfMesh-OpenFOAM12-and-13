@@ -750,7 +750,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
 
             labelHashSet openBefore;
-            polyMeshGenChecks::checkClosedCells(mesh_, false, 1000.0, &openBefore);
+            polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openBefore);
 
             polyMeshGenModifier meshMod(mesh_);
             faceListPMG& faces = meshMod.facesAccess();
@@ -780,7 +780,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
 
                 labelHashSet openAfter;
-                polyMeshGenChecks::checkClosedCells(mesh_, false, 1000.0, &openAfter);
+                polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openAfter);
 
                 const bool acceptFlip =
                     badAfter.size() < currentBad
@@ -824,7 +824,76 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     // locks are useful during broad optimization phases but hard-locking
     // them during final untangle prevents closure of cells adjacent to
     // junctions. The natural constraint reset is the correct policy here.
-    optimizer.untangleMeshFV();
+    //
+    // Protect with accept/reject rollback — untangle can occasionally
+    // make junction cells worse (skew 233, neg vol) on bad OMP paths.
+    {
+        labelHashSet badBefore;
+        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badBefore);
+
+        labelHashSet negBefore;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+
+        labelHashSet openBefore;
+        polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openBefore);
+
+        scalarField skewBefore;
+        polyMeshGenChecks::checkFaceSkewness(mesh_, skewBefore);
+        const scalar maxSkewBefore =
+            skewBefore.size() > 0 ? max(skewBefore) : scalar(0.0);
+
+        const pointField pointsBefore(mesh_.points());
+
+        optimizer.untangleMeshFV();
+
+        labelHashSet badAfter;
+        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badAfter);
+
+        labelHashSet negAfter;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+
+        labelHashSet openAfter;
+        polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openAfter);
+
+        scalarField skewAfter;
+        polyMeshGenChecks::checkFaceSkewness(mesh_, skewAfter);
+        const scalar maxSkewAfter =
+            skewAfter.size() > 0 ? max(skewAfter) : scalar(0.0);
+
+        const bool skewOK =
+            maxSkewAfter <= Foam::max
+            (
+                scalar(20.0),
+                scalar(2.0) * Foam::max(maxSkewBefore, scalar(1.0))
+            );
+
+        const bool untangleOK =
+            badAfter.size() <= badBefore.size()
+         && negAfter.size() <= negBefore.size()
+         && openAfter.size() <= openBefore.size()
+         && skewOK;
+
+        if( !untangleOK )
+        {
+            Info << "Final untangle rejected: badFaces "
+                 << badBefore.size() << "->" << badAfter.size()
+                 << " negVol " << negBefore.size() << "->" << negAfter.size()
+                 << " openCells " << openBefore.size() << "->" << openAfter.size()
+                 << " — rolling back" << endl;
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = pointsBefore;
+            mesh_.clearAddressingData();
+        }
+        else
+        {
+            Info << "Final untangle accepted: badFaces "
+                 << badBefore.size() << "->" << badAfter.size()
+                 << " negVol " << negBefore.size() << "->" << negAfter.size()
+                 << " openCells " << openBefore.size() << "->" << openAfter.size()
+                 << endl;
+        }
+    }
 
     mesh_.clearAddressingData();
 
@@ -1107,6 +1176,10 @@ void cartesianMeshGenerator::generateMesh()
         replaceBoundaries();
 
         // BL effective coverage report
+        Info << "BL coverage report: blLayerScale_.size()="
+             << blLayerScale_.size()
+             << " boundaries.size()=" << mesh_.boundaries().size()
+             << endl;
         if( blLayerScale_.size() > 0 )
         {
             const meshSurfaceEngine mse(mesh_);
