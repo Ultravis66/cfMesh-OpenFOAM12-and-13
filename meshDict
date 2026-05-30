@@ -53,18 +53,11 @@ boundaryLayers
     terminationPatches (inlet outlet);
 
     // ── BL/BL junction detection ─────────────────────────────────────────
-    // Detects sharp junctions between two BL patches (blade+hub, blade+shroud)
-    // blblFeatureAngleDeg: junction angle threshold in degrees (default 40)
-    // blblCornerAcuteThreshold: dot product for acute corner classification
-    //   0.5 = 60deg, 0.3 = 73deg, 0.0 = 90deg, -0.3 = 107deg
     blblFeatureAngleDeg      35.0;
     blblCornerAcuteThreshold 0.5;
-    lockAcuteCornerPoints    true;  // lock acute corners in final optimizer
+    lockAcuteCornerPoints    true;
 
     // ── Acute corner local taper ──────────────────────────────────────────
-    // Seeded from blblAcuteCornerPoints_ (acute BL+BL+neutral triple junctions)
-    // ring0 = at the corner point, ring6 = 6 hops away
-    // Values are layerScale multipliers (0.0 = no BL, 1.0 = full BL)
     acuteCornerRing0        0.0;
     acuteCornerRing1        0.0;
     acuteCornerRing2        0.0;
@@ -75,24 +68,14 @@ boundaryLayers
     acuteCornerCapLayers    false;
 
     // ── Virtual topology exclusion ────────────────────────────────────────
-    // Commercial-style BL exclusion zones at acute triple junctions.
-    // Face-ring BFS from blblAcuteCornerPoints_ — no STL modification needed.
-    // ring0 = seed faces touching junction points (full suppression)
-    // ring1 = first neighbor ring (strong taper)
-    // ring2 = second neighbor ring (gentle restart)
     virtualTopologyExclusion  true;
     virtualTopoRing0          0.05;
     virtualTopoRing1          0.15;
     virtualTopoRing2          0.40;
 
     // ── Gap / contact detection ───────────────────────────────────────────
-    // Detects proximity between BL patches and suppresses BL on the
-    // designated side. Fixes protrusions at blade/shroud contact lines.
-    // gapPatchPairs: pairs to check (patchA patchB)
-    // gapSuppressPatches: which side gets BL suppressed (protect the other)
-    // gapThreshold: proximity distance in metres
     detectGaps            true;
-    gapThreshold          1e-5;   // tight — catches only near-contact points
+    gapThreshold          1e-5;
     gapPatchPairs
     (
         (blade_1 shroud)
@@ -103,9 +86,6 @@ boundaryLayers
     gapSuppressPatches (shroud hub);  // suppress shroud+hub BL, protect blade
 
     // ── Gap face-ring exclusion ───────────────────────────────────────────
-    // Face-ring BFS around gap points — suppresses prism topology entirely
-    // on ring0 faces (no degenerate zero-height prisms)
-    // ring scales: 0.0 = no BL, 1.0 = full BL
     gapFaceRingExclusion  true;
     gapFaceRing0Scale     0.02;
     gapFaceRing1Scale     0.05;
@@ -115,8 +95,13 @@ boundaryLayers
     postBLSnap               false;
     postRefineBLOptimisation true;
 
+    // IMPORTANT:
+    // Keep disabled unless testing refineBoundaryLayers buffer path.
+    // optimiseLayer true currently exercises the fragile buffer-refinement path.
+    optimiseLayer           false;
+    optimiseLayerBuffer     false;
+
     // ── BL transition ramp ────────────────────────────────────────────────
-    // Smooth 6-ring layerScale taper at BL/no-BL transition edges
     layerScaleRing1 0.10;
     layerScaleRing2 0.25;
     layerScaleRing3 0.45;
@@ -128,15 +113,6 @@ boundaryLayers
     maxFirstLayerThickness 1e-4;
 
     // ── Per-patch BL settings ─────────────────────────────────────────────
-    // nLayers: number of prism layers
-    // thicknessRatio: growth ratio between layers
-    // maxFirstLayerThickness: first cell height cap in metres
-    //
-    // For y+=1 (K-omega SST fully resolved) at Re~800k:
-    //   first cell height = 1.75e-6 m, nLayers = 14, ratio = 1.3
-    //   total BL thickness = 0.223 mm
-    // For y+=30 (wall functions):
-    //   first cell height = 5e-5 m, nLayers = 8, ratio = 1.2
     patchBoundaryLayers
     {
         blade_1 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
