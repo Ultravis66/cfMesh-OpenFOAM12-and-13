@@ -1123,10 +1123,8 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
     }
 
     //- swap coordinates of new and old points
-    # ifdef USE_OMP
-    # pragma omp parallel for if( bPoints.size() > 1000 ) \
-    schedule(dynamic, 100)
-    # endif
+    // Serial: OMP parallelism here causes coordinate corruption at BL/BL
+    // junctions — primary source of 67-114 bad pyramid faces per run.
     forAll(bPoints, bpI)
     {
         const label pLabel = newLabelForVertex_[bPoints[bpI]];
