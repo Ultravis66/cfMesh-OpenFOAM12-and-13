@@ -1203,7 +1203,15 @@ void extrudeLayer::createLayerCells()
             //- origFacePointI and origFaceNextI
             DynList<label> fe;
             adc.facesSharingEdge(origFacePointI, origFaceNextI, fe);
-            if( fe.size() == 0 ) continue;  // guard: no shared face found
+
+            if( fe.size() == 0 || pos < 0 )
+            {
+                // Cannot construct valid corner-cell side face at
+                // multi-patch singularity. Reject this corner cell cleanly.
+                createCell = false;
+                break;
+            }
+
             const label origPointI = adc.origPoint(fe[0], origFacePointI);
 
             //- create a face attached to pointI
@@ -1213,6 +1221,9 @@ void extrudeLayer::createLayerCells()
             cf[2] = origPointI;
             cf[3] = origFacePoints[pos];
         }
+
+        if( !createCell )
+            continue;
 
         //- close the cell by creating new faces from the existing
         //- faces which obey pre-determined order. If a face contains

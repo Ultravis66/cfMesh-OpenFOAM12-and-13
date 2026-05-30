@@ -730,6 +730,10 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     optimizer.optimizeLowQualityFaces();
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
 
+    // Second low-quality face pass after BL refinement — targets skew
+    // introduced by boundary layer cells that weren't present pre-BL.
+    optimizer.optimizeLowQualityFaces();
+
     // Post-BL validity audit: find incorrectly oriented faces and attempt
     // conservative face-flip repair with full accept/reject validation.
     {
