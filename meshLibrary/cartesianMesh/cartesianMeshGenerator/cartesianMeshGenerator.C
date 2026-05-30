@@ -763,12 +763,20 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             label currentNeg  = negBefore.size();
             label currentOpen = openBefore.size();
 
+            const labelList& neighbour = mesh_.neighbour();
+
             forAllConstIter(labelHashSet, badFaces, it)
             {
                 const label faceI = it.key();
 
                 if( faceI < 0 || faceI >= label(faces.size()) )
                 { ++nInvalid; continue; }
+
+                // Only attempt flips on internal faces. Boundary faces have
+                // only an owner-side pyramid; reversing them usually makes
+                // patch orientation worse instead of repairing a cell.
+                if( faceI >= label(neighbour.size()) || neighbour[faceI] < 0 )
+                { ++nRejected; continue; }
 
                 faces[faceI] = faces[faceI].reverseFace();
                 mesh_.clearAddressingData();
@@ -800,6 +808,19 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 }
                 else
                 {
+                    if( nRejected < 5 )
+                    {
+                        const labelList& own = mesh_.owner();
+                        const labelList& nei = mesh_.neighbour();
+                        Info << "Post-BL audit: rejected flip faceI=" << faceI
+                             << " bad " << currentBad << "->" << badAfter.size()
+                             << " neg " << currentNeg << "->" << negAfter.size()
+                             << " open " << currentOpen << "->" << openAfter.size()
+                             << " owner=" << own[faceI]
+                             << " neighbour="
+                             << (faceI < label(nei.size()) ? nei[faceI] : -1)
+                             << endl;
+                    }
                     faces[faceI] = faces[faceI].reverseFace();
                     mesh_.clearAddressingData();
                     ++nRejected;
@@ -1175,10 +1196,6 @@ void cartesianMeshGenerator::generateMesh()
         replaceBoundaries();
 
         // BL effective coverage report
-        Info << "BL coverage report: blLayerScale_.size()="
-             << blLayerScale_.size()
-             << " boundaries.size()=" << mesh_.boundaries().size()
-             << endl;
         if( blLayerScale_.size() > 0 )
         {
             const meshSurfaceEngine mse(mesh_);
