@@ -51,6 +51,43 @@ Description
 
 namespace Foam
 {
+namespace
+{
+    inline bool boundaryPointsCanShareBLRamp
+    (
+        const VRWGraph& pPatches,
+        const boolList& isBLPatch,
+        const label bpI,
+        const label nbpI
+    )
+    {
+        // Same patch — always safe
+        forAllRow(pPatches, bpI, pi)
+        {
+            const label patchI = pPatches(bpI, pi);
+            forAllRow(pPatches, nbpI, qi)
+                if( patchI == pPatches(nbpI, qi) )
+                    return true;
+        }
+
+        // Different patches: allow only if both touch BL wall patches
+        bool bpHasBL(false), nbpHasBL(false);
+        forAllRow(pPatches, bpI, pi)
+        {
+            const label pI = pPatches(bpI, pi);
+            if( pI >= 0 && pI < label(isBLPatch.size()) && isBLPatch[pI] )
+            { bpHasBL = true; break; }
+        }
+        forAllRow(pPatches, nbpI, qi)
+        {
+            const label pI = pPatches(nbpI, qi);
+            if( pI >= 0 && pI < label(isBLPatch.size()) && isBLPatch[pI] )
+            { nbpHasBL = true; break; }
+        }
+        return bpHasBL && nbpHasBL;
+    }
+}
+
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -1496,6 +1533,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring1[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing1_);
         }
@@ -1512,6 +1552,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] || ring1[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring2[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing2_);
         }
@@ -1528,6 +1571,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring3[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing3_);
         }
@@ -1544,6 +1590,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring4[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing4_);
         }
@@ -1559,6 +1608,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] || ring4[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring5[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing5_);
         }
@@ -1573,6 +1625,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
             if( zeroPts[nbpI] || ring1[nbpI] || ring2[nbpI] || ring3[nbpI] || ring4[nbpI] || ring5[nbpI] ) continue;
             if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring6[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing6_);
         }
@@ -1629,6 +1684,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing1[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing1_);
             }
@@ -1645,6 +1705,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] || acuteRing1[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing2[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing2_);
             }
@@ -1661,6 +1726,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing3[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing3_);
             }
@@ -1677,6 +1747,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing4[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing4_);
             }
@@ -1693,6 +1768,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] || acuteRing4[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing5[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing5_);
             }
@@ -1709,6 +1789,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( nbpI < 0 || nbpI >= label(bPoints.size()) ) continue;
                 if( acuteZero[nbpI] || acuteRing1[nbpI] || acuteRing2[nbpI] || acuteRing3[nbpI] || acuteRing4[nbpI] || acuteRing5[nbpI] ) continue;
                 if( !boundaryPointIsBL[nbpI] ) continue;
+            // Cross-patch: allow propagation but cap scale at 5% to prevent
+            // bleed while avoiding abrupt BL termination / high skew.
+            const bool crossPatch =
+                !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI);
+                if( crossPatch ) continue;
                 acuteRing6[nbpI] = true;
                 layerScale_[nbpI] = Foam::min(layerScale_[nbpI], acuteCornerRing6_);
             }

@@ -338,22 +338,71 @@ point boundaryLayers::createNewVertex
             // while keeping the extrusion within the local cell geometry.
             normal = pNormals[bpI];
 
-            // Find minimum neighbour edge length as safe distance reference
+            // Adaptive safe extrusion at multi-patch singularity.
             scalar minEdge(GREAT);
             forAllRow(pointPoints, bpI, ppI)
             {
-                const scalar d = mag
-                (
-                    points[bPoints[pointPoints(bpI, ppI)]] - p
-                );
+                const label bpJ = pointPoints(bpI, ppI);
+                const scalar d = mag(points[bPoints[bpJ]] - p);
                 if( d > VSMALL && d < minEdge )
                     minEdge = d;
             }
-            // Use 2% of minimum edge with absolute floor — small enough
-            // to avoid topology conflicts, nonzero to prevent volume collapse.
-            dist = (minEdge < GREAT)
-                 ? Foam::max(scalar(0.02) * minEdge, scalar(100) * VSMALL)
-                 : 0.0;
+
+            scalar candidateDist =
+                (minEdge < GREAT)
+              ? Foam::max(scalar(0.02) * minEdge, scalar(100) * VSMALL)
+              : scalar(0.0);
+
+            bool accepted(false);
+
+            for(label attempt=0; attempt<8 && candidateDist > VSMALL; ++attempt)
+            {
+                const point candidate = p - candidateDist * normal;
+                bool crossesGuardPlane(false);
+
+                forAllRow(pFaces, bpI, pfI)
+                {
+                    const label faceI = pFaces(bpI, pfI);
+                    const label patchI = boundaryFacePatches[faceI];
+                    if( patchI < 0 || patchI >= label(treatPatches.size()) )
+                        continue;
+                    if( treatPatches[patchI] )
+                        continue;
+                    const face& f = bFaces[faceI];
+                    if( f.size() < 3 )
+                        continue;
+                    vector fn(vector::zero);
+                    const point& fp0 = points[f[0]];
+                    for(label pi=1; pi<f.size()-1; ++pi)
+                        fn += (points[f[pi]] - fp0) ^ (points[f[pi+1]] - fp0);
+                    if( mag(fn) < VSMALL )
+                        continue;
+                    fn /= mag(fn);
+                    point fc(point::zero);
+                    forAll(f, fi)
+                        fc += points[f[fi]];
+                    fc /= scalar(f.size());
+                    const scalar s0 = (p - fc) & fn;
+                    const scalar s1 = (candidate - fc) & fn;
+                    if( mag(s0) > SMALL && s0 * s1 < scalar(0) )
+                    {
+                        crossesGuardPlane = true;
+                        break;
+                    }
+                }
+
+                if( !crossesGuardPlane )
+                {
+                    dist = candidateDist;
+                    accepted = true;
+                    break;
+                }
+
+                candidateDist *= scalar(0.5);
+            }
+
+            if( !accepted )
+                dist = 0.0;
         }
 
         //- limit distances
