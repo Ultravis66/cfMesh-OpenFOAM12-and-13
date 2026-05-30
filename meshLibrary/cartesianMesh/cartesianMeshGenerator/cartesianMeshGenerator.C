@@ -752,6 +752,57 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             labelHashSet openBefore;
             polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openBefore);
 
+            // Stage 1: targeted Laplacian smoothing on bad face neighbourhood
+            {
+                scalarField skewS1Before;
+                polyMeshGenChecks::checkFaceSkewness(mesh_, skewS1Before);
+                const scalar maxSkewS1Before =
+                    skewS1Before.size() > 0 ? max(skewS1Before) : scalar(0.0);
+
+                const pointField pointsBefore(mesh_.points());
+                optimizer.optimizeLowQualityFaces(3);
+
+                labelHashSet badStage1;
+                polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badStage1);
+                labelHashSet negStage1;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &negStage1);
+                labelHashSet openStage1;
+                polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openStage1);
+                scalarField skewS1After;
+                polyMeshGenChecks::checkFaceSkewness(mesh_, skewS1After);
+                const scalar maxSkewS1After =
+                    skewS1After.size() > 0 ? max(skewS1After) : scalar(0.0);
+
+                const bool stage1OK =
+                    badStage1.size() <= badFaces.size()
+                 && negStage1.size() <= negBefore.size()
+                 && openStage1.size() <= openBefore.size()
+                 && maxSkewS1After <= scalar(20.0);
+
+                if( stage1OK )
+                {
+                    Info << "Post-BL stage1 Laplacian accepted: bad "
+                         << badFaces.size() << "->" << badStage1.size()
+                         << " skew " << maxSkewS1Before << "->" << maxSkewS1After
+                         << endl;
+                    badFaces   = badStage1;
+                    negBefore  = negStage1;
+                    openBefore = openStage1;
+                }
+                else
+                {
+                    Info << "Post-BL stage1 rejected: bad "
+                         << badFaces.size() << "->" << badStage1.size()
+                         << " skew " << maxSkewS1Before << "->" << maxSkewS1After
+                         << " — rolling back" << endl;
+                    polyMeshGenModifier meshModifier2(mesh_);
+                    pointFieldPMG& pts = meshModifier2.pointsAccess();
+                    pts = pointsBefore;
+                    mesh_.clearAddressingData();
+                }
+            }
+
+            // Stage 2: face flip on remaining bad internal faces
             polyMeshGenModifier meshMod(mesh_);
             faceListPMG& faces = meshMod.facesAccess();
 
