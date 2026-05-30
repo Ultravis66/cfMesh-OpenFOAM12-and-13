@@ -513,6 +513,9 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     detectGapPoints(bl);
 
     bl.addLayerForAllPatches();
+    // Capture layerScale for post-replaceBoundaries coverage report
+    blLayerScale_ = bl.layerScale();
+
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
     blblAcuteCornerPoints_ = bl.blblAcuteCornerPoints();
@@ -726,6 +729,91 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     optimizer.optimizeMeshFV();
     optimizer.optimizeLowQualityFaces();
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
+
+    // Post-BL validity audit: find incorrectly oriented faces and attempt
+    // conservative face-flip repair with full accept/reject validation.
+    {
+        labelHashSet badFaces;
+        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badFaces);
+
+        if( badFaces.size() > 0 )
+        {
+            Info << "Post-BL audit: " << badFaces.size()
+                 << " incorrectly oriented faces — attempting validated face-flip repair"
+                 << endl;
+
+            labelHashSet negBefore;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+
+            labelHashSet openBefore;
+            polyMeshGenChecks::checkClosedCells(mesh_, false, 1000.0, &openBefore);
+
+            polyMeshGenModifier meshMod(mesh_);
+            faceListPMG& faces = meshMod.facesAccess();
+
+            label nFixed(0);
+            label nRejected(0);
+            label nInvalid(0);
+
+            label currentBad  = badFaces.size();
+            label currentNeg  = negBefore.size();
+            label currentOpen = openBefore.size();
+
+            forAllConstIter(labelHashSet, badFaces, it)
+            {
+                const label faceI = it.key();
+
+                if( faceI < 0 || faceI >= label(faces.size()) )
+                { ++nInvalid; continue; }
+
+                faces[faceI] = faces[faceI].reverseFace();
+                mesh_.clearAddressingData();
+
+                labelHashSet badAfter;
+                polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badAfter);
+
+                labelHashSet negAfter;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+
+                labelHashSet openAfter;
+                polyMeshGenChecks::checkClosedCells(mesh_, false, 1000.0, &openAfter);
+
+                const bool acceptFlip =
+                    badAfter.size() < currentBad
+                 && negAfter.size() <= currentNeg
+                 && openAfter.size() <= currentOpen;
+
+                if( acceptFlip )
+                {
+                    ++nFixed;
+                    currentBad  = badAfter.size();
+                    currentNeg  = negAfter.size();
+                    currentOpen = openAfter.size();
+                    Info << "Post-BL audit: accepted flip faceI=" << faceI
+                         << " bad=" << currentBad
+                         << " neg=" << currentNeg
+                         << " open=" << currentOpen << endl;
+                }
+                else
+                {
+                    faces[faceI] = faces[faceI].reverseFace();
+                    mesh_.clearAddressingData();
+                    ++nRejected;
+                }
+            }
+
+            Info << "Post-BL audit: fixed=" << nFixed
+                 << " rejected=" << nRejected
+                 << " invalid=" << nInvalid
+                 << " remainingBad=" << currentBad
+                 << " negVol=" << currentNeg
+                 << " openCells=" << currentOpen << endl;
+        }
+        else
+        {
+            Info << "Post-BL audit: all face pyramids OK" << endl;
+        }
+    }
 
     // Final untangle intentionally runs after optimizeBoundaryLayer has
     // cleared user constraints via removeUserConstraints(). Acute corner
@@ -1013,6 +1101,49 @@ void cartesianMeshGenerator::generateMesh()
         renumberMesh();
 
         replaceBoundaries();
+
+        // BL effective coverage report
+        if( blLayerScale_.size() > 0 )
+        {
+            const meshSurfaceEngine mse(mesh_);
+            const labelList& bPoints = mse.boundaryPoints();
+            const VRWGraph& pointFaces = mse.pointFaces();
+            const labelList& facePatch = mse.boundaryFacePatches();
+            const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+
+            labelList patchTotal(boundaries.size(), 0);
+            labelList patchBL(boundaries.size(), 0);
+
+            forAll(bPoints, bpI)
+            {
+                const bool hasBL =
+                    bpI < label(blLayerScale_.size())
+                 && blLayerScale_[bpI] >= 0.01;
+
+                labelHashSet countedPatches;
+                forAllRow(pointFaces, bpI, pfI)
+                {
+                    const label pI = facePatch[pointFaces(bpI, pfI)];
+                    if( pI < 0 || pI >= label(boundaries.size()) ) continue;
+                    if( countedPatches.found(pI) ) continue;
+                    countedPatches.insert(pI);
+                    ++patchTotal[pI];
+                    if( hasBL ) ++patchBL[pI];
+                }
+            }
+
+            Info << "BL effective coverage per patch:" << endl;
+            forAll(boundaries, patchI)
+            {
+                const scalar pct =
+                    patchTotal[patchI] > 0
+                  ? 100.0 * patchBL[patchI] / patchTotal[patchI]
+                  : 0.0;
+                Info << "  " << boundaries[patchI].patchName()
+                     << ": " << patchBL[patchI] << "/" << patchTotal[patchI]
+                     << " (" << pct << "%)" << endl;
+            }
+        }
 
         controller_.workflowCompleted();
     }

@@ -401,6 +401,22 @@ point boundaryLayers::createNewVertex
                 candidateDist *= scalar(0.5);
             }
 
+            # ifdef DEBUGLayer
+            if( accepted )
+            {
+                Info << "Multi-patch singularity at bpI=" << bpI
+                     << " p=" << p
+                     << ": accepted dist=" << dist
+                     << " (attempt " << attempt << ")" << endl;
+            }
+            else
+            {
+                Info << "Multi-patch singularity at bpI=" << bpI
+                     << " p=" << p
+                     << ": adaptive bisection failed, dist=0" << endl;
+            }
+            # endif
+
             if( !accepted )
                 dist = 0.0;
         }

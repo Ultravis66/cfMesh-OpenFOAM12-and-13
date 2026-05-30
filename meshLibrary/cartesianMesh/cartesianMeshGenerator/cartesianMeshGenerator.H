@@ -104,6 +104,7 @@ class cartesianMeshGenerator
 
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
         labelLongList blPoints_;
+        scalarField blLayerScale_;
 
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
     // Private member functions

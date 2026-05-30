@@ -356,6 +356,14 @@ public:
             return blblAcuteCornerPoints_;
         }
 
+        //- Return per-boundary-point intended layer scale
+        //- (0=suppressed, 1=full BL). Use layerScale < 0.01 as suppressed
+        //- threshold. Reports effective BL coverage, not vertex existence.
+        const scalarField& layerScale() const
+        {
+            return layerScale_;
+        }
+
         //- Return virtual topology face ring assignments
         const labelList& vtFaceRing() const
         {
