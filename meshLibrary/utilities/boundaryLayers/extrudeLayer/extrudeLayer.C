@@ -36,6 +36,8 @@ Description
 #include <omp.h>
 # endif
 
+#define DEBUGLayer
+
 #ifdef DEBUGExtrudeLayer
 #include "polyMeshGenChecks.H"
 #endif
@@ -1207,7 +1209,51 @@ void extrudeLayer::createLayerCells()
             if( fe.size() == 0 || pos < 0 )
             {
                 // Cannot construct valid corner-cell side face at
-                // multi-patch singularity. Reject this corner cell cleanly.
+                // multi-patch singularity. This is a candidate location for
+                // a future pyramid/polyhedral cap transition cell.
+                # ifdef DEBUGLayer
+                {
+                    const pointFieldPMG& pts = mesh_.points();
+                    bool validRing = origFacePoints.size() >= 3;
+                    for(label i=0; i<origFacePoints.size() && validRing; ++i)
+                    {
+                        if( origFacePoints[i] < 0 || origFacePoints[i] >= label(pts.size()) )
+                            validRing = false;
+                        for(label j=i+1; j<origFacePoints.size(); ++j)
+                            if( origFacePoints[i] == origFacePoints[j] )
+                                validRing = false;
+                    }
+                    vector baseArea(vector::zero);
+                    point baseCtr(point::zero);
+                    if( validRing )
+                    {
+                        forAll(origFacePoints, opI)
+                            baseCtr += pts[origFacePoints[opI]];
+                        baseCtr /= scalar(origFacePoints.size());
+                        forAll(origFacePoints, opI)
+                        {
+                            const point& a = pts[origFacePoints[opI]];
+                            const point& b =
+                                pts[origFacePoints[(opI+1)%origFacePoints.size()]];
+                            baseArea += (a - baseCtr) ^ (b - baseCtr);
+                        }
+                    }
+                    const scalar areaMag = mag(baseArea);
+                    const scalar apexHeight =
+                        validRing && areaMag > VSMALL
+                      ? mag(((pts[pointI] - baseCtr) & (baseArea / areaMag)))
+                      : scalar(0.0);
+                    Info << "CAP_CANDIDATE pointI=" << pointI
+                         << " N=" << origFacePoints.size()
+                         << " validRing=" << validRing
+                         << " baseAreaMag=" << areaMag
+                         << " apexHeight=" << apexHeight
+                         << " feSize=" << fe.size()
+                         << " pos=" << pos
+                         << " ring=" << origFacePoints
+                         << endl;
+                }
+                # endif
                 createCell = false;
                 break;
             }
