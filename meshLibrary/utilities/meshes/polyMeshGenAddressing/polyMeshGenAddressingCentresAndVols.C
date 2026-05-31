@@ -104,20 +104,26 @@ void polyMeshGenAddressing::makeCellCentresAndVols
             if( own[c[fI]] != cellI )
                 pyr3Vol *= -1.0;
 
-            pyr3Vol = Foam::max(pyr3Vol, VSMALL);
+            // Raw signed pyr3Vol for honest volume detection.
+            // Clamped value for centre accumulation to keep cEst stable.
+            const scalar pyr3VolClamped = Foam::max(pyr3Vol, VSMALL);
 
             // Calculate face-pyramid centre
             const vector pc = (3.0/4.0)*fCtrs[c[fI]] + (1.0/4.0)*cEst;
 
-            // Accumulate volume-weighted face-pyramid centre
-            cellCentre += pyr3Vol*pc;
+            // Accumulate volume-weighted face-pyramid centre (clamped for stability)
+            cellCentre += pyr3VolClamped*pc;
 
             // Accumulate face-pyramid volume
             cellVol += pyr3Vol;
         }
 
-        cellCtrs[cellI] = cellCentre / cellVol;
-        cellVols[cellI] = cellVol / 3.0;
+        // cellVol accumulated with raw signed pyramids for centre stability,
+        // but cache stores clamped value — optimizer consumers must not see negative.
+        // Validation uses a separate direct computation (see checkCellVolumes).
+        const scalar cellVolClamped = Foam::max(cellVol, VSMALL);
+        cellCtrs[cellI] = cellCentre / cellVolClamped;
+        cellVols[cellI] = cellVolClamped / 3.0;
     }
 }
 

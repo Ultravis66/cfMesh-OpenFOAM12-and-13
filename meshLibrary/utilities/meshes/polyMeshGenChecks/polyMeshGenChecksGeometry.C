@@ -317,16 +317,38 @@ bool checkCellVolumes
     labelHashSet* setPtr
 )
 {
-    const scalarField& vols = mesh.addressingData().cellVolumes();
+    // Compute raw signed cell volumes directly — do NOT use addressingData()
+    // cache which stores clamped (always positive) values for optimizer safety.
+    const vectorField& fCtrs = mesh.addressingData().faceCentres();
+    const vectorField& fAreas = mesh.addressingData().faceAreas();
+    const labelList& own = mesh.owner();
+    const cellListPMG& cells = mesh.cells();
 
     scalar minVolume = GREAT;
     scalar maxVolume = -GREAT;
 
     label nNegVolCells = 0;
 
-    forAll(vols, cellI)
+    forAll(cells, cellI)
     {
-        if( vols[cellI] < VSMALL )
+        const cell& c = cells[cellI];
+
+        vector cEst(vector::zero);
+        forAll(c, fI)
+            cEst += fCtrs[c[fI]];
+        cEst /= c.size();
+
+        scalar cellVol(0.0);
+        forAll(c, fI)
+        {
+            scalar pyr3Vol = fAreas[c[fI]] & (fCtrs[c[fI]] - cEst);
+            if( own[c[fI]] != cellI )
+                pyr3Vol *= -1.0;
+            cellVol += pyr3Vol;
+        }
+        cellVol /= 3.0;
+
+        if( cellVol < VSMALL )
         {
             if( report )
                 SeriousErrorIn
@@ -334,7 +356,7 @@ bool checkCellVolumes
                     "bool checkCellVolumes("
                     "const polyMeshGen&, const bool, labelHashSet*)"
                 )   << "Zero or negative cell volume detected for cell "
-                    << cellI << ".  Volume = " << vols[cellI] << endl;
+                    << cellI << ".  Volume = " << cellVol << endl;
 
             if( setPtr )
                 setPtr->insert(cellI);
@@ -342,8 +364,8 @@ bool checkCellVolumes
             ++nNegVolCells;
         }
 
-        minVolume = min(minVolume, vols[cellI]);
-        maxVolume = max(maxVolume, vols[cellI]);
+        minVolume = min(minVolume, cellVol);
+        maxVolume = max(maxVolume, cellVol);
     }
 
     reduce(minVolume, minOp<scalar>());
@@ -370,7 +392,6 @@ bool checkCellVolumes
         {
             Info<< "Min volume = " << minVolume
                 << ". Max volume = " << maxVolume
-                << ".  Total volume = " << sum(vols)
                 << ".  Cell volumes OK.\n" << endl;
         }
 
