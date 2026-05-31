@@ -26,6 +26,7 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "demandDrivenData.H"
+#include "helperFunctions.H"
 #include "meshOptimizer.H"
 #include "polyMeshGenAddressing.H"
 #include "meshSurfaceEngine.H"
@@ -81,7 +82,8 @@ void meshOptimizer::laplaceSmoother::laplacian
                 newP += points[pPoints(pointI, pI)];
 
             newP /= pPoints.sizeOfRow(pointI);
-            points[pointI] = newP;
+            if( !help::isnan(newP) && !help::isinf(newP) )
+                points[pointI] = newP;
         }
 
         laplacianParallel(procPoints, false);
