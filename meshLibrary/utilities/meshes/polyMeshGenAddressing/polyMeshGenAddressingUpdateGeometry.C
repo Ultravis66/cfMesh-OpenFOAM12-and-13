@@ -96,7 +96,12 @@ void polyMeshGenAddressing::updateGeometry
                         sumAc += a*c;
                     }
 
-                    fCtrs[faceI] = (1.0/3.0)*sumAc/(sumA + VSMALL);
+                    // Guard against degenerate faces (zero area) that produce
+                    // inf face centres and trigger OpenFOAM SIGFPE handler.
+                    if( sumA > SMALL )
+                        fCtrs[faceI] = (1.0/3.0)*sumAc/sumA;
+                    else
+                        fCtrs[faceI] = fCentre;
                     fAreas[faceI] = 0.5*sumN;
                 }
             }
@@ -138,6 +143,7 @@ void polyMeshGenAddressing::updateGeometry
                 vector cEst(vector::zero);
                 forAll(c, fI)
                     cEst += fCtrs[c[fI]];
+                if( c.size() == 0 ) continue;
                 cEst /= c.size();
 
                 forAll(c, fI)
@@ -189,8 +195,9 @@ void polyMeshGenAddressing::updateGeometry
                         cellVols[cellI] += pyr3Vol;
                     }
 
-                cellCtrs[cellI] /= cellVols[cellI];
-                cellVols[cellI] /= 3.0;
+                const scalar cellVolGuard = Foam::max(cellVols[cellI], VSMALL);
+                cellCtrs[cellI] /= cellVolGuard;
+                cellVols[cellI] = cellVolGuard / 3.0;
             }
         }
     }
