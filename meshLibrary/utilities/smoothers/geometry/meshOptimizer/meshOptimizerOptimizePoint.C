@@ -135,7 +135,8 @@ void meshOptimizer::laplaceSmoother::laplacianSurface
             if( counter != 0 )
             {
                 newP /= counter;
-                points[pointI] = newP;
+                if( !help::isnan(newP) && !help::isinf(newP) )
+                    points[pointI] = newP;
             }
         }
 
@@ -187,8 +188,8 @@ void meshOptimizer::laplaceSmoother::laplacianPC
                 newP += centres[pointCells(pointI, pcI)];
 
             newP /= pointCells.sizeOfRow(pointI);
-
-            points[pointI] = newP;
+            if( !help::isnan(newP) && !help::isinf(newP) )
+                points[pointI] = newP;
         }
 
         laplacianPCParallel(procPoints);
@@ -247,7 +248,8 @@ void meshOptimizer::laplaceSmoother::laplacianWPC
             }
 
             newP /= sumWeights;
-            points[pointI] = newP;
+            if( !help::isnan(newP) && !help::isinf(newP) )
+                points[pointI] = newP;
         }
 
         laplacianWPCParallel(procPoints);

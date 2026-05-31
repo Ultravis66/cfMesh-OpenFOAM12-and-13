@@ -697,8 +697,18 @@ void checkFaceDotProduct
             if( changedFacePtr && !(*changedFacePtr)[faceI] )
                 continue;
 
-            const vector d = centres[nei[faceI]] - centres[own[faceI]];
+            const vector& cn = centres[nei[faceI]];
+            const vector& co = centres[own[faceI]];
             const vector& s = areas[faceI];
+            // Guard against inf/nan cell centres
+            const scalar magCn = Foam::mag(cn), magCo = Foam::mag(co);
+            if( cn.x() != cn.x() || co.x() != co.x() ||
+                magCn > GREAT || magCo > GREAT )
+            {
+                faceDotProduct[faceI] = 1.0;
+                continue;
+            }
+            const vector d = cn - co;
 
             faceDotProduct[faceI] = (d & s)/(mag(d)*mag(s) + VSMALL);
         }

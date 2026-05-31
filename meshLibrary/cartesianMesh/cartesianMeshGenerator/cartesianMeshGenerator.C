@@ -569,8 +569,13 @@ void cartesianMeshGenerator::refBoundaryLayers()
             {
                 labelHashSet negBefore;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
-                polyMeshGenModifier(mesh_).removeUnusedVertices();
-                mesh_.clearAddressingData();
+                // TEMP DEBUG:
+                // Disabled because removeUnusedVertices() is topology-changing and
+                // appears to create/expose open cells between Final untangle and Gate2.
+                // Do not use point-only rollback around this operation.
+                Info << "Post-BL cleanup: removeUnusedVertices skipped for open-cell diagnostic" << endl;
+                // polyMeshGenModifier(mesh_).removeUnusedVertices();
+                // mesh_.clearAddressingData();
                 labelHashSet negAfter;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
                 const bool hasUnusedAfter =
@@ -818,29 +823,40 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 const pointField gate2PointsBefore(mesh_.points());
 
                 meshOptimizer gate2Optimizer(mesh_);
-
-                // Lock all points NOT adjacent to periodic bad faces.
-                // This constrains the optimizer to only move junction points,
-                // preventing nonOrtho85 from jumping 12->34 globally.
                 if( gate2PeriodicBadFaces.size() > 0 )
                 {
-                    const meshSurfaceEngine mseG2(mesh_);
-                    const labelList& bPoints = mseG2.boundaryPoints();
-
-                    // Collect all faces NOT in gate2PeriodicBadFaces
                     const faceListPMG& allFaces = mesh_.faces();
-                    labelLongList nonPeriodicFaces;
-                    forAll(allFaces, faceI)
-                        if( !gate2PeriodicBadFaces.found(faceI) )
-                            nonPeriodicFaces.append(faceI);
-
-                    gate2Optimizer.lockFaces(nonPeriodicFaces);
-
-                    Info << "Gate2 local repair: locked "
-                         << nonPeriodicFaces.size()
-                         << " non-periodic faces, freeing "
-                         << gate2PeriodicBadFaces.size()
-                         << " periodic junction faces for repair" << endl;
+                    const labelList& own = mesh_.owner();
+                    const labelList& nei = mesh_.neighbour();
+                    const cellListPMG& cells = mesh_.cells();
+                    labelHashSet freeCells;
+                    forAllConstIter(labelHashSet, gate2PeriodicBadFaces, it)
+                    {
+                        const label faceI = it.key();
+                        freeCells.insert(own[faceI]);
+                        if( faceI < label(nei.size()) && nei[faceI] >= 0 )
+                            freeCells.insert(nei[faceI]);
+                    }
+                    labelHashSet freePoints;
+                    forAllConstIter(labelHashSet, freeCells, cit)
+                    {
+                        const cell& c = cells[cit.key()];
+                        forAll(c, fI)
+                        {
+                            const face& f = allFaces[c[fI]];
+                            forAll(f, pI)
+                                freePoints.insert(f[pI]);
+                        }
+                    }
+                    labelLongList lockedPts;
+                    const pointFieldPMG& pts = mesh_.points();
+                    forAll(pts, pointI)
+                        if( !freePoints.found(pointI) )
+                            lockedPts.append(pointI);
+                    gate2Optimizer.lockPoints(lockedPts);
+                    Info << "Gate2 local repair: locking " << lockedPts.size()
+                         << " points, freeing " << freePoints.size()
+                         << " points in owner/neighbour cells" << endl;
                 }
 
                 gate2Optimizer.optimizeLowQualityFaces(3);
@@ -872,9 +888,11 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 const bool gate2RepairOK =
                     gate2BadAfter.size() < badPyramidFaces.size()
                  && (!gate2UnusedAfter || gate2UnusedBefore)
-                 && gate2NegAfter.size() <= gate2NegBefore.size()
-                 && gate2OpenAfter.size() <= gate2OpenBefore.size()
+                 && gate2NegBefore.size() == 0
+                 && gate2NegAfter.size() == 0
+                 && gate2OpenAfter.size() == 0
                  && gate2NonOrthoAfter.size() <= gate2NonOrthoBefore.size()
+                 && gate2MaxSkewAfter <= gate2MaxSkewBefore
                  && gate2MaxSkewAfter <= scalar(20.0);
 
                 if( gate2RepairOK )
@@ -1675,9 +1693,54 @@ void cartesianMeshGenerator::generateMesh()
             }
         }
 
+        // Validate immediately before renumbering.
+        {
+            mesh_.clearAddressingData();
+            labelHashSet negBeforeRenumber;
+            labelHashSet pyrBeforeRenumber;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBeforeRenumber);
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrBeforeRenumber);
+            Info << "Pre-renumber validation: negVol=" << negBeforeRenumber.size()
+                 << " badPyramids=" << pyrBeforeRenumber.size() << endl;
+        }
+
         renumberMesh();
 
+        // Validate immediately after renumbering.
+        {
+            mesh_.clearAddressingData();
+            labelHashSet negAfterRenumber;
+            labelHashSet pyrAfterRenumber;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfterRenumber);
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrAfterRenumber);
+            Info << "Post-renumber validation: negVol=" << negAfterRenumber.size()
+                 << " badPyramids=" << pyrAfterRenumber.size() << endl;
+        }
+
         replaceBoundaries();
+
+        // FINAL DEBUG:
+        // Validate mesh immediately after boundary replacement/renaming.
+        // This tells us whether final checkMesh failures are already present
+        // in-memory before mesh_.write(), or appear only after write/read.
+        {
+            labelHashSet finalNegCells;
+            labelHashSet finalBadPyrFaces;
+
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &finalNegCells);
+            polyMeshGenChecks::checkFacePyramids
+            (
+                mesh_,
+                false,
+                -SMALL,
+                &finalBadPyrFaces
+            );
+
+            Info << "FINAL internal validation after replaceBoundaries: "
+                 << "negVol=" << finalNegCells.size()
+                 << " badPyramids=" << finalBadPyrFaces.size()
+                 << endl;
+        }
 
         // BL effective coverage report
         if( blLayerScale_.size() > 0 )
