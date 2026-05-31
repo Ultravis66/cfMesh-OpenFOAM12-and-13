@@ -46,8 +46,6 @@ void polyMeshGenAddressing::updateGeometry
     const pointFieldPMG& p = mesh_.points();
     const faceListPMG& faces = mesh_.faces();
 
-    Info << "DEBUG: updateGeometry called, changedFace.size()="
-         << changedFace.size() << " faces.size()=" << mesh_.faces().size() << endl;
 
     //- update face centres and face areas
     if( faceCentresPtr_ && faceAreasPtr_ )
@@ -55,9 +53,8 @@ void polyMeshGenAddressing::updateGeometry
         vectorField& fCtrs = *faceCentresPtr_;
         vectorField& fAreas = *faceAreasPtr_;
 
-        Info << "DEBUG face loop start faces=" << faces.size() << " changedFace=" << changedFace.size() << endl;
         # ifdef USE_OMP
-        # pragma omp parallel for if( false && faces.size() > 100 ) \
+        # pragma omp parallel for if( false ) \
         schedule(dynamic, 10)
         # endif
         forAll(faces, faceI)
@@ -127,9 +124,6 @@ void polyMeshGenAddressing::updateGeometry
         }
     }
 
-    //- DIAGNOSTIC: face section completed
-    Info << "DEBUG updateGeometry: face section done" << endl;
-
     //- update cell centres and cell volumes
     if( cellCentresPtr_ && cellVolumesPtr_ && faceCentresPtr_ && faceAreasPtr_ )
     {
@@ -142,7 +136,7 @@ void polyMeshGenAddressing::updateGeometry
         const cellListPMG& cells = mesh_.cells();
 
         # ifdef USE_OMP
-        # pragma omp parallel for if( false && cells.size() > 100 ) \
+        # pragma omp parallel for if( false ) \
         schedule(dynamic, 10)
         # endif
         forAll(cells, cellI)
