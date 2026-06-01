@@ -252,12 +252,14 @@ bool checkClosedCells
             }
         }
 
-        scalar aspectRatio = VGREAT;
-        if( vols[cellI] > SMALL )
-        {
-            aspectRatio =
-                1.0/6.0*sumMagClosed[cellI]/pow(vols[cellI], 2.0/3.0);
-        }
+        // Skip aspect ratio for negative/zero-volume cells.
+        // checkCellVolumes handles those. Avoid inf/VGREAT propagating
+        // into reductions and triggering OpenFOAM SIGFPE.
+        if( vols[cellI] <= SMALL )
+            continue;
+
+        const scalar aspectRatio =
+            1.0/6.0*sumMagClosed[cellI]/pow(vols[cellI], 2.0/3.0);
 
         maxAspectRatio = max(maxAspectRatio, aspectRatio);
 

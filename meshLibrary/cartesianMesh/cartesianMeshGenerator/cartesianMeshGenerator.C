@@ -569,13 +569,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
             {
                 labelHashSet negBefore;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
-                // TEMP DEBUG:
-                // Disabled because removeUnusedVertices() is topology-changing and
-                // appears to create/expose open cells between Final untangle and Gate2.
-                // Do not use point-only rollback around this operation.
-                Info << "Post-BL cleanup: removeUnusedVertices skipped for open-cell diagnostic" << endl;
-                // polyMeshGenModifier(mesh_).removeUnusedVertices();
-                // mesh_.clearAddressingData();
+                polyMeshGenModifier(mesh_).removeUnusedVertices();
+                mesh_.clearAddressingData();
                 labelHashSet negAfter;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
                 const bool hasUnusedAfter =
@@ -1724,6 +1719,27 @@ void cartesianMeshGenerator::generateMesh()
         }
 
         renumberMesh();
+
+        // Compact any points orphaned by renumbering before validation.
+        {
+            mesh_.clearAddressingData();
+            const bool unusedAfterRenumber =
+                polyMeshGenChecks::checkPoints(mesh_, false);
+            if( unusedAfterRenumber )
+            {
+                Info << "Post-renumber cleanup: removing unused vertices" << endl;
+                polyMeshGenModifier(mesh_).removeUnusedVertices();
+                mesh_.clearAddressingData();
+                const bool unusedAfterCleanup =
+                    polyMeshGenChecks::checkPoints(mesh_, false);
+                Info << "Post-renumber cleanup: unusedPoints bad->"
+                     << (unusedAfterCleanup ? "bad" : "ok") << endl;
+            }
+            else
+            {
+                Info << "Post-renumber cleanup: no unused vertices found" << endl;
+            }
+        }
 
         // Validate immediately after renumbering.
         {
