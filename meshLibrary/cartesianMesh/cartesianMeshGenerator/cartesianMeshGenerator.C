@@ -606,7 +606,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
             const bool hasBadPyramids =
                 polyMeshGenChecks::checkFacePyramids
-                (mesh_, false, -SMALL, &badPyramidFaces);
+                (mesh_, true, -SMALL, &badPyramidFaces);
 
             // Gate 3: severe non-orthogonality above 85 degrees
             const bool hasNonOrtho =
