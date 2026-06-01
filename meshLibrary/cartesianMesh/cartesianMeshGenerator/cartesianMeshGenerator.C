@@ -859,7 +859,16 @@ void cartesianMeshGenerator::refBoundaryLayers()
                          << " points in owner/neighbour cells" << endl;
                 }
 
-                gate2Optimizer.optimizeLowQualityFaces(3);
+                if( gate2NegBefore.size() > 0 )
+                {
+                    Info << "Gate2 local repair: skipped — "
+                         << gate2NegBefore.size()
+                         << " negVol cells present, optimizer unsafe" << endl;
+                }
+                else
+                {
+                    gate2Optimizer.optimizeLowQualityFaces(3);
+                }
 
                 const bool gate2UnusedAfter =
                     polyMeshGenChecks::checkPoints(mesh_, false);
@@ -997,6 +1006,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
 void cartesianMeshGenerator::optimiseFinalMesh()
 {
+    finalUntangleRejected_ = false;
+
     //- untangle the surface if needed
     bool enforceConstraints(false);
     if( meshDict_.found("enforceGeometryConstraints") )
@@ -1406,6 +1417,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             pointFieldPMG& pts = meshModifier.pointsAccess();
             pts = pointsBefore;
             mesh_.clearAddressingData();
+            finalUntangleRejected_ = true;
         }
         else
         {
@@ -1636,7 +1648,14 @@ void cartesianMeshGenerator::generateMesh()
 
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
-            refBoundaryLayers();
+            if( finalUntangleRejected_ )
+            {
+                Info << "refBoundaryLayers: skipped — final untangle was rejected, mesh state unsafe" << endl;
+            }
+            else
+            {
+                refBoundaryLayers();
+            }
         }
 
         // Post-BL geometry snap - optional, controlled by meshDict
@@ -1820,7 +1839,8 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
     ),
     octreePtr_(NULL),
     mesh_(time),
-    controller_(mesh_)
+    controller_(mesh_),
+    finalUntangleRejected_(false)
 {
     checkMeshDict cmd(meshDict_);
 

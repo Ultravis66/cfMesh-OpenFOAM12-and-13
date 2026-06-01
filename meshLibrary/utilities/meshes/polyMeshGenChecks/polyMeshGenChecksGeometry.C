@@ -252,8 +252,12 @@ bool checkClosedCells
             }
         }
 
-        scalar aspectRatio =
-            1.0/6.0*sumMagClosed[cellI]/pow(vols[cellI], 2.0/3.0);
+        scalar aspectRatio = VGREAT;
+        if( vols[cellI] > SMALL )
+        {
+            aspectRatio =
+                1.0/6.0*sumMagClosed[cellI]/pow(vols[cellI], 2.0/3.0);
+        }
 
         maxAspectRatio = max(maxAspectRatio, aspectRatio);
 
@@ -709,8 +713,17 @@ void checkFaceDotProduct
                 continue;
             }
             const vector d = cn - co;
+            const scalar magD = mag(d);
+            const scalar magS = mag(s);
 
-            faceDotProduct[faceI] = (d & s)/(mag(d)*mag(s) + VSMALL);
+            // Degenerate centre spacing or face area: do not let checker FPE.
+            if( magD < SMALL || magS < SMALL )
+            {
+                faceDotProduct[faceI] = 1.0;
+                continue;
+            }
+
+            faceDotProduct[faceI] = (d & s)/(magD*magS);
         }
     }
 
@@ -768,8 +781,17 @@ void checkFaceDotProduct
                     const point& cNei = otherCentres[fI];
                     const vector d = cNei - cOwn;
                     const vector& s = areas[faceI];
+                    const scalar magD = mag(d);
+                    const scalar magS = mag(s);
 
-                    faceDotProduct[faceI] = (d & s)/(mag(d)*mag(s) + VSMALL);
+                    // Degenerate processor-face geometry: avoid checker FPE.
+                    if( magD < SMALL || magS < SMALL )
+                    {
+                        faceDotProduct[faceI] = 1.0;
+                        continue;
+                    }
+
+                    faceDotProduct[faceI] = (d & s)/(magD*magS);
                 }
             }
         }
@@ -1037,11 +1059,30 @@ bool checkFacePyramids
         if( changedFacePtr && !(*changedFacePtr)[faceI] )
             continue;
 
-        // Create the owner pyramid - it will have negative volume
+        // Create the owner pyramid - it will have negative volume.
+        // Guard against degenerate cell centres from negVol cells.
+        const vector& cOwn = ctrs[owner[faceI]];
+        const scalar cox = cOwn.x(), coy = cOwn.y(), coz = cOwn.z();
+        if( cox != cox || coy != coy || coz != coz ||
+            cox > GREAT || cox < -GREAT ||
+            coy > GREAT || coy < -GREAT ||
+            coz > GREAT || coz < -GREAT )
+        {
+            if( setPtr )
+            {
+                # ifdef USE_OMP
+                # pragma omp critical
+                # endif
+                setPtr->insert(faceI);
+            }
+            ++nErrorPyrs;
+            continue;
+        }
+
         const scalar pyrVol = pyramidPointFaceRef
         (
             faces[faceI],
-            ctrs[owner[faceI]]
+            cOwn
         ).mag(points);
 
         bool badFace(false);
@@ -1070,12 +1111,31 @@ bool checkFacePyramids
 
         if( neighbour[faceI] != -1 )
         {
-            // Create the neighbour pyramid - it will have positive volume
+            // Create the neighbour pyramid - it will have positive volume.
+            // Guard against degenerate cell centres from negVol cells.
+            const vector& cNei = ctrs[neighbour[faceI]];
+            const scalar cnx = cNei.x(), cny = cNei.y(), cnz = cNei.z();
+            if( cnx != cnx || cny != cny || cnz != cnz ||
+                cnx > GREAT || cnx < -GREAT ||
+                cny > GREAT || cny < -GREAT ||
+                cnz > GREAT || cnz < -GREAT )
+            {
+                if( setPtr )
+                {
+                    # ifdef USE_OMP
+                    # pragma omp critical
+                    # endif
+                    setPtr->insert(faceI);
+                }
+                ++nErrorPyrs;
+                continue;
+            }
+
             const scalar pyrVol =
                 pyramidPointFaceRef
                 (
                     faces[faceI],
-                    ctrs[neighbour[faceI]]
+                    cNei
                 ).mag(points);
 
             if( pyrVol < minPyrVol )
