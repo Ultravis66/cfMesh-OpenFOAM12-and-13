@@ -654,6 +654,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
             Info << "Acute corner face cap: " << (capLayers ? "enabled" : "disabled") << endl;
         }
 
+        nPointsBeforeBL_ = mesh_.points().size();
         refLayers.refineLayers();
 
         refLayers.pointsInBndLayer(blPoints_);
@@ -1788,18 +1789,78 @@ void cartesianMeshGenerator::generateMesh()
                     mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
                 }
                 const labelList& bPoints = mse.boundaryPoints();
+                // Only snap points that existed before BL refinement.
+                // Points created during BL refinement are prism layer
+                // vertices — projecting them onto the wall collapses prisms.
                 boolList isBLPoint(mesh_.points().size(), false);
                 forAll(blPoints_, i)
-                    isBLPoint[blPoints_[i]] = true;
+                {
+                    const label pI = blPoints_[i];
+                    if( pI >= 0 && pI < label(isBLPoint.size()) )
+                        isBLPoint[pI] = true;
+                }
                 labelLongList outerBndPoints;
                 forAll(bPoints, bpI)
-                    if( !isBLPoint[bPoints[bpI]] )
-                        outerBndPoints.append(bpI);
+                {
+                    const label meshPtI = bPoints[bpI];
+                    if( meshPtI < 0 || meshPtI >= label(mesh_.points().size()) )
+                        continue;
+                    // Skip points created during BL refinement
+                    if( meshPtI >= nPointsBeforeBL_ )
+                        continue;
+                    // Skip known BL interior points
+                    if( isBLPoint[meshPtI] )
+                        continue;
+                    outerBndPoints.append(bpI);
+                }
                 Info << "Post-BL snap: projecting "
                      << outerBndPoints.size()
-                     << " outer boundary points onto STL" << endl;
+                     << " outer boundary points onto STL"
+                     << " (nPointsBeforeBL=" << nPointsBeforeBL_
+                     << " total=" << mesh_.points().size() << ")" << endl;
                 if( outerBndPoints.size() > 0 )
+                {
+                    // Snapshot for rollback
+                    const pointField pointsBeforeSnap(mesh_.points());
+                    labelHashSet negBeforeSnap, pyrBeforeSnap;
+                    polyMeshGenChecks::checkCellVolumes
+                        (mesh_, false, &negBeforeSnap);
+                    polyMeshGenChecks::checkFacePyramids
+                        (mesh_, false, -SMALL, &pyrBeforeSnap);
+
                     mapper.mapVerticesOntoSurface(outerBndPoints);
+                    mesh_.clearAddressingData();
+
+                    labelHashSet negAfterSnap, pyrAfterSnap;
+                    polyMeshGenChecks::checkCellVolumes
+                        (mesh_, false, &negAfterSnap);
+                    polyMeshGenChecks::checkFacePyramids
+                        (mesh_, false, -SMALL, &pyrAfterSnap);
+
+                    if( negAfterSnap.size() > negBeforeSnap.size()
+                     || pyrAfterSnap.size() > pyrBeforeSnap.size() )
+                    {
+                        Info << "Post-BL snap rejected: negVol "
+                             << negBeforeSnap.size() << "->"
+                             << negAfterSnap.size()
+                             << " badPyramids "
+                             << pyrBeforeSnap.size() << "->"
+                             << pyrAfterSnap.size()
+                             << " — rolling back" << endl;
+                        pointField& pts = mesh_.points();
+                        pts = pointsBeforeSnap;
+                        mesh_.clearAddressingData();
+                    }
+                    else
+                    {
+                        Info << "Post-BL snap accepted: negVol "
+                             << negBeforeSnap.size() << "->"
+                             << negAfterSnap.size()
+                             << " badPyramids "
+                             << pyrBeforeSnap.size() << "->"
+                             << pyrAfterSnap.size() << endl;
+                    }
+                }
                 deleteDemandDrivenData(snapOctreePtr);
             }
         }
@@ -1953,7 +2014,8 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
     octreePtr_(NULL),
     mesh_(time),
     controller_(mesh_),
-    finalUntangleRejected_(false)
+    finalUntangleRejected_(false),
+    nPointsBeforeBL_(0)
 {
     checkMeshDict cmd(meshDict_);
 

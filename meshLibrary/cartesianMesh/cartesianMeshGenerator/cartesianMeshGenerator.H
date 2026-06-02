@@ -104,6 +104,7 @@ class cartesianMeshGenerator
 
         //- mesh points inside the boundary layer (from refineBoundaryLayers)
         labelLongList blPoints_;
+        label nPointsBeforeBL_;
         scalarField blLayerScale_;
 
         //- true if optimiseFinalMesh() rejected and rolled back final untangle
