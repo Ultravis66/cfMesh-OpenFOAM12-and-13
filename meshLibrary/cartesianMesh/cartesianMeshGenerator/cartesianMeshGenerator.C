@@ -502,6 +502,100 @@ void cartesianMeshGenerator::detectGapPoints
         bl.setGapPoints(gapPoints);
 }
 
+void cartesianMeshGenerator::detectTripleJunctions
+(
+    boundaryLayers& bl
+)
+{
+    if( !meshDict_.isDict("boundaryLayers") )
+        return;
+    const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+    if( !bndL.found("tripleJunctionSuppressPatches") )
+        return;
+    if( !bndL.found("tripleJunctionWallPatches") )
+        return;
+    if( !bndL.found("tripleJunctionNeutralPatches") )
+        return;
+
+    const wordList suppressNames(bndL.lookup("tripleJunctionSuppressPatches"));
+    const wordList wallNames(bndL.lookup("tripleJunctionWallPatches"));
+    const wordList neutralNames(bndL.lookup("tripleJunctionNeutralPatches"));
+
+    if( suppressNames.empty() || wallNames.empty() || neutralNames.empty() )
+        return;
+
+    if( !octreePtr_ )
+    {
+        Info << "Triple-junction detection: octreePtr_ null, skipping" << endl;
+        return;
+    }
+
+    const triSurf& surf = octreePtr_->surface();
+    const wordList pNames = surf.patchNames();
+
+    HashTable<label> nameToIdx;
+    forAll(pNames, pi)
+        nameToIdx.insert(pNames[pi], pi);
+
+    labelHashSet suppressIdx;
+    forAll(suppressNames, si)
+        if( nameToIdx.found(suppressNames[si]) )
+            suppressIdx.insert(nameToIdx[suppressNames[si]]);
+
+    labelHashSet wallIdx;
+    forAll(wallNames, wi)
+        if( nameToIdx.found(wallNames[wi]) )
+            wallIdx.insert(nameToIdx[wallNames[wi]]);
+
+    labelHashSet neutralIdx;
+    forAll(neutralNames, ni)
+        if( nameToIdx.found(neutralNames[ni]) )
+            neutralIdx.insert(nameToIdx[neutralNames[ni]]);
+
+    if( suppressIdx.empty() || wallIdx.empty() || neutralIdx.empty() )
+    {
+        Info << "Triple-junction detection: one or more patch sets not found "
+             << "in surface — skipping" << endl;
+        return;
+    }
+
+    meshSurfaceEngine mse(mesh_);
+    const labelList& bPoints = mse.boundaryPoints();
+    const meshSurfacePartitioner mPart(mse);
+    const VRWGraph& pPatches = mPart.pointPatches();
+
+    labelHashSet triplePoints;
+
+    forAll(bPoints, bpI)
+    {
+        if( pPatches.sizeOfRow(bpI) < 3 ) continue;
+
+        bool onSuppress = false;
+        bool onWall     = false;
+        bool onNeutral  = false;
+
+        forAllRow(pPatches, bpI, pI)
+        {
+            const label pIdx = pPatches(bpI, pI);
+            if( suppressIdx.found(pIdx) ) onSuppress = true;
+            if( wallIdx.found(pIdx) )     onWall     = true;
+            if( neutralIdx.found(pIdx) )  onNeutral  = true;
+        }
+
+        if( onSuppress && onWall && onNeutral )
+            triplePoints.insert(bPoints[bpI]);
+    }
+
+    Info << "Triple-junction detection: found " << triplePoints.size()
+         << " triple-junction points"
+         << " (suppress=" << suppressNames
+         << " wall=" << wallNames
+         << " neutral=" << neutralNames << ")" << endl;
+
+    // Store triple-junction seeds in boundaryLayers for planner + gated exclusion
+    bl.addTripleJunctionPoints(triplePoints);
+}
+
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
@@ -511,6 +605,9 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     // Gap/proximity closure: detect tight BL/BL patch proximity and suppress
     // BL locally before createNewVertices builds the prism graph.
     detectGapPoints(bl);
+    detectTripleJunctions(bl);
+    bl.reportBLTransitionSeeds();
+    bl.buildBLTransitionPlan();
 
     bl.addLayerForAllPatches();
     // Capture layerScale for post-replaceBoundaries coverage report

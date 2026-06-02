@@ -105,6 +105,7 @@ class boundaryLayers
 
         // Gap face-ring exclusion controls
         bool   gapFaceRingExclusion_;  // default true
+        bool   tripleJunctionFaceRingExclusion_;  // default false
         scalar gapFaceRing0Scale_;     // default 0.02
         scalar gapFaceRing1Scale_;     // default 0.05
         scalar gapFaceRing2Scale_;     // default 0.20
@@ -158,6 +159,8 @@ class boundaryLayers
 
         //- gap points for BL suppression in thin clearance regions
         labelHashSet gapPoints_;
+        //- triple-junction seed points (blade/hub-shroud/periodic singularities)
+        labelHashSet tripleJunctionPoints_;
 
         //- face-level BL suppression mask — set by gap/VT detection
         //- createNewFacesAndCells skips faces where this is true
@@ -410,6 +413,20 @@ public:
         {
             gapPoints_ = gpts;
         }
+        void addGapPoints(const labelHashSet& gpts)
+        {
+            forAllConstIter(labelHashSet, gpts, iter)
+                gapPoints_.insert(iter.key());
+        }
+        void setTripleJunctionPoints(const labelHashSet& pts)
+        {
+            tripleJunctionPoints_ = pts;
+        }
+        void addTripleJunctionPoints(const labelHashSet& pts)
+        {
+            forAllConstIter(labelHashSet, pts, iter)
+                tripleJunctionPoints_.insert(iter.key());
+        }
 
     // Public member functions
         //- adds layer for a given patch
@@ -426,6 +443,8 @@ public:
         void applyVirtualTopologyExclusion() const;
         //- Apply face-ring BL suppression/taper around gap points
         void applyGapFaceRingExclusion() const;
+        void reportBLTransitionSeeds() const;
+        void buildBLTransitionPlan() const;
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches

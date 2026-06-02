@@ -648,6 +648,7 @@ boundaryLayers::boundaryLayers
     virtualTopoRing1_(0.0),
     virtualTopoRing2_(0.05),
     gapFaceRingExclusion_(true),
+    tripleJunctionFaceRingExclusion_(false),
     gapFaceRing0Scale_(0.02),
     gapFaceRing1Scale_(0.05),
     gapFaceRing2Scale_(0.20)
@@ -731,6 +732,9 @@ boundaryLayers::boundaryLayers
             virtualTopoRing2_ = readScalar(bndLayers.lookup("virtualTopoRing2"));
         if( bndLayers.found("gapFaceRingExclusion") )
             gapFaceRingExclusion_ = Switch(bndLayers.lookup("gapFaceRingExclusion"));
+        if( bndLayers.found("tripleJunctionFaceRingExclusion") )
+            tripleJunctionFaceRingExclusion_ =
+                Switch(bndLayers.lookup("tripleJunctionFaceRingExclusion"));
         if( bndLayers.found("gapFaceRing0Scale") )
             gapFaceRing0Scale_ = readScalar(bndLayers.lookup("gapFaceRing0Scale"));
         if( bndLayers.found("gapFaceRing1Scale") )
@@ -1991,9 +1995,11 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
 
 void boundaryLayers::applyGapFaceRingExclusion() const
 {
-    if( !gapFaceRingExclusion_ )
+    const bool useTriple =
+        tripleJunctionFaceRingExclusion_ && tripleJunctionPoints_.size() > 0;
+    if( !gapFaceRingExclusion_ && !useTriple )
         return;
-    if( gapPoints_.size() == 0 )
+    if( gapPoints_.size() == 0 && !useTriple )
         return;
 
     const meshSurfaceEngine& mse = surfaceEngine();
@@ -2014,20 +2020,27 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     // faceRing: -1=untouched, 0=seed, 1=ring1, 2=ring2
     labelList faceRing(nBF, -1);
 
-    // Ring 0: all boundary faces touching any gap point
-    forAllConstIter(labelHashSet, gapPoints_, it)
+    // Ring 0: boundary faces touching gap points and/or triple-junction points
+    auto seedRing0 = [&](const labelHashSet& seedPts)
     {
-        const label meshPtI = it.key();
-        if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
-        const label bpI = meshToBnd[meshPtI];
-        if( bpI < 0 || bpI >= nBP ) continue;
-        forAllRow(pointFaces, bpI, pfI)
+        forAllConstIter(labelHashSet, seedPts, it)
         {
-            const label bfI = pointFaces(bpI, pfI);
-            if( bfI < 0 || bfI >= nBF ) continue;
-            faceRing[bfI] = 0;
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            forAllRow(pointFaces, bpI, pfI)
+            {
+                const label bfI = pointFaces(bpI, pfI);
+                if( bfI < 0 || bfI >= nBF ) continue;
+                faceRing[bfI] = 0;
+            }
         }
-    }
+    };
+    if( gapFaceRingExclusion_ )
+        seedRing0(gapPoints_);
+    if( useTriple )
+        seedRing0(tripleJunctionPoints_);
 
     // Build ring0 point set
     boolList ring0pt(nBP, false);
@@ -2125,6 +2138,159 @@ void boundaryLayers::applyGapFaceRingExclusion() const
          << " scale=(" << gapFaceRing0Scale_
          << " " << gapFaceRing1Scale_
          << " " << gapFaceRing2Scale_ << ")" << endl;
+}
+
+void boundaryLayers::reportBLTransitionSeeds() const
+{
+    Info << "BL transition seed summary:" << nl
+         << "  gap points:                    " << gapPoints_.size() << nl
+         << "  triple-junction points:        " << tripleJunctionPoints_.size() << nl
+         << "  tripleJunctionFaceRingExclusion: "
+         << (tripleJunctionFaceRingExclusion_ ? "true" : "false")
+         << endl;
+}
+
+void boundaryLayers::buildBLTransitionPlan() const
+{
+    // Diagnostic only — computes and reports ring face counts by patch.
+    // No topology mutation.
+    if( gapPoints_.size() == 0 && tripleJunctionPoints_.size() == 0 )
+    {
+        Info << "BL transition planner: no seeds, skipping" << endl;
+        return;
+    }
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const labelList& bPoints        = mse.boundaryPoints();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const VRWGraph& pointFaces      = mse.pointFaces();
+    const labelList& facePatch      = mse.boundaryFacePatches();
+
+    const label nBP = bPoints.size();
+    const label nBF = bFaces.size();
+
+    labelList meshToBnd(mesh_.points().size(), -1);
+    forAll(bPoints, bpI)
+        meshToBnd[bPoints[bpI]] = bpI;
+
+    labelList faceRing(nBF, -1);
+
+    auto seedRing0 = [&](const labelHashSet& seedPts)
+    {
+        forAllConstIter(labelHashSet, seedPts, it)
+        {
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            forAllRow(pointFaces, bpI, pfI)
+            {
+                const label bfI = pointFaces(bpI, pfI);
+                if( bfI < 0 || bfI >= nBF ) continue;
+                faceRing[bfI] = 0;
+            }
+        }
+    };
+    seedRing0(gapPoints_);
+    seedRing0(tripleJunctionPoints_);
+
+    // Ring 1
+    boolList ring0pt(nBP, false);
+    forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 0 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring0pt[bpI] = true;
+        }
+    }
+    forAll(ring0pt, bpI)
+    {
+        if( !ring0pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 1;
+        }
+    }
+
+    // Ring 2
+    boolList ring1pt(nBP, false);
+    forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 1 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring1pt[bpI] = true;
+        }
+    }
+    forAll(ring1pt, bpI)
+    {
+        if( !ring1pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 2;
+        }
+    }
+
+    // Count by ring and patch
+    const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+    const label nPatches = boundaries.size();
+    List<label> patchR0(nPatches, 0);
+    List<label> patchR1(nPatches, 0);
+    List<label> patchR2(nPatches, 0);
+    label nF0=0, nF1=0, nF2=0;
+
+    forAll(faceRing, bfI)
+    {
+        const label ring = faceRing[bfI];
+        const label pI   = facePatch[bfI];
+        if( ring == 0 )
+        {
+            ++nF0;
+            if( pI >= 0 && pI < nPatches ) ++patchR0[pI];
+        }
+        else if( ring == 1 )
+        {
+            ++nF1;
+            if( pI >= 0 && pI < nPatches ) ++patchR1[pI];
+        }
+        else if( ring == 2 )
+        {
+            ++nF2;
+            if( pI >= 0 && pI < nPatches ) ++patchR2[pI];
+        }
+    }
+
+    Info << "BL transition planner (diagnostic — no mutation):" << nl
+         << "  ring0 suppress faces: " << nF0 << nl
+         << "  ring1 cap-to-1 faces: " << nF1 << nl
+         << "  ring2 cap-to-2 faces: " << nF2 << nl
+         << "  per-patch breakdown:" << endl;
+    forAll(boundaries, pI)
+    {
+        if( patchR0[pI] + patchR1[pI] + patchR2[pI] == 0 ) continue;
+        Info << "    " << boundaries[pI].patchName()
+             << ": r0=" << patchR0[pI]
+             << " r1=" << patchR1[pI]
+             << " r2=" << patchR2[pI] << nl;
+    }
+    Info << "  (tripleJunctionFaceRingExclusion="
+         << (tripleJunctionFaceRingExclusion_ ? "true" : "false")
+         << " — topology unchanged)" << endl;
 }
 
 void boundaryLayers::activate2DMode()
