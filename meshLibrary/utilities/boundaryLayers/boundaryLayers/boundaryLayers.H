@@ -106,6 +106,7 @@ class boundaryLayers
         // Gap face-ring exclusion controls
         bool   gapFaceRingExclusion_;  // default true
         bool   tripleJunctionFaceRingExclusion_;  // default false
+        labelHashSet tripleJunctionSuppressPatches_;  // patch indices to suppress
         scalar gapFaceRing0Scale_;     // default 0.02
         scalar gapFaceRing1Scale_;     // default 0.05
         scalar gapFaceRing2Scale_;     // default 0.20

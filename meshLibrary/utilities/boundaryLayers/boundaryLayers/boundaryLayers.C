@@ -735,6 +735,22 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("tripleJunctionFaceRingExclusion") )
             tripleJunctionFaceRingExclusion_ =
                 Switch(bndLayers.lookup("tripleJunctionFaceRingExclusion"));
+        if( bndLayers.found("tripleJunctionSuppressPatches") )
+        {
+            const wordList suppressNames
+            (
+                bndLayers.lookup("tripleJunctionSuppressPatches")
+            );
+            const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+            forAll(boundaries, pI)
+                forAll(suppressNames, sI)
+                    if( boundaries[pI].patchName() == suppressNames[sI] )
+                        tripleJunctionSuppressPatches_.insert(pI);
+
+            Info << "Triple-junction suppress patches: found "
+                 << tripleJunctionSuppressPatches_.size()
+                 << " patch indices from " << suppressNames << endl;
+        }
         if( bndLayers.found("gapFaceRing0Scale") )
             gapFaceRing0Scale_ = readScalar(bndLayers.lookup("gapFaceRing0Scale"));
         if( bndLayers.found("gapFaceRing1Scale") )
@@ -2006,6 +2022,7 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     const labelList& bPoints     = mse.boundaryPoints();
     const faceList::subList& bFaces = mse.boundaryFaces();
     const VRWGraph& pointFaces   = mse.pointFaces();
+    const labelList& facePatch   = mse.boundaryFacePatches();
 
     const label nBP = bPoints.size();
     const label nBF = bFaces.size();
@@ -2040,7 +2057,36 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     if( gapFaceRingExclusion_ )
         seedRing0(gapPoints_);
     if( useTriple )
-        seedRing0(tripleJunctionPoints_);
+    {
+        // Patch-restricted seeding: only suppress faces on the designated
+        // suppress-side patches (hub/shroud). Blade and periodic faces
+        // adjacent to the triple junction must NOT be suppressed —
+        // they need BL for correct turbomachinery flow resolution.
+        if( tripleJunctionSuppressPatches_.size() > 0 )
+        {
+            forAllConstIter(labelHashSet, tripleJunctionPoints_, it)
+            {
+                const label meshPtI = it.key();
+                if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+                const label bpI = meshToBnd[meshPtI];
+                if( bpI < 0 || bpI >= nBP ) continue;
+                forAllRow(pointFaces, bpI, pfI)
+                {
+                    const label bfI = pointFaces(bpI, pfI);
+                    if( bfI < 0 || bfI >= nBF ) continue;
+                    // Only suppress faces on the suppress-side patches
+                    if( !tripleJunctionSuppressPatches_.found(facePatch[bfI]) )
+                        continue;
+                    faceRing[bfI] = 0;
+                }
+            }
+        }
+        else
+        {
+            Info << "Triple-junction face-ring exclusion: "
+                 << "no suppress patch filter defined — skipping" << endl;
+        }
+    }
 
     // Build ring0 point set
     boolList ring0pt(nBP, false);
