@@ -1628,7 +1628,7 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
     Info << "Pre-BL snap: projecting " << snapPoints.size()
          << " single-patch boundary points onto STL" << endl;
 
-    if( snapPoints.empty() )
+    if( snapPoints.size() == 0 )
     {
         deleteDemandDrivenData(snapOctreePtr);
         return;
