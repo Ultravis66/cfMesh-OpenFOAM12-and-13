@@ -73,10 +73,13 @@ bool checkClosedBoundary(const polyMeshGen& mesh, const bool report)
 
     if( maxOpen > SMALL*max(1.0, sumMagClosedBoundary) )
     {
-        SeriousErrorIn
-        (
-            "bool checkClosedBoundary(const polyMeshGen&, const bool report)"
-        )   << "Possible hole in boundary description" << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkClosedBoundary(const polyMeshGen&, const bool report)"
+            )   << "Possible hole in boundary description" << endl;
+        }
 
         Info<< "Boundary openness in x-direction = "
             << sumClosed.component(vector::X) << endl;
@@ -153,12 +156,15 @@ bool checkClosedCells
 
     if( nErrorClosed > 0 )
     {
-        SeriousErrorIn
-        (
-            "bool checkClosedCells("
-            "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
-        )  << nErrorClosed << " cells with invalid face labels found"
-            << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkClosedCells("
+                "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
+            )  << nErrorClosed << " cells with invalid face labels found"
+                << endl;
+        }
 
         return true;
     }
@@ -283,25 +289,31 @@ bool checkClosedCells
 
     if( nOpen > 0 )
     {
-        SeriousErrorIn
-        (
-            "bool checkClosedCells("
-            "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
-        )   << nOpen << " open cells found. Max cell openness: "
-            << maxOpenCell << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkClosedCells("
+                "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
+            )   << nOpen << " open cells found. Max cell openness: "
+                << maxOpenCell << endl;
+        }
 
         return true;
     }
 
     if( nAspect > 0 )
     {
-        SeriousErrorIn
-        (
-            "bool checkClosedCells("
-            "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
-        )   << nAspect << " high aspect ratio cells found.  "
-            << "Max aspect ratio: " << maxAspectRatio
-            << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkClosedCells("
+                "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
+            )   << nAspect << " high aspect ratio cells found.  "
+                << "Max aspect ratio: " << maxAspectRatio
+                << endl;
+        }
 
         return true;
     }
@@ -380,15 +392,18 @@ bool checkCellVolumes
 
     if( minVolume < VSMALL )
     {
-        SeriousErrorIn
-        (
-            "bool checkCellVolumes("
-            "const polyMeshGen&, const bool, labelHashSet*)"
-        )   << "Zero or negative cell volume detected.  "
-            << "Minimum negative volume: "
-            << minVolume << ".\nNumber of negative volume cells: "
-            << nNegVolCells << ".  This mesh is invalid"
-            << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkCellVolumes("
+                "const polyMeshGen&, const bool, labelHashSet*)"
+            )   << "Zero or negative cell volume detected.  "
+                << "Minimum negative volume: "
+                << minVolume << ".\nNumber of negative volume cells: "
+                << nNegVolCells << ".  This mesh is invalid"
+                << endl;
+        }
 
         return true;
     }
@@ -486,14 +501,17 @@ bool checkFaceAreas
 
     if( minArea < VSMALL )
     {
-        SeriousErrorIn
-        (
-            "bool checkFaceAreas("
-            "const polyMeshGen&, const bool, const scalar,"
-            " labelHashSet*, const boolList*)"
-        )   << "Zero or negative face area detected.  Minimum negative area: "
-            << minArea << ". This mesh is invalid"
-            << endl;
+        if( report )
+        {
+            SeriousErrorIn
+            (
+                "bool checkFaceAreas("
+                "const polyMeshGen&, const bool, const scalar,"
+                " labelHashSet*, const boolList*)"
+            )   << "Zero or negative face area detected.  Minimum negative area: "
+                << minArea << ". This mesh is invalid"
+                << endl;
+        }
 
         return true;
     }
