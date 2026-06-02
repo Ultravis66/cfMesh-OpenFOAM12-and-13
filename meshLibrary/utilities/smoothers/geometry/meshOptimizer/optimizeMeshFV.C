@@ -553,15 +553,16 @@ void meshOptimizer::untangleBoundaryLayer()
         if( negVolCells.size() == 0 )
         {
             optimizeLowQualityFaces();
+            removeUserConstraints();
+            untangleMeshFV(2, 50, 1, true);
         }
         else
         {
             Info << "untangleBoundaryLayer: skipping optimizeLowQualityFaces"
-                 << " — " << negVolCells.size()
-                 << " negVol cells present, partTetMesh unsafe" << endl;
+                 << " and untangleMeshFV — " << negVolCells.size()
+                 << " negVol cells present, volume optimizer unsafe" << endl;
+            removeUserConstraints();
         }
-        removeUserConstraints();
-        untangleMeshFV(2, 50, 1, true);
     }
 }
 
