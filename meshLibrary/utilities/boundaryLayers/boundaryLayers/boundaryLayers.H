@@ -446,6 +446,7 @@ public:
         void applyGapFaceRingExclusion() const;
         void reportBLTransitionSeeds() const;
         void buildBLTransitionPlan() const;
+        void reportBLPlanningPerPatch() const;
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches

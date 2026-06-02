@@ -2339,6 +2339,140 @@ void boundaryLayers::buildBLTransitionPlan() const
          << " — topology unchanged)" << endl;
 }
 
+void boundaryLayers::reportBLPlanningPerPatch() const
+{
+    const meshSurfaceEngine& mse = surfaceEngine();
+
+    const labelList& bPoints        = mse.boundaryPoints();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const labelList& facePatch      = mse.boundaryFacePatches();
+
+    const label nBP = bPoints.size();
+
+    // Reverse map mesh point -> boundary point
+    labelList meshToBnd(mesh_.points().size(), -1);
+    forAll(bPoints, bpI)
+    {
+        const label meshPtI = bPoints[bpI];
+        if( meshPtI >= 0 && meshPtI < label(meshToBnd.size()) )
+            meshToBnd[meshPtI] = bpI;
+    }
+
+    // Build gap and triple-junction boundary-point sets
+    boolList isGapPoint(nBP, false);
+    forAllConstIter(labelHashSet, gapPoints_, it)
+    {
+        const label meshPtI = it.key();
+        if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+
+        const label bpI = meshToBnd[meshPtI];
+        if( bpI >= 0 && bpI < nBP )
+            isGapPoint[bpI] = true;
+    }
+
+    boolList isTriplePoint(nBP, false);
+    forAllConstIter(labelHashSet, tripleJunctionPoints_, it)
+    {
+        const label meshPtI = it.key();
+        if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+
+        const label bpI = meshToBnd[meshPtI];
+        if( bpI >= 0 && bpI < nBP )
+            isTriplePoint[bpI] = true;
+    }
+
+    const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+    const label nPatches = boundaries.size();
+
+    List<label> nPtTotal(nPatches, 0);
+    List<label> nMultiPatchPts(nPatches, 0);
+    List<label> nScale0(nPatches, 0);
+    List<label> nScale002(nPatches, 0);
+    List<label> nScale005(nPatches, 0);
+    List<label> nScaleLt1(nPatches, 0);
+    List<label> nGapSup(nPatches, 0);
+    List<label> nTripleSup(nPatches, 0);
+
+    List<label> nFaceTotal(nPatches, 0);
+    List<label> nFaceSup(nPatches, 0);
+
+    // Multi-patch ownership is exactly what we are debugging.
+    // Count each boundary point against every patch it belongs to, not
+    // only pPatches(bpI,0), otherwise blade/hub/periodic junctions are hidden.
+    const meshSurfacePartitioner mPart(mse);
+    const VRWGraph& pPatches = mPart.pointPatches();
+
+    forAll(bPoints, bpI)
+    {
+        const scalar sc =
+            layerScale_.size() > bpI ? layerScale_[bpI] : scalar(1.0);
+
+        const bool isMultiPatch = pPatches.sizeOfRow(bpI) > 1;
+
+        forAllRow(pPatches, bpI, ppi)
+        {
+            const label pI = pPatches(bpI, ppi);
+            if( pI < 0 || pI >= nPatches ) continue;
+
+            ++nPtTotal[pI];
+
+            if( isMultiPatch )
+                ++nMultiPatchPts[pI];
+
+            if( sc <= 0.0 )       ++nScale0[pI];
+            if( sc <= scalar(0.02) ) ++nScale002[pI];
+            if( sc <= scalar(0.05) ) ++nScale005[pI];
+            if( sc <  scalar(1.0) )  ++nScaleLt1[pI];
+
+            if( isGapPoint[bpI] )
+                ++nGapSup[pI];
+
+            if( isTriplePoint[bpI] )
+                ++nTripleSup[pI];
+        }
+    }
+
+    forAll(bFaces, bfI)
+    {
+        if( bfI < 0 || bfI >= label(facePatch.size()) ) continue;
+
+        const label pI = facePatch[bfI];
+        if( pI < 0 || pI >= nPatches ) continue;
+
+        ++nFaceTotal[pI];
+
+        if( suppressLayerAtBndFace_.size() > bfI
+         && suppressLayerAtBndFace_[bfI] )
+        {
+            ++nFaceSup[pI];
+        }
+    }
+
+    Info << "BL planning per-patch audit:" << nl;
+
+    forAll(boundaries, pI)
+    {
+        if( nPtTotal[pI] == 0 && nFaceTotal[pI] == 0 )
+            continue;
+
+        const label nLayers =
+            pI < label(nLayersForPatch_.size()) ? nLayersForPatch_[pI] : -1;
+
+        Info << "  " << boundaries[pI].patchName() << ":" << nl
+             << "    nLayers=" << nLayers
+             << " points total=" << nPtTotal[pI]
+             << " multiPatchPts=" << nMultiPatchPts[pI]
+             << " scale0=" << nScale0[pI]
+             << " scale<=0.02=" << nScale002[pI]
+             << " scale<=0.05=" << nScale005[pI]
+             << " scale<1=" << nScaleLt1[pI]
+             << " gapPts=" << nGapSup[pI]
+             << " triplePts=" << nTripleSup[pI] << nl
+             << "    faces total=" << nFaceTotal[pI]
+             << " faceSup=" << nFaceSup[pI] << nl;
+    }
+}
+
 void boundaryLayers::activate2DMode()
 {
     polyMeshGen2DEngine mesh2DEngine(mesh_);
@@ -2428,6 +2562,9 @@ void boundaryLayers::addLayerForAllPatches()
         forAll(treatedPatch_, i)
             if( !treatedPatch_[i] )
                 treatedPatches[counter++] = i;
+
+        //- per-patch BL planning audit before vertex creation
+        reportBLPlanningPerPatch();
 
         //- create bnd layer vertices
         createNewVertices(treatedPatches);
