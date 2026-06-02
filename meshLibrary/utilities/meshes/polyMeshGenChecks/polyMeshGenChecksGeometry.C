@@ -135,12 +135,13 @@ bool checkClosedCells
 
         if( min(curCell) < 0 || max(curCell) > nFaces )
         {
-            WarningIn
-            (
-                "bool checkClosedCells("
-                "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
-            )   << "Cell " << cI << " contains face labels out of range: "
-                << curCell << " Max face index = " << nFaces << endl;
+            if( report )
+                WarningIn
+                (
+                    "bool checkClosedCells("
+                    "const polyMeshGen&, const bool, const scalar, labelHashSet*)"
+                )   << "Cell " << cI << " contains face labels out of range: "
+                    << curCell << " Max face index = " << nFaces << endl;
 
             if( setPtr )
             {
@@ -672,13 +673,14 @@ bool checkCellPartTetrahedra
 
     if( nNegVolCells != 0 )
     {
-        WarningIn
-        (
-            "bool checkCellPartTetrahedra("
-            "const polyMeshGen&, const bool, const scalar,"
-            " labelHashSet*, const boolList*)"
-        )   << nNegVolCells << " zero or negative part tetrahedra detected."
-            << endl;
+        if( report )
+            WarningIn
+            (
+                "bool checkCellPartTetrahedra("
+                "const polyMeshGen&, const bool, const scalar,"
+                " labelHashSet*, const boolList*)"
+            )   << nNegVolCells << " zero or negative part tetrahedra detected."
+                << endl;
 
         return true;
     }
@@ -1033,12 +1035,13 @@ bool checkFaceDotProduct
 
     if( errorNonOrth > 0 )
     {
-        WarningIn
-        (
-            "checkFaceDotProduct("
-            "const polyMeshGen&, const bool, const scalar,"
-            " labelHashSet*, const boolList*)"
-        )   << "Error in non-orthogonality detected" << endl;
+        if( report )
+            WarningIn
+            (
+                "checkFaceDotProduct("
+                "const polyMeshGen&, const bool, const scalar,"
+                " labelHashSet*, const boolList*)"
+            )   << "Error in non-orthogonality detected" << endl;
 
         return true;
     }
@@ -1244,7 +1247,7 @@ bool checkFacePyramids
 
     if( nErrorPyrs > 0 )
     {
-        if( Pstream::master() )
+        if( report && Pstream::master() )
             WarningIn
             (
                 "bool checkFacePyramids("
@@ -1484,16 +1487,17 @@ bool checkFaceSkewness
 
     if( nWarnSkew > 0 )
     {
-        WarningIn
-        (
-            "checkFaceSkewness("
-            "const polyMeshGen&, const bool, const scalar,"
-            "labelHashSet*, const boolList*)"
-        )   << "Large face skewness detected.  Max skewness = " << maxSkew
-            << " Average skewness = " << sumSkew/faceSkewness.size()
-            << ".\nThis may impair the quality of the result." << nl
-            << nWarnSkew << " highly skew faces detected."
-            << endl;
+        if( report )
+            WarningIn
+            (
+                "checkFaceSkewness("
+                "const polyMeshGen&, const bool, const scalar,"
+                "labelHashSet*, const boolList*)"
+            )   << "Large face skewness detected.  Max skewness = " << maxSkew
+                << " Average skewness = " << sumSkew/faceSkewness.size()
+                << ".\nThis may impair the quality of the result." << nl
+                << nWarnSkew << " highly skew faces detected."
+                << endl;
 
         return true;
     }
@@ -1884,14 +1888,15 @@ bool checkFaceAngles
 
     if( nConcave > 0 )
     {
-        WarningIn
-        (
-            "bool checkFaceAngles("
-            "const polyMeshGen&, const bool, const scalar,"
-            " labelHashSet*, const boolList*)"
-        )   << nConcave  << " face points with severe concave angle (> "
-            << maxDeg << " deg) found.\n"
-            << endl;
+        if( report )
+            WarningIn
+            (
+                "bool checkFaceAngles("
+                "const polyMeshGen&, const bool, const scalar,"
+                " labelHashSet*, const boolList*)"
+            )   << nConcave  << " face points with severe concave angle (> "
+                << maxDeg << " deg) found.\n"
+                << endl;
 
         return true;
     }
@@ -2115,14 +2120,15 @@ bool checkFaceFlatness
 
     if( nWarped > 0 )
     {
-        WarningIn
-        (
-            "bool checkFaceFlatness("
-            "const polyMeshGen&, const bool, const scalar,"
-            " labelHashSet*, const boolList*)"
-        )   << nWarped  << " faces with severe warpage (flatness < "
-            << warnFlatness << ") found.\n"
-            << endl;
+        if( report )
+            WarningIn
+            (
+                "bool checkFaceFlatness("
+                "const polyMeshGen&, const bool, const scalar,"
+                " labelHashSet*, const boolList*)"
+            )   << nWarped  << " faces with severe warpage (flatness < "
+                << warnFlatness << ") found.\n"
+                << endl;
 
         return true;
     }
