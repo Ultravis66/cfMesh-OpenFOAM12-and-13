@@ -1471,7 +1471,16 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         const pointField pointsBefore(mesh_.points());
 
-        optimizer.untangleMeshFV();
+        if( negBefore.size() > 0 )
+        {
+            Info << "optimiseFinalMesh: skipping untangleMeshFV — "
+                 << negBefore.size()
+                 << " negVol cells present, volume optimizer unsafe" << endl;
+        }
+        else
+        {
+            optimizer.untangleMeshFV();
+        }
 
         labelHashSet badAfter;
         polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badAfter);
