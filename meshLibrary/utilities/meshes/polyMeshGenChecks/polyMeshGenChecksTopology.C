@@ -58,11 +58,12 @@ bool checkPoints
     {
         if( pf.sizeOfRow(pointI) == 0 )
         {
-            WarningIn
-            (
-                "bool checkPoints"
-                "(const polyMeshGen&, const bool, labelHashSet*)"
-            )   << "Point " << pointI << " not used by any faces." << endl;
+            if( report )
+                WarningIn
+                (
+                    "bool checkPoints"
+                    "(const polyMeshGen&, const bool, labelHashSet*)"
+                )   << "Point " << pointI << " not used by any faces." << endl;
 
             if( setPtr )
                 setPtr->insert(pointI);
@@ -77,11 +78,12 @@ bool checkPoints
     {
         if( pc.sizeOfRow(pointI) == 0 )
         {
-            WarningIn
-            (
-                "bool checkPoints"
-                "(const polyMeshGen&, const bool, labelHashSet*)"
-            )   << "Point " << pointI << " not used by any cells." << endl;
+            if( report )
+                WarningIn
+                (
+                    "bool checkPoints"
+                    "(const polyMeshGen&, const bool, labelHashSet*)"
+                )   << "Point " << pointI << " not used by any cells." << endl;
 
             if( setPtr )
                 setPtr->insert(pointI);
@@ -95,13 +97,14 @@ bool checkPoints
 
     if( nFaceErrors > 0 || nCellErrors > 0 )
     {
-        WarningIn
-        (
-            "bool checkPoints"
-            "(const polyMeshGen&, const bool, labelHashSet*)"
-        )   << "Error in point usage detected: " << nFaceErrors
-            << " unused points found in the mesh.  This mesh is invalid."
-            << endl;
+        if( report )
+            WarningIn
+            (
+                "bool checkPoints"
+                "(const polyMeshGen&, const bool, labelHashSet*)"
+            )   << "Error in point usage detected: " << nFaceErrors
+                << " unused points found in the mesh.  This mesh is invalid."
+                << endl;
 
         return true;
     }
@@ -232,11 +235,12 @@ bool checkUpperTriangular
 
     if( error )
     {
-        WarningIn
-        (
-            "bool checkUpperTriangular(const polyMeshGen&, const bool"
-            ", labelHashSet*)"
-        )   << "Error in face ordering: faces not in upper triangular order!"
+        if( report )
+            WarningIn
+            (
+                "bool checkUpperTriangular(const polyMeshGen&, const bool"
+                ", labelHashSet*)"
+            )   << "Error in face ordering: faces not in upper triangular order!"
             << endl;
 
         return true;
@@ -304,14 +308,15 @@ bool checkCellsZipUp
             }
             else if( edgeUsage[edgeI] != 2 )
             {
-                WarningIn
-                (
-                    "bool checkCellsZipUp(const polyMeshGen&,"
-                    "const bool, labelHashSet*)"
-                )   << "edge " << cellEdges[edgeI] << " in cell " << cellI
-                    << " used " << edgeUsage[edgeI] << " times. " << endl
-                    << "Should be 1 or 2 - serious error in mesh structure"
-                    << endl;
+                if( report )
+                    WarningIn
+                    (
+                        "bool checkCellsZipUp(const polyMeshGen&,"
+                        "const bool, labelHashSet*)"
+                    )   << "edge " << cellEdges[edgeI] << " in cell " << cellI
+                        << " used " << edgeUsage[edgeI] << " times. " << endl
+                        << "Should be 1 or 2 - serious error in mesh structure"
+                        << endl;
 
                 if( setPtr )
                 {
@@ -349,12 +354,13 @@ bool checkCellsZipUp
 
     if( nOpenCells > 0 )
     {
-        WarningIn
-        (
-            "bool checkCellsZipUp(const polyMeshGen&,"
-            " const bool, labelHashSet*)"
-        )   << nOpenCells
-            << " open cells found.  Please use the mesh zip-up tool. "
+        if( report )
+            WarningIn
+            (
+                "bool checkCellsZipUp(const polyMeshGen&,"
+                " const bool, labelHashSet*)"
+            )   << nOpenCells
+                << " open cells found.  Please use the mesh zip-up tool. "
             << endl;
 
         return true;
@@ -388,12 +394,13 @@ bool checkFaceVertices
 
         if( min(curFace) < 0 || max(curFace) > nPoints )
         {
-            WarningIn
-            (
-                "bool checkFaceVertices("
-                "const polyMesgGen&, const bool, labelHashSet*)"
-            )   << "Face " << fI << " contains vertex labels out of range: "
-                << curFace << " Max point index = " << nPoints-1 << endl;
+            if( report )
+                WarningIn
+                (
+                    "bool checkFaceVertices("
+                    "const polyMesgGen&, const bool, labelHashSet*)"
+                )   << "Face " << fI << " contains vertex labels out of range: "
+                    << curFace << " Max point index = " << nPoints-1 << endl;
 
             if( setPtr )
                 setPtr->insert(fI);
@@ -410,12 +417,13 @@ bool checkFaceVertices
 
             if( !inserted )
             {
-                WarningIn
-                (
-                    "bool checkFaceVertices("
-                    "const polyMeshGen&, const bool, labelHashSet*)"
-                )   << "Face " << fI << " contains duplicate vertex labels: "
-                    << curFace << endl;
+                if( report )
+                    WarningIn
+                    (
+                        "bool checkFaceVertices("
+                        "const polyMeshGen&, const bool, labelHashSet*)"
+                    )   << "Face " << fI << " contains duplicate vertex labels: "
+                        << curFace << endl;
 
                 if( setPtr )
                     setPtr->insert(fI);
@@ -429,12 +437,13 @@ bool checkFaceVertices
 
     if( nErrorFaces > 0 )
     {
-        SeriousErrorIn
-        (
-            "bool checkFaceVertices("
-            "const polyMeshGen&, const bool, labelHashSet*)"
-        )   << "const bool, labelHashSet*) const: "
-            << nErrorFaces << " faces with invalid vertex labels found"
+        if( report )
+            SeriousErrorIn
+            (
+                "bool checkFaceVertices("
+                "const polyMeshGen&, const bool, labelHashSet*)"
+            )   << "const bool, labelHashSet*) const: "
+                << nErrorFaces << " faces with invalid vertex labels found"
             << endl;
 
         return true;
