@@ -546,7 +546,20 @@ void meshOptimizer::untangleBoundaryLayer()
     }
     else
     {
-        optimizeLowQualityFaces();
+        // Guard: skip optimizeLowQualityFaces if negVol cells present
+        // partTetMesh constructor is unsafe on degenerate cells
+        labelHashSet negVolCells;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negVolCells);
+        if( negVolCells.size() == 0 )
+        {
+            optimizeLowQualityFaces();
+        }
+        else
+        {
+            Info << "untangleBoundaryLayer: skipping optimizeLowQualityFaces"
+                 << " — " << negVolCells.size()
+                 << " negVol cells present, partTetMesh unsafe" << endl;
+        }
         removeUserConstraints();
         untangleMeshFV(2, 50, 1, true);
     }
