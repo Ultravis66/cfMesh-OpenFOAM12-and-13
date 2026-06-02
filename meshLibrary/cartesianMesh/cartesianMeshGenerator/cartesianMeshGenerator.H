@@ -134,6 +134,7 @@ class cartesianMeshGenerator
         //- suppress BL locally through boundaryLayers::setGapPoints().
         void detectGapPoints(boundaryLayers& bl);
         void detectTripleJunctions(boundaryLayers& bl);
+        void snapSurfaceBeforeBLRefinement();
 
         void generateBoundaryLayers();
 

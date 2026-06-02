@@ -1572,6 +1572,103 @@ void cartesianMeshGenerator::renumberMesh()
     polyMeshGenModifier(mesh_).renumberMesh();
 }
 
+void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
+{
+    if( !meshDict_.isDict("boundaryLayers") )
+        return;
+    const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+    if( !bndL.found("postBLSnap") )
+        return;
+    if( !Switch(bndL.lookup("postBLSnap")) )
+        return;
+
+    Info << "Pre-BL snap: re-projecting surface after volume optimisation" << endl;
+
+    // Rebuild octree — deleted by optimiseFinalMesh
+    meshOctree* snapOctreePtr = new meshOctree(*surfacePtr_);
+    meshOctreeCreator
+    (
+        *snapOctreePtr,
+        meshDict_
+    ).createOctreeWithRefinedBoundary(20, 30);
+
+    meshSurfaceEngine mse(mesh_);
+    meshSurfaceMapper mapper(mse, *snapOctreePtr);
+
+    // Protect BL/no-BL and BL/neutral interface points
+    if( !blNoBlEdgePoints_.empty() )
+    {
+        mapper.setProtectedPoints(blNoBlEdgePoints_);
+        mapper.setProtectedPointPatches(blNoBlPointPatch_);
+    }
+    if( !blNeutralEdgePoints_.empty() )
+    {
+        mapper.setBLNeutralPoints(blNeutralEdgePoints_);
+        mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
+    }
+
+    // Only snap true single-patch points — generic nearest-surface
+    // projection is safe only for pure wall-face interior points.
+    // Multi-patch edges/corners/junctions need feature-aware mapping.
+    const labelList& bPoints = mse.boundaryPoints();
+    const meshSurfacePartitioner mPart(mse);
+    const VRWGraph& pPatches = mPart.pointPatches();
+
+    labelLongList snapPoints;
+    forAll(bPoints, bpI)
+    {
+        const label meshPtI = bPoints[bpI];
+        if( meshPtI < 0 || meshPtI >= label(mesh_.points().size()) )
+            continue;
+        if( pPatches.sizeOfRow(bpI) != 1 )
+            continue;
+        snapPoints.append(bpI);
+    }
+
+    Info << "Pre-BL snap: projecting " << snapPoints.size()
+         << " single-patch boundary points onto STL" << endl;
+
+    if( snapPoints.empty() )
+    {
+        deleteDemandDrivenData(snapOctreePtr);
+        return;
+    }
+
+    // Snapshot for rollback
+    const pointField pointsBeforeSnap(mesh_.points());
+    labelHashSet negBefore, pyrBefore;
+    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+    polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrBefore);
+
+    mapper.mapVerticesOntoSurface(snapPoints);
+    mesh_.clearAddressingData();
+
+    labelHashSet negAfter, pyrAfter;
+    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+    polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrAfter);
+
+    if( negAfter.size() > negBefore.size()
+     || pyrAfter.size() > pyrBefore.size() )
+    {
+        Info << "Pre-BL snap rejected: negVol "
+             << negBefore.size() << "->" << negAfter.size()
+             << " badPyramids " << pyrBefore.size() << "->" << pyrAfter.size()
+             << " — rolling back" << endl;
+        pointField& pts = mesh_.points();
+        pts = pointsBeforeSnap;
+        mesh_.clearAddressingData();
+    }
+    else
+    {
+        Info << "Pre-BL snap accepted: negVol "
+             << negBefore.size() << "->" << negAfter.size()
+             << " badPyramids " << pyrBefore.size() << "->" << pyrAfter.size()
+             << endl;
+    }
+
+    deleteDemandDrivenData(snapOctreePtr);
+}
+
 void cartesianMeshGenerator::generateMesh()
 {
     try
@@ -1739,6 +1836,8 @@ void cartesianMeshGenerator::generateMesh()
             projectSurfaceAfterBackScaling();
         }
 
+        snapSurfaceBeforeBLRefinement();
+
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
             if( finalUntangleRejected_ )
@@ -1748,120 +1847,6 @@ void cartesianMeshGenerator::generateMesh()
             else
             {
                 refBoundaryLayers();
-            }
-        }
-
-        // Post-BL geometry snap - optional, controlled by meshDict
-        {
-            bool doSnap(false);
-            if( meshDict_.isDict("boundaryLayers") )
-            {
-                const dictionary& bndL =
-                    meshDict_.subDict("boundaryLayers");
-                if( bndL.found("postBLSnap") )
-                    doSnap = Switch(bndL.lookup("postBLSnap"));
-            }
-            if( doSnap )
-            {
-                Info << "Post-BL snap: excluded "
-                     << blPoints_.size()
-                     << " BL interior points" << endl;
-                // Rebuild local octree - global octreePtr_ deleted by optimiseFinalMesh
-                meshOctree* snapOctreePtr = new meshOctree(*surfacePtr_);
-                meshOctreeCreator
-                (
-                    *snapOctreePtr,
-                    meshDict_
-                ).createOctreeWithRefinedBoundary(20, 30);
-                meshSurfaceEngine mse(mesh_);
-                meshSurfaceMapper mapper(mse, *snapOctreePtr);
-                // Exclude BL/no-BL interface points from generic snapping
-                // These points are constrained to their feature curve
-                // and must not be moved by nearest-surface projection
-                if( !blNoBlEdgePoints_.empty() )
-                {
-                    mapper.setProtectedPoints(blNoBlEdgePoints_);
-                    mapper.setProtectedPointPatches(blNoBlPointPatch_);
-                }
-                if( !blNeutralEdgePoints_.empty() )
-                {
-                    mapper.setBLNeutralPoints(blNeutralEdgePoints_);
-                    mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
-                }
-                const labelList& bPoints = mse.boundaryPoints();
-                // Only snap points that existed before BL refinement.
-                // Points created during BL refinement are prism layer
-                // vertices — projecting them onto the wall collapses prisms.
-                boolList isBLPoint(mesh_.points().size(), false);
-                forAll(blPoints_, i)
-                {
-                    const label pI = blPoints_[i];
-                    if( pI >= 0 && pI < label(isBLPoint.size()) )
-                        isBLPoint[pI] = true;
-                }
-                labelLongList outerBndPoints;
-                forAll(bPoints, bpI)
-                {
-                    const label meshPtI = bPoints[bpI];
-                    if( meshPtI < 0 || meshPtI >= label(mesh_.points().size()) )
-                        continue;
-                    // Skip points created during BL refinement
-                    if( meshPtI >= nPointsBeforeBL_ )
-                        continue;
-                    // Skip known BL interior points
-                    if( isBLPoint[meshPtI] )
-                        continue;
-                    outerBndPoints.append(bpI);
-                }
-                Info << "Post-BL snap: projecting "
-                     << outerBndPoints.size()
-                     << " outer boundary points onto STL"
-                     << " (nPointsBeforeBL=" << nPointsBeforeBL_
-                     << " total=" << mesh_.points().size() << ")" << endl;
-                if( outerBndPoints.size() > 0 )
-                {
-                    // Snapshot for rollback
-                    const pointField pointsBeforeSnap(mesh_.points());
-                    labelHashSet negBeforeSnap, pyrBeforeSnap;
-                    polyMeshGenChecks::checkCellVolumes
-                        (mesh_, false, &negBeforeSnap);
-                    polyMeshGenChecks::checkFacePyramids
-                        (mesh_, false, -SMALL, &pyrBeforeSnap);
-
-                    mapper.mapVerticesOntoSurface(outerBndPoints);
-                    mesh_.clearAddressingData();
-
-                    labelHashSet negAfterSnap, pyrAfterSnap;
-                    polyMeshGenChecks::checkCellVolumes
-                        (mesh_, false, &negAfterSnap);
-                    polyMeshGenChecks::checkFacePyramids
-                        (mesh_, false, -SMALL, &pyrAfterSnap);
-
-                    if( negAfterSnap.size() > negBeforeSnap.size()
-                     || pyrAfterSnap.size() > pyrBeforeSnap.size() )
-                    {
-                        Info << "Post-BL snap rejected: negVol "
-                             << negBeforeSnap.size() << "->"
-                             << negAfterSnap.size()
-                             << " badPyramids "
-                             << pyrBeforeSnap.size() << "->"
-                             << pyrAfterSnap.size()
-                             << " — rolling back" << endl;
-                        pointField& pts = mesh_.points();
-                        pts = pointsBeforeSnap;
-                        mesh_.clearAddressingData();
-                    }
-                    else
-                    {
-                        Info << "Post-BL snap accepted: negVol "
-                             << negBeforeSnap.size() << "->"
-                             << negAfterSnap.size()
-                             << " badPyramids "
-                             << pyrBeforeSnap.size() << "->"
-                             << pyrAfterSnap.size() << endl;
-                    }
-                }
-                deleteDemandDrivenData(snapOctreePtr);
             }
         }
 
