@@ -759,8 +759,24 @@ void boundaryLayers::suppressFailedSingularityExtrusions
         ++nCandidates;
 
         const point& p = points[bPoints[bpI]];
-        vector normal = pNormals[bpI];
-
+        // Compute normal deterministically from treated face normals
+        // instead of pNormals which has OMP non-determinism.
+        vector normal(vector::zero);
+        forAllRow(pFaces, bpI, pfI)
+        {
+            const label faceI = pFaces(bpI, pfI);
+            if( faceI < 0 || faceI >= label(bFaces.size()) ) continue;
+            const label patchI = boundaryFacePatches[faceI];
+            if( patchI < 0 || patchI >= label(treatPatches.size()) ) continue;
+            if( !treatPatches[patchI] ) continue;
+            const face& f = bFaces[faceI];
+            if( f.size() < 3 ) continue;
+            vector fn(vector::zero);
+            const point& fp0 = points[f[0]];
+            for(label pi=1; pi<f.size()-1; ++pi)
+                fn += (points[f[pi]] - fp0) ^ (points[f[pi+1]] - fp0);
+            normal += fn;
+        }
         if( mag(normal) < VSMALL )
             continue;
 
