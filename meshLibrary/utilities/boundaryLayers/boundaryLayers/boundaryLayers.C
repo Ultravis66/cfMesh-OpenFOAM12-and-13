@@ -2566,6 +2566,13 @@ void boundaryLayers::addLayerForAllPatches()
         //- per-patch BL planning audit before vertex creation
         reportBLPlanningPerPatch();
 
+        //- suppress faces whose multi-patch singular points would produce
+        //- zero-thickness extrusion before constructing the BL vertex graph
+        suppressFailedSingularityExtrusions(treatedPatches);
+
+        //- audit again after singularity suppression
+        reportBLPlanningPerPatch();
+
         //- create bnd layer vertices
         createNewVertices(treatedPatches);
 
