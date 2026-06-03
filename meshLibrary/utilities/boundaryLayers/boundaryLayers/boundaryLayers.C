@@ -2146,7 +2146,10 @@ void boundaryLayers::applyGapFaceRingExclusion() const
 
     // Populate face-level suppression mask for ring0 faces
     // createNewFacesAndCells will skip these entirely — no prism topology
-    suppressLayerAtBndFace_.setSize(nBF, false);
+    // Preserve existing suppressions from pre-pass (suppressFailedSingularityExtrusions)
+    // — do NOT reset to false, only add new suppressions.
+    if( suppressLayerAtBndFace_.size() != nBF )
+        suppressLayerAtBndFace_.setSize(nBF, false);
     forAll(faceRing, bfI)
         if( faceRing[bfI] == 0 )
             suppressLayerAtBndFace_[bfI] = true;
@@ -2566,14 +2569,11 @@ void boundaryLayers::addLayerForAllPatches()
         //- per-patch BL planning audit before vertex creation
         reportBLPlanningPerPatch();
 
-        //- suppress faces whose multi-patch singular points would produce
-        //- zero-thickness extrusion before constructing the BL vertex graph
-        suppressFailedSingularityExtrusions(treatedPatches);
-
-        //- audit again after singularity suppression
+        //- audit after planning (singularity suppression now runs per-patch
+        //- inside createNewVertices using the exact treatPatches for each group)
         reportBLPlanningPerPatch();
 
-        //- create bnd layer vertices
+        //- create bnd layer vertices (includes per-patch singularity pre-pass)
         createNewVertices(treatedPatches);
 
         //- create bnd layer cells

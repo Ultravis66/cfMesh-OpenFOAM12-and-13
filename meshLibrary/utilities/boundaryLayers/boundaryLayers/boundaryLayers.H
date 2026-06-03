@@ -448,6 +448,7 @@ public:
         void buildBLTransitionPlan() const;
         void reportBLPlanningPerPatch() const;
         void suppressFailedSingularityExtrusions(const labelList& patchLabels);
+        void suppressFailedSingularityExtrusions(const boolList& treatPatches);
 
         //- avoid generating layers for empty patches in case of a 2D mesh
         //- used as a flag prior to addLayerForAllPatches

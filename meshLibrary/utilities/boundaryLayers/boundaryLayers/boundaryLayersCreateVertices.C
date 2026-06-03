@@ -690,33 +690,21 @@ point boundaryLayers::createNewVertex
 
 void boundaryLayers::suppressFailedSingularityExtrusions
 (
-    const labelList& patchLabels
+    const boolList& treatPatches
 )
 {
     const meshSurfaceEngine& mse = surfaceEngine();
-
-    const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
-    boolList treatPatches(boundaries.size(), false);
-    forAll(patchLabels, i)
-    {
-        const label patchI = patchLabels[i];
-        if( patchI >= 0 && patchI < label(treatPatches.size()) )
-            treatPatches[patchI] = true;
-    }
-
     const labelList& bPoints = mse.boundaryPoints();
     const faceList::subList& bFaces = mse.boundaryFaces();
     const pointFieldPMG& points = mesh_.points();
-
     const vectorField& pNormals = mse.pointNormals();
     const VRWGraph& pFaces = mse.pointFaces();
     const VRWGraph& pointPoints = mse.pointPoints();
     const labelList& boundaryFacePatches = mse.boundaryFacePatches();
-
     const meshSurfacePartitioner& mPart = surfacePartitioner();
     const VRWGraph& pPatches = mPart.pointPatches();
 
-    if( suppressLayerAtBndFace_.size() != bFaces.size() )
+    if( suppressLayerAtBndFace_.size() != label(bFaces.size()) )
         suppressLayerAtBndFace_.setSize(bFaces.size(), false);
 
     label nCandidates(0);
@@ -727,32 +715,19 @@ void boundaryLayers::suppressFailedSingularityExtrusions
     {
         if( bpI < 0 || bpI >= label(pPatches.size()) )
             continue;
-
-        // Only multi-patch singular points are considered here.
-        // Single-patch and ordinary two-patch edge points are handled by
-        // the normal BL extrusion logic.
         if( pPatches.sizeOfRow(bpI) < 3 )
             continue;
 
         bool hasTreated(false);
         bool hasNotTreated(false);
-
         forAllRow(pPatches, bpI, ppI)
         {
             const label patchI = pPatches(bpI, ppI);
-
             if( patchI < 0 || patchI >= label(treatPatches.size()) )
                 continue;
-
-            if( treatPatches[patchI] )
-                hasTreated = true;
-            else
-                hasNotTreated = true;
+            if( treatPatches[patchI] ) hasTreated = true;
+            else hasNotTreated = true;
         }
-
-        // This mirrors the risky mixed treated / non-treated multi-patch
-        // singularity case. Pure treated or pure non-treated corners are not
-        // the target of this pre-pass.
         if( !hasTreated || !hasNotTreated )
             continue;
 
@@ -760,24 +735,16 @@ void boundaryLayers::suppressFailedSingularityExtrusions
 
         const point& p = points[bPoints[bpI]];
         vector normal = pNormals[bpI];
-
-        if( mag(normal) < VSMALL )
-            continue;
-
+        if( mag(normal) < VSMALL ) continue;
         normal /= mag(normal);
 
         scalar minEdge(GREAT);
-
         forAllRow(pointPoints, bpI, ppI)
         {
             const label bpJ = pointPoints(bpI, ppI);
-            if( bpJ < 0 || bpJ >= label(bPoints.size()) )
-                continue;
-
+            if( bpJ < 0 || bpJ >= label(bPoints.size()) ) continue;
             const scalar d = mag(points[bPoints[bpJ]] - p);
-
-            if( d > VSMALL && d < minEdge )
-                minEdge = d;
+            if( d > VSMALL && d < minEdge ) minEdge = d;
         }
 
         scalar candidateDist =
@@ -786,129 +753,73 @@ void boundaryLayers::suppressFailedSingularityExtrusions
           : scalar(0.0);
 
         bool accepted(false);
-
         for(label attempt=0; attempt<8 && candidateDist > VSMALL; ++attempt)
         {
             const point candidate = p - candidateDist * normal;
-
             bool crossesGuardPlane(false);
-
             forAllRow(pFaces, bpI, pfI)
             {
                 const label faceI = pFaces(bpI, pfI);
-
-                if( faceI < 0 || faceI >= label(bFaces.size()) )
-                    continue;
-
+                if( faceI < 0 || faceI >= label(bFaces.size()) ) continue;
                 const label patchI = boundaryFacePatches[faceI];
-
-                if( patchI < 0 || patchI >= label(treatPatches.size()) )
-                    continue;
-
-                // Use non-treated faces as guard planes, matching the logic
-                // in createNewVertex().
-                if( treatPatches[patchI] )
-                    continue;
-
+                if( patchI < 0 || patchI >= label(treatPatches.size()) ) continue;
+                if( treatPatches[patchI] ) continue;
                 const face& f = bFaces[faceI];
-
-                if( f.size() < 3 )
-                    continue;
-
+                if( f.size() < 3 ) continue;
                 vector fn(vector::zero);
                 const point& fp0 = points[f[0]];
-
                 for(label pi=1; pi<f.size()-1; ++pi)
                     fn += (points[f[pi]] - fp0) ^ (points[f[pi+1]] - fp0);
-
-                if( mag(fn) < VSMALL )
-                    continue;
-
+                if( mag(fn) < VSMALL ) continue;
                 fn /= mag(fn);
-
                 point fc(point::zero);
-
-                forAll(f, fi)
-                    fc += points[f[fi]];
-
+                forAll(f, fi) fc += points[f[fi]];
                 fc /= scalar(f.size());
-
                 const scalar s0 = (p - fc) & fn;
                 const scalar s1 = (candidate - fc) & fn;
-
                 if( mag(s0) > SMALL && s0 * s1 < scalar(0) )
                 {
                     crossesGuardPlane = true;
                     break;
                 }
             }
-
-            if( !crossesGuardPlane )
-            {
-                accepted = true;
-                break;
-            }
-
+            if( !crossesGuardPlane ) { accepted = true; break; }
             candidateDist *= scalar(0.5);
         }
 
         scalar predictedDist = accepted ? candidateDist : scalar(0.0);
 
-        // Simulate the same non-treated-face edge clamp used later in
-        // createNewVertex(). If the clamp collapses the accepted bisection
-        // distance to zero/near-zero, suppress the affected faces before
-        // vertex/cell construction so the BL graph remains coherent.
         if( accepted )
         {
             forAllRow(pFaces, bpI, pfI)
             {
                 const label faceI = pFaces(bpI, pfI);
-
-                if( faceI < 0 || faceI >= label(bFaces.size()) )
-                    continue;
-
+                if( faceI < 0 || faceI >= label(bFaces.size()) ) continue;
                 const label patchI = boundaryFacePatches[faceI];
-
-                if( patchI < 0 || patchI >= label(treatPatches.size()) )
-                    continue;
-
-                if( treatPatches[patchI] )
-                    continue;
-
+                if( patchI < 0 || patchI >= label(treatPatches.size()) ) continue;
+                if( treatPatches[patchI] ) continue;
                 const face& f = bFaces[faceI];
                 const label pos = f.which(bPoints[bpI]);
-
-                if( pos == -1 )
-                    continue;
-
+                if( pos == -1 ) continue;
                 const point& ep1 = points[f.prevLabel(pos)];
                 const point& ep2 = points[f.nextLabel(pos)];
-
                 const scalar dst =
                     help::distanceOfPointFromTheEdge(ep1, ep2, p);
-
                 if( dst < predictedDist )
                     predictedDist = scalar(0.9) * dst;
             }
         }
 
         const scalar minUsableDist = scalar(100) * VSMALL;
-
         if( predictedDist > minUsableDist )
             continue;
 
         ++nFailed;
-
-        // This point would produce a zero/near-zero extrusion distance after
-        // the full createNewVertex logic. Suppress touching faces BEFORE
-        // vertex/cell construction.
         forAllRow(pFaces, bpI, pfI)
         {
             const label bfI = pFaces(bpI, pfI);
-
             if( bfI < 0 || bfI >= label(suppressLayerAtBndFace_.size()) )
                 continue;
-
             if( !suppressLayerAtBndFace_[bfI] )
             {
                 suppressLayerAtBndFace_[bfI] = true;
@@ -917,12 +828,28 @@ void boundaryLayers::suppressFailedSingularityExtrusions
         }
     }
 
-    Info << "Failed singularity extrusion pre-pass: candidates="
-         << nCandidates
-         << " failed=" << nFailed
-         << " newlySuppressedFaces=" << nFacesSuppressed
-         << endl;
+    if( nFailed > 0 )
+        Info << "Singularity pre-pass (boolList): candidates="
+             << nCandidates << " failed=" << nFailed
+             << " suppressed=" << nFacesSuppressed << endl;
 }
+
+void boundaryLayers::suppressFailedSingularityExtrusions
+(
+    const labelList& patchLabels
+)
+{
+    // Wrapper: convert labelList to boolList and delegate to boolList overload
+    boolList treatPatches(mesh_.boundaries().size(), false);
+    forAll(patchLabels, i)
+    {
+        const label patchI = patchLabels[i];
+        if( patchI >= 0 && patchI < label(treatPatches.size()) )
+            treatPatches[patchI] = true;
+    }
+    suppressFailedSingularityExtrusions(treatPatches);
+}
+
 
 void boundaryLayers::createNewVertices(const boolList& treatPatches)
 {
@@ -1201,6 +1128,9 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
 
         if( !treat )
             continue;
+
+        // Per-iteration pre-pass using exact treatPatches for this patch group
+        suppressFailedSingularityExtrusions(treatPatches);
 
         const label pKey = patchKey_[pLabel];
 
