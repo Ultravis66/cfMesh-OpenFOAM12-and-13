@@ -422,43 +422,36 @@ point boundaryLayers::createNewVertex
         }
 
         //- limit distances
-        // Do not apply the non-treated-face edge clamp to multi-patch
-        // singularity points (3+ patches). The adaptive bisection above
-        // already found a guard-plane-safe distance; the edge-distance
-        // clamp pulls it back to near-zero at blade tip junctions.
-        if( otherPatches.size() < 2 )
+        forAllRow(pFaces, bpI, pfI)
         {
-            forAllRow(pFaces, bpI, pfI)
+            const label faceLabel = pFaces(bpI, pfI);
+            if( otherPatches.contains(boundaryFacePatches[faceLabel]) )
             {
-                const label faceLabel = pFaces(bpI, pfI);
-                if( otherPatches.contains(boundaryFacePatches[faceLabel]) )
+                const face& f = bFaces[faceLabel];
+                const label pos = f.which(bPoints[bpI]);
+
+                if( pos != -1 )
                 {
-                    const face& f = bFaces[faceLabel];
-                    const label pos = f.which(bPoints[bpI]);
+                    const point& ep1 = points[f.prevLabel(pos)];
+                    const point& ep2 = points[f.nextLabel(pos)];
 
-                    if( pos != -1 )
-                    {
-                        const point& ep1 = points[f.prevLabel(pos)];
-                        const point& ep2 = points[f.nextLabel(pos)];
+                    const scalar dst =
+                        help::distanceOfPointFromTheEdge(ep1, ep2, p);
 
-                        const scalar dst =
-                            help::distanceOfPointFromTheEdge(ep1, ep2, p);
-
-                        if( dst < dist )
-                            dist = 0.9 * dst;
-                    }
-                    else
-                    {
-                        FatalErrorIn
-                        (
-                            "void boundaryLayers::createNewVertices"
-                            "("
-                                "const boolList& treatPatches,"
-                                "labelList& newLabelForVertex"
-                            ") const"
-                        ) << "Face does not contains this vertex!"
-                            << abort(FatalError);
-                    }
+                    if( dst < dist )
+                        dist = 0.9 * dst;
+                }
+                else
+                {
+                    FatalErrorIn
+                    (
+                        "void boundaryLayers::createNewVertices"
+                        "("
+                            "const boolList& treatPatches,"
+                            "labelList& newLabelForVertex"
+                        ") const"
+                    ) << "Face does not contains this vertex!"
+                        << abort(FatalError);
                 }
             }
         }
@@ -859,14 +852,56 @@ void boundaryLayers::suppressFailedSingularityExtrusions
             candidateDist *= scalar(0.5);
         }
 
+        scalar predictedDist = accepted ? candidateDist : scalar(0.0);
+
+        // Simulate the same non-treated-face edge clamp used later in
+        // createNewVertex(). If the clamp collapses the accepted bisection
+        // distance to zero/near-zero, suppress the affected faces before
+        // vertex/cell construction so the BL graph remains coherent.
         if( accepted )
+        {
+            forAllRow(pFaces, bpI, pfI)
+            {
+                const label faceI = pFaces(bpI, pfI);
+
+                if( faceI < 0 || faceI >= label(bFaces.size()) )
+                    continue;
+
+                const label patchI = boundaryFacePatches[faceI];
+
+                if( patchI < 0 || patchI >= label(treatPatches.size()) )
+                    continue;
+
+                if( treatPatches[patchI] )
+                    continue;
+
+                const face& f = bFaces[faceI];
+                const label pos = f.which(bPoints[bpI]);
+
+                if( pos == -1 )
+                    continue;
+
+                const point& ep1 = points[f.prevLabel(pos)];
+                const point& ep2 = points[f.nextLabel(pos)];
+
+                const scalar dst =
+                    help::distanceOfPointFromTheEdge(ep1, ep2, p);
+
+                if( dst < predictedDist )
+                    predictedDist = scalar(0.9) * dst;
+            }
+        }
+
+        const scalar minUsableDist = scalar(100) * VSMALL;
+
+        if( predictedDist > minUsableDist )
             continue;
 
         ++nFailed;
 
-        // The same point would produce dist=0 in createNewVertex().
-        // Suppress the boundary faces touching it BEFORE vertex/cell creation
-        // so the layer graph remains coherent.
+        // This point would produce a zero/near-zero extrusion distance after
+        // the full createNewVertex logic. Suppress touching faces BEFORE
+        // vertex/cell construction.
         forAllRow(pFaces, bpI, pfI)
         {
             const label bfI = pFaces(bpI, pfI);
