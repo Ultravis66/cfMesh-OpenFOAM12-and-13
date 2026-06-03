@@ -422,36 +422,43 @@ point boundaryLayers::createNewVertex
         }
 
         //- limit distances
-        forAllRow(pFaces, bpI, pfI)
+        // Do not apply the non-treated-face edge clamp to multi-patch
+        // singularity points (3+ patches). The adaptive bisection above
+        // already found a guard-plane-safe distance; the edge-distance
+        // clamp pulls it back to near-zero at blade tip junctions.
+        if( otherPatches.size() < 2 )
         {
-            const label faceLabel = pFaces(bpI, pfI);
-            if( otherPatches.contains(boundaryFacePatches[faceLabel]) )
+            forAllRow(pFaces, bpI, pfI)
             {
-                const face& f = bFaces[faceLabel];
-                const label pos = f.which(bPoints[bpI]);
-
-                if( pos != -1 )
+                const label faceLabel = pFaces(bpI, pfI);
+                if( otherPatches.contains(boundaryFacePatches[faceLabel]) )
                 {
-                    const point& ep1 = points[f.prevLabel(pos)];
-                    const point& ep2 = points[f.nextLabel(pos)];
+                    const face& f = bFaces[faceLabel];
+                    const label pos = f.which(bPoints[bpI]);
 
-                    const scalar dst =
-                        help::distanceOfPointFromTheEdge(ep1, ep2, p);
+                    if( pos != -1 )
+                    {
+                        const point& ep1 = points[f.prevLabel(pos)];
+                        const point& ep2 = points[f.nextLabel(pos)];
 
-                    if( dst < dist )
-                        dist = 0.9 * dst;
-                }
-                else
-                {
-                    FatalErrorIn
-                    (
-                        "void boundaryLayers::createNewVertices"
-                        "("
-                            "const boolList& treatPatches,"
-                            "labelList& newLabelForVertex"
-                        ") const"
-                    ) << "Face does not contains this vertex!"
-                        << abort(FatalError);
+                        const scalar dst =
+                            help::distanceOfPointFromTheEdge(ep1, ep2, p);
+
+                        if( dst < dist )
+                            dist = 0.9 * dst;
+                    }
+                    else
+                    {
+                        FatalErrorIn
+                        (
+                            "void boundaryLayers::createNewVertices"
+                            "("
+                                "const boolList& treatPatches,"
+                                "labelList& newLabelForVertex"
+                            ") const"
+                        ) << "Face does not contains this vertex!"
+                            << abort(FatalError);
+                    }
                 }
             }
         }
@@ -1124,6 +1131,17 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
     //- make sure than the points are never re-allocated during the process
     points.reserve(points.size() + 2 * bPoints.size());
 
+    const PtrList<boundaryPatch>& boundaries2 = mesh_.boundaries();
+    const label nPatches2 = boundaries2.size();
+    const VRWGraph& pPatchesDiag2 = mPart.pointPatches();
+    List<label> nDiagPts2(nPatches2, 0);
+    List<label> nDiagLeVSmall2(nPatches2, 0);
+    List<label> nDiagLe1e102(nPatches2, 0);
+    List<label> nDiagLe1e82(nPatches2, 0);
+    List<label> nDiagLe1e62(nPatches2, 0);
+    List<scalar> minDiagDist2(nPatches2, GREAT);
+    List<scalar> sumDiagDist2(nPatches2, 0.0);
+
     //- generate new layer vertices for each patch
     forAll(patchLabels, patchI)
     {
@@ -1204,7 +1222,24 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             const label pointI = bPoints[bpI];
 
             //- create new point
+            const point pBefore = points[bPoints[bpI]];
             const point p = createNewVertex(bpI, treatPatches, patchVertex);
+            const scalar eDist2 = mag(p - pBefore);
+            if( bpI >= 0 && bpI < label(pPatchesDiag2.size()) )
+            {
+                forAllRow(pPatchesDiag2, bpI, ppi)
+                {
+                    const label pIdx2 = pPatchesDiag2(bpI, ppi);
+                    if( pIdx2 < 0 || pIdx2 >= nPatches2 ) continue;
+                    ++nDiagPts2[pIdx2];
+                    minDiagDist2[pIdx2] = Foam::min(minDiagDist2[pIdx2], eDist2);
+                    sumDiagDist2[pIdx2] += eDist2;
+                    if( eDist2 <= VSMALL )        ++nDiagLeVSmall2[pIdx2];
+                    if( eDist2 <= scalar(1e-10) ) ++nDiagLe1e102[pIdx2];
+                    if( eDist2 <= scalar(1e-8) )  ++nDiagLe1e82[pIdx2];
+                    if( eDist2 <= scalar(1e-6) )  ++nDiagLe1e62[pIdx2];
+                }
+            }
 
             if( patchVertex[bpI] & EDGENODE )
             {
@@ -1367,6 +1402,23 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             ) << "Boundary node " << bpI << " is not at an edge!"
                 << abort(FatalError);
         }
+    }
+
+    Info << "BL extrusion-distance audit (labelList path) per patch:" << endl;
+    forAll(boundaries2, patchI)
+    {
+        if( nDiagPts2[patchI] == 0 ) continue;
+        const scalar avgD =
+            sumDiagDist2[patchI] / scalar(Foam::max(label(1), nDiagPts2[patchI]));
+        Info << "  " << boundaries2[patchI].patchName() << ":"
+             << " pts=" << nDiagPts2[patchI]
+             << " minDist=" << minDiagDist2[patchI]
+             << " avgDist=" << avgD
+             << " <=VSMALL=" << nDiagLeVSmall2[patchI]
+             << " <=1e-10=" << nDiagLe1e102[patchI]
+             << " <=1e-8=" << nDiagLe1e82[patchI]
+             << " <=1e-6=" << nDiagLe1e62[patchI]
+             << endl;
     }
 
     //- swap coordinates of new and old points
