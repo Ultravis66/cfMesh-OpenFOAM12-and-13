@@ -254,7 +254,7 @@ void meshSurfaceMapper::preMapVertices(const label nIterations)
 
             if( boundaryPointPatches[bpI].size() == 0 )
             {
-                // No patch found for this point — skip projection
+                // No patch found for this point -- skip projection
                 continue;
             }
             else if( boundaryPointPatches[bpI].size() == 1 )

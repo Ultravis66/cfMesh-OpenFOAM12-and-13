@@ -240,7 +240,7 @@ bool checkCellConnectionsOverFaces::checkCellGroups()
             reduce(nCellsInGroup[groupI], sumOp<label>());
     }
 
-    // Find group with most cells — use clear variable names
+    // Find group with most cells -- use clear variable names
     // Note: original code reused nGroups_ as group ID which was confusing
     label keepGroup(-1);
     label maxCells(-1);

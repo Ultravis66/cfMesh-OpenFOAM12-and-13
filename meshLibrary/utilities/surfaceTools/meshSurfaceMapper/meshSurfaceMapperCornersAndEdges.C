@@ -66,13 +66,13 @@ bool meshSurfaceMapper::proposedMoveIsValid
     const faceListPMG& allFaces = mse.mesh().faces();
     const labelList& bPoints = mse.boundaryPoints();
 
-    // Check 1: movement cap — reject if candidate is further from
+    // Check 1: movement cap -- reject if candidate is further from
     // old position than the local mapping distance allows.
     const scalar moveSq = magSqr(candidate - oldPosition);
     if( mappingDistSq > VSMALL && moveSq > mappingDistSq )
         return false;
 
-    // Pure geometric evaluation — no mesh mutation, thread-safe.
+    // Pure geometric evaluation -- no mesh mutation, thread-safe.
     // Substitute candidate for bPoints[bpI] inline using lambda.
     const label globalPtI = bPoints[bpI];
     auto ptOf = [&](const label ptI) -> point
@@ -117,7 +117,7 @@ bool meshSurfaceMapper::proposedMoveIsValid
     }
 
     // Check 4 removed: skewness proxy fc2-0.5*(fc2+cc2) always equals
-    // 0.5*(fc2-cc2), giving ratio always 0.5 — never rejected anything.
+    // 0.5*(fc2-cc2), giving ratio always 0.5 -- never rejected anything.
     // Rely on movement cap + face area + pyramid height checks above.
 
     return valid;
@@ -322,7 +322,7 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         const DynList<label> patches = pPatches[bpI];
         if( patches.size() == 0 ) continue;  // guard: no patches = no valid snap
 
-        // Lock multi-patch corners (3+ patches) — blade/hub/periodic triple
+        // Lock multi-patch corners (3+ patches) -- blade/hub/periodic triple
         // junctions must not move. Averaged patch projection is not a valid
         // feature target and can create protrusions at turbomachinery corners.
         if( patches.size() >= 3 ) continue;
@@ -436,7 +436,7 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
                 }
                 cc /= scalar(cll.size());
                 const scalar h = fn & (fc - cc);
-                // Tolerance based on face area magnitude — dimensionally
+                // Tolerance based on face area magnitude -- dimensionally
                 // consistent with h = fn & (fc - cc) which has area*length units.
                 // Tolerance: volume-scale hybrid.
                 // h = fn & (fc - cc) has area*length scale.
@@ -570,7 +570,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
 
         //- use the vertex with the smallest mapping distance
         // Do NOT fall back to mapPointApprox if findNearestEdgePoint fails.
-        // mapPointApprox is an average of patch projections — not guaranteed
+        // mapPointApprox is an average of patch projections -- not guaranteed
         // to lie on the feature curve. Near blade/hub/periodic corners this
         // creates protrusions. If true edge projection fails, skip this point.
         if( distSq > 1.2 * distSqApprox )
@@ -624,7 +624,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
     mapToSmallestDistance(parallelBndNodes);
 
     // Old validity check replaced by serial pass above
-    // Old edge validity check removed — edge nodes must reach
+    // Old edge validity check removed -- edge nodes must reach
     // feature curves; hard revert inappropriate here.
     // If bad pyramids persist near feature edges, add bisection.
 

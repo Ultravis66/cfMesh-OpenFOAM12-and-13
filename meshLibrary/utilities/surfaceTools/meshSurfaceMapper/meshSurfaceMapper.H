@@ -88,7 +88,7 @@ class meshSurfaceMapper
         Map<label> blNeutralPointPatches_;
 
         //- Boundary points rejected by validity check in last
-        //- mapVerticesOntoSurface call — used by repairRejectedPoints
+        //- mapVerticesOntoSurface call -- used by repairRejectedPoints
         mutable DynamicList<label> rejectedBpI_;
 
         //- BL-side patch index per protected boundary point
@@ -201,7 +201,7 @@ public:
         //- set boundary-point indices that must not be moved
         //- by generic nearest-surface projection.
         //- label space: boundary-point indices (into surfaceEngine_.boundaryPoints())
-        //- defaults to empty — no effect unless explicitly set
+        //- defaults to empty -- no effect unless explicitly set
         void setProtectedPoints(const labelHashSet& pts)
         {
             protectedPoints_ = pts;

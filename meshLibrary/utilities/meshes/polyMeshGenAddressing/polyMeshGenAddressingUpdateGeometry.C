@@ -66,7 +66,7 @@ void polyMeshGenAddressing::updateGeometry
             if( nPoints < 3 ) continue;
 
             // Check all points are finite and reasonable before computation.
-            // Use GREAT (1e15) not VGREAT (1e37) — large-but-finite coordinates
+            // Use GREAT (1e15) not VGREAT (1e37) -- large-but-finite coordinates
             // can still overflow to inf during cross-product/magnitude ops.
             bool anyInfPt = false;
             for(label pI=0;pI<nPoints;++pI)

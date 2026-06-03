@@ -301,7 +301,7 @@ void boundaryLayerOptimisation::optimiseThicknessVariation
     scalarField hairLength(hairEdges_.size());
     scalarField initialHairLength(hairEdges_.size());
 
-    // Minimum thickness fraction — prevents catastrophic collapse to
+    // Minimum thickness fraction -- prevents catastrophic collapse to
     // near-zero layer thickness causing astronomical aspect ratio cells.
     const scalar minThicknessFraction = 1e-4;
     const label maxThicknessIterations = 100;
@@ -428,7 +428,7 @@ void boundaryLayerOptimisation::optimiseThicknessVariation
                 }
             }
         }
-        // Old direct-neighbor loop removed — superseded by cell-based thickness check above
+        // Old direct-neighbor loop removed -- superseded by cell-based thickness check above
 
         if( Pstream::parRun() )
         {

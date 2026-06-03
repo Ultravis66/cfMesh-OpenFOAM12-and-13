@@ -319,7 +319,7 @@ public:
             }
         }
 
-        //- lock acute BL+BL+neutral corner points — prevent optimizer movement
+        //- lock acute BL+BL+neutral corner points -- prevent optimizer movement
         void setAcuteCornerPoints(const labelHashSet& acutePts)
         {
             forAllConstIter(labelHashSet, acutePts, it)

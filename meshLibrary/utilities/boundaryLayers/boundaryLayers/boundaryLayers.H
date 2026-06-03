@@ -87,7 +87,7 @@ class boundaryLayers
         scalar layerScaleRing4_;       // default 1.00
         scalar layerScaleRing5_;       // default 0.80
         scalar layerScaleRing6_;       // default 1.00
-        // Acute corner local taper — stronger suppression seeded from blblAcuteCornerPoints_
+        // Acute corner local taper -- stronger suppression seeded from blblAcuteCornerPoints_
         scalar acuteCornerRing0_;      // default 0.0
         scalar acuteCornerRing1_;      // default 0.0
         scalar acuteCornerRing2_;      // default 0.05
@@ -163,7 +163,7 @@ class boundaryLayers
         //- triple-junction seed points (blade/hub-shroud/periodic singularities)
         labelHashSet tripleJunctionPoints_;
 
-        //- face-level BL suppression mask — set by gap/VT detection
+        //- face-level BL suppression mask -- set by gap/VT detection
         //- createNewFacesAndCells skips faces where this is true
         mutable boolList suppressLayerAtBndFace_;
 

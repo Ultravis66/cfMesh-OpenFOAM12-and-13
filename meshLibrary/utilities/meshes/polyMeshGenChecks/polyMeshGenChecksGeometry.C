@@ -336,7 +336,7 @@ bool checkCellVolumes
     labelHashSet* setPtr
 )
 {
-    // Compute raw signed cell volumes directly — do NOT use addressingData()
+    // Compute raw signed cell volumes directly -- do NOT use addressingData()
     // cache which stores clamped (always positive) values for optimizer safety.
     const vectorField& fCtrs = mesh.addressingData().faceCentres();
     const vectorField& fAreas = mesh.addressingData().faceAreas();

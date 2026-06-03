@@ -266,7 +266,7 @@ void meshSurfaceEngineModifier::updateGeometry
     const labelList& bp = surfaceEngine_.bp();
 
     boolList updateFaces(bFaces.size(), false);
-    // Serial: multiple bpI share faces — updateFaces[...]=true races
+    // Serial: multiple bpI share faces -- updateFaces[...]=true races
     forAll(updateBndNodes, i)
     {
         const label bpI = updateBndNodes[i];
@@ -331,7 +331,7 @@ void meshSurfaceEngineModifier::updateGeometry
         const vectorField& faceNormals = surfaceEngine_.faceNormals();
 
         boolList updateBndPoint(pFaces.size(), false);
-        // Serial: multiple bpI share face points — updateBndPoint[...]=true races
+        // Serial: multiple bpI share face points -- updateBndPoint[...]=true races
         forAll(updateBndNodes, i)
         {
             const label bpI = updateBndNodes[i];

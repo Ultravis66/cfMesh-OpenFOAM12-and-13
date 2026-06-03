@@ -162,7 +162,7 @@ void meshSurfaceMapper::mapToSmallestDistance(LongList<parMapperHelper>& parN)
         const label bpI = globalToLocal[ph.globalLabel()];
 
         parMapperHelper& phOrig = parN[bpToList[bpI]];
-        // Select the candidate with the SMALLEST moving distance —
+        // Select the candidate with the SMALLEST moving distance --
         // was previously reversed (selected largest), causing wrong
         // projection choices at parallel processor boundaries.
         if( ph.movingDistance() < phOrig.movingDistance() )
@@ -237,7 +237,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
 
     // Build filtered node list excluding BL/no-BL protected points.
     // Protected points (boundary-point indices) must not be moved by
-    // generic nearest-surface projection — they are constrained to
+    // generic nearest-surface projection -- they are constrained to
     // their feature curve by the BL/no-BL transition system.
     // If protectedPoints_ is empty this is a no-op (default behaviour).
     labelLongList filteredNodes;
@@ -259,6 +259,13 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
              << (nodesToMap.size() - nFiltered)
              << " protected BL/no-BL interface points" << endl;
     }
+
+    // Patch-constrained projection: multi-patch points (npp > 1) get
+    // their unconstrained nearest-surface result validated against their
+    // patch membership set. If the returned patch is not in the set,
+    // re-project into each valid patch region and keep the closest hit.
+    // Single-patch interior points use the fast unconstrained path unchanged.
+    const VRWGraph& ppLocal = meshPartitioner().pointPatches();
 
     # ifdef USE_OMP
     const label size = filteredNodes.size();
@@ -287,6 +294,54 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             points[boundaryPoints[bpI]]
         );
 
+        // Patch-constraint validation for multi-patch points only.
+        const label npp = ppLocal.sizeOfRow(bpI);
+        if( npp > 1 )
+        {
+            bool patchValid = false;
+            for( label ppI = 0; ppI < npp; ++ppI )
+            {
+                if( ppLocal(bpI, ppI) == patch )
+                { patchValid = true; break; }
+            }
+            if( !patchValid )
+            {
+                scalar bestDsq   = GREAT;
+                point  bestPt    = mapPoint;
+                label  bestPatch = patch;
+                label  bestNt    = nt;
+                for( label ppI = 0; ppI < npp; ++ppI )
+                {
+                    point  rPt;
+                    scalar rDsq;
+                    label  rNt;
+                    const label region = ppLocal(bpI, ppI);
+                    meshOctree_.findNearestSurfacePointInRegion
+                    (
+                        rPt,
+                        rDsq,
+                        rNt,
+                        region,
+                        points[boundaryPoints[bpI]]
+                    );
+                    if( (rDsq < bestDsq - SMALL) ||
+                        (Foam::mag(rDsq - bestDsq) <= SMALL && region < bestPatch) )
+                    {
+                        bestDsq   = rDsq;
+                        bestPt    = rPt;
+                        bestPatch = region;
+                        bestNt    = rNt;
+                    }
+                }
+                if( bestDsq < GREAT/10 )
+                {
+                    mapPoint = bestPt;
+                    dSq      = bestDsq;
+                    patch    = bestPatch;
+                    nt       = bestNt;
+                }
+            }
+        }
 
         surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
 
@@ -328,7 +383,7 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         rejectedBpI_.clear();
         // Only evaluate points that were actually moved.
         // nodesToMap includes protected/unmoved points which can have
-        // pre-existing invalid faces — flagging them seeds repairRejectedPoints()
+        // pre-existing invalid faces -- flagging them seeds repairRejectedPoints()
         // with a large 2-ring neighborhood near corners/junctions.
         forAll(filteredNodes, i)
         {
@@ -487,7 +542,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
     // ---------------------------------------------------------------
     // Phase 1: boundary point topology classification
-    // Diagnostics only — do not change projection behavior here.
+    // Diagnostics only -- do not change projection behavior here.
     //   0 = single-patch surface point
     //   1 = two-patch feature-edge point
     //   2 = multi-patch corner/junction point
@@ -559,7 +614,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
          << nNonManif  << " non-manifold" << endl;
 
     // Phase 2: VTK diagnostic output for topology classes.
-    // Diagnostics only — no movement or projection behavior changes.
+    // Diagnostics only -- no movement or projection behavior changes.
     if( nCorner > 0 || nTwoPatch > 0 || nBlNoBl > 0 || nNonManif > 0 || nBlNeutral > 0 )
     {
         static label callCount = 0;
@@ -602,7 +657,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
     // ---------------------------------------------------------------
     // Phase 2: Feature curve extraction
-    // Build list of feature edge segments — boundary edges where
+    // Build list of feature edge segments -- boundary edges where
     // adjacent faces belong to different patches.
     // ---------------------------------------------------------------
     const edgeList& meshEdges = surfaceEngine_.edges();
@@ -632,7 +687,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
     if( nUniquePatchVals > 1 )
     {
-        // Phase 2A: face-patch data available — extract from edgeFaces
+        // Phase 2A: face-patch data available -- extract from edgeFaces
         forAll(meshEdges, eI)
         {
             if( edgeFaces.sizeOfRow(eI) != 2 ) continue;
@@ -651,7 +706,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     }
     else
     {
-        // Phase 2B: face-patch data unavailable — extract from pointPatches
+        // Phase 2B: face-patch data unavailable -- extract from pointPatches
         // An edge is a feature edge if both endpoints share exactly the
         // same set of 2 patch IDs in their pointPatches.
         // Build global-point to boundary-point reverse map
@@ -858,7 +913,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         label nt;
 
         // Multi-patch corner: snap to nearest incident feature endpoint.
-        // Constrained topology motion — not nearest-patch projection.
+        // Constrained topology motion -- not nearest-patch projection.
         if( pointClass[bpI] == CLS_CORNER && featureSegs.size() > 0 )
         {
             const VRWGraph& ppGraph = surfaceEngine_.pointPoints();
@@ -871,7 +926,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             scalar bestEndDSq(GREAT);
             point bestEndPt(p);
 
-            // Pass 1: strict — both segment patches in corner patch set
+            // Pass 1: strict -- both segment patches in corner patch set
             scalar strictEndDSq(GREAT);
             point strictEndPt(p);
             forAll(featureSegs, sI)
@@ -894,7 +949,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             { bestEndDSq=strictEndDSq; bestEndPt=strictEndPt; }
             else
             {
-                // Pass 2: relaxed — one patch matches, tight distance cap
+                // Pass 2: relaxed -- one patch matches, tight distance cap
                 const scalar relaxedCap = 0.1*localLen;
                 forAll(featureSegs, sI)
                 {
@@ -915,7 +970,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
                 }
             }
             const scalar snapDist = Foam::sqrt(bestEndDSq);
-            // Cap at 2x local edge length — dry-run showed snap distances
+            // Cap at 2x local edge length -- dry-run showed snap distances
             // are 0.0002-0.0004m, well within typical cell size of 0.001-0.003m
             const scalar maxSnap = (localLen < GREAT/2.0) ? 2.0*localLen : GREAT;
             Info << "  CornerSnapDebug bpI=" << bpI
@@ -940,13 +995,13 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
 
         if( protIt != protectedPointPatches_.end() && protIt() >= 0 )
         {
-            // BL/no-BL protected point — constrain to BL-side patch only
+            // BL/no-BL protected point -- constrain to BL-side patch only
             meshOctree_.findNearestSurfacePointInRegion
             (mapPoint, dSq, nt, protIt(), p);
         }
         else if( neutIt != blNeutralPointPatches_.end() && neutIt() >= 0 )
         {
-            // BL/neutral point (blade/periodic junction) —
+            // BL/neutral point (blade/periodic junction) --
             // constrain projection to BL-side patch only.
             meshOctree_.findNearestSurfacePointInRegion
             (mapPoint, dSq, nt, neutIt(), p);
@@ -1007,7 +1062,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     //- map edge nodes
     mapEdgeNodes(selectedEdges);
 
-    // Phase 3: corner snap — project CLS_CORNER points to nearest
+    // Phase 3: corner snap -- project CLS_CORNER points to nearest
     // incident feature curve endpoint before mapCorners runs.
     // Points successfully snapped are removed from selectedCorners.
     if( featureSegs.size() > 0 )
@@ -1195,7 +1250,7 @@ void meshSurfaceMapper::repairRejectedPoints()
         if( edgePts.found(bpI) )
         {
             // TWO_PATCH_EDGE: project to nearest feature curve point
-            // Use both patches — try each, keep minimum distance
+            // Use both patches -- try each, keep minimum distance
             if( pPatches.sizeOfRow(bpI) < 2 ) continue;
             point bestPt = oldPos;
             scalar bestDSq = GREAT;

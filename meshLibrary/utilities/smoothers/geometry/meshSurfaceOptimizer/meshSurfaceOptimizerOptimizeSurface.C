@@ -519,7 +519,7 @@ bool meshSurfaceOptimizer::untangleSurface
                 {
                     // Fallback: only smooth PARTITION points here.
                     // EDGE points must not be Laplacian-smoothed as surface
-                    // points — that moves them off feature curves.
+                    // points -- that moves them off feature curves.
                     // mapVerticesOntoSurface is also unsafe for edge points
                     // (global projection); use patch-constrained version.
                     if( !(vertexType_[bpI] & PARTITION) ) continue;
@@ -532,7 +532,7 @@ bool meshSurfaceOptimizer::untangleSurface
 
             smoothLaplacianFC(movedPoints, procBndPoints, false);
 
-            // Use patch-constrained projection — mapVerticesOntoSurface
+            // Use patch-constrained projection -- mapVerticesOntoSurface
             // uses global nearest-surface which is unsafe near junctions.
             if( remapVertex && mapperPtr )
                 mapperPtr->mapVerticesOntoSurfacePatches(movedPoints);

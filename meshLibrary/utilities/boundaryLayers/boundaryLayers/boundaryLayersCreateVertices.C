@@ -152,7 +152,7 @@ point boundaryLayers::createNewVertex
             # endif
 
             // BL+BL+neutral corner: use per-patch conservative normal
-            // Do NOT apply layerScale_ here — common code below handles it once
+            // Do NOT apply layerScale_ here -- common code below handles it once
             if( blblCornerPoints_.found(bpI) )
             {
                 Map<vector> patchNormals;
@@ -611,7 +611,7 @@ point boundaryLayers::createNewVertex
             const scalar s1 = (newP - fc) & fn;
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                // Bisect extrusion distance — hard clamp to p creates
+                // Bisect extrusion distance -- hard clamp to p creates
                 // zero-thickness BL cells and astronomical aspect ratios.
                 scalar localDist = dist;
                 point candidate = newP;
@@ -631,7 +631,7 @@ point boundaryLayers::createNewVertex
         }
     }
     // Robust candidate-point clamping near BL/no-BL termination patches
-    // Check ALL no-BL faces — use most restrictive constraint.
+    // Check ALL no-BL faces -- use most restrictive constraint.
     // A point must not move further from any no-BL face than its
     // original position. This prevents BL extrusion through inlet,
     // outlet, and periodic surfaces at corner junctions.
@@ -666,7 +666,7 @@ point boundaryLayers::createNewVertex
             // s1 < 0 means extruded point crossed to wrong side
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                // Bisect extrusion distance — hard clamp to p creates
+                // Bisect extrusion distance -- hard clamp to p creates
                 // zero-thickness BL cells and astronomical aspect ratios.
                 scalar localDist = dist;
                 point candidate = newP;
@@ -1105,7 +1105,7 @@ void boundaryLayers::createNewVertices(const boolList& treatPatches)
                 const label origPtI = newLabelForVertex_[meshPtI];
                 if( origPtI < 0 ) continue;
 
-                // Value copies — avoid reference aliasing during mutation
+                // Value copies -- avoid reference aliasing during mutation
                 const point layerPt = points[meshPtI];
                 const point basePt  = points[origPtI];
 
@@ -1264,7 +1264,7 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
         points.setSize(nPoints_);
 
         //- calculate coordinates of new points
-        // Serial: otherVrts_ is shared std::map — concurrent find/insert/[]
+        // Serial: otherVrts_ is shared std::map -- concurrent find/insert/[]
         // is not thread-safe. Races corrupt BL edge/corner vertex positions.
         forAll(patchPoints, i)
         {
@@ -1474,7 +1474,7 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
 
     //- swap coordinates of new and old points
     // Serial: OMP parallelism here causes coordinate corruption at BL/BL
-    // junctions — primary source of 67-114 bad pyramid faces per run.
+    // junctions -- primary source of 67-114 bad pyramid faces per run.
     forAll(bPoints, bpI)
     {
         const label pLabel = newLabelForVertex_[bPoints[bpI]];
@@ -1870,7 +1870,7 @@ void boundaryLayers::createNewEdgeVerticesParallel
         else
         {
             // Multi-patch singularity in parallel edge vertex creation.
-            // Force local termination — zero extrusion at this point.
+            // Force local termination -- zero extrusion at this point.
             normal[epI] = mse.pointNormals()[bpI];
             dist[epI] = 0.0;
         }

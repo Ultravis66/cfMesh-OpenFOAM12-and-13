@@ -289,7 +289,7 @@ void meshOptimizer::untangleMeshFV
             {
                 Info << "Surface untangle stagnation: nBadFaces="
                      << nBadFaces << " nSurfStuck=" << nSurfStuck
-                     << " — using unconstrained fallback." << endl;
+                     << " -- using unconstrained fallback." << endl;
                 tmo.optimiseBoundaryVolumeOptimizer(1, false);
             }
 
@@ -452,7 +452,7 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
                  << ", negVol " << blOptNegBefore.size() << "->" << blOptNegAfter.size()
                  << ", openCells " << blOptOpenBefore.size() << "->" << blOptOpenAfter.size()
                  << ", skew " << blOptMaxSkewBefore << "->" << blOptMaxSkewAfter
-                 << " — rolling back" << endl;
+                 << " -- rolling back" << endl;
 
             polyMeshGenModifier meshModifier(mesh_);
             pointFieldPMG& pts = meshModifier.pointsAccess();
@@ -559,7 +559,7 @@ void meshOptimizer::untangleBoundaryLayer()
         else
         {
             Info << "untangleBoundaryLayer: skipping optimizeLowQualityFaces"
-                 << " and untangleMeshFV — " << negVolCells.size()
+                 << " and untangleMeshFV -- " << negVolCells.size()
                  << " negVol cells present, volume optimizer unsafe" << endl;
             removeUserConstraints();
         }

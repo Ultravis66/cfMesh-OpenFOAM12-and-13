@@ -49,7 +49,7 @@ void boundaryLayers::addWrapperLayer()
     pointFieldPMG& points = mesh_.points();
 
     // Fix: was populating local newLabelForVertex instead of member
-    // newLabelForVertex_ — createNewFacesAndCells uses the member
+    // newLabelForVertex_ -- createNewFacesAndCells uses the member
     const label oldNPoints = points.size();
     nPoints_ = oldNPoints;
     newLabelForVertex_.setSize(oldNPoints);

@@ -119,7 +119,7 @@ void polyMeshGenAddressing::makeCellCentresAndVols
         }
 
         // cellVol accumulated with raw signed pyramids for centre stability,
-        // but cache stores clamped value — optimizer consumers must not see negative.
+        // but cache stores clamped value -- optimizer consumers must not see negative.
         // Validation uses a separate direct computation (see checkCellVolumes).
         const scalar cellVolClamped = Foam::max(cellVol, VSMALL);
         cellCtrs[cellI] = cellCentre / cellVolClamped;

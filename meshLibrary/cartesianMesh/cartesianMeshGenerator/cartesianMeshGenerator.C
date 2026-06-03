@@ -159,7 +159,7 @@ static label scanNearCoincidentPoints
                     {
                         ++nPairs;
 
-                        // Collect patch names — always, not just verbose
+                        // Collect patch names -- always, not just verbose
                         DynList<word> pNamesA, pNamesB;
                         forAllConstIter(labelHashSet, pointPatches[a], it2)
                         {
@@ -208,22 +208,22 @@ static label scanNearCoincidentPoints
                         }
 
                         if( ratio < 0.20 )
-                            // Feature <20% of tolerance — almost certainly defect
+                            // Feature <20% of tolerance -- almost certainly defect
                             classification = "WELD_SAFE_RATIO";
                         else if( !pNamesA.size() || !pNamesB.size() )
-                            // Missing patch data — never auto-weld
+                            // Missing patch data -- never auto-weld
                             classification = "FLAG_INCOMPLETE";
                         else if( samePatch && ratio < 0.80 && pNamesA.size() && pNamesB.size() )
-                            // Same patch, moderate ratio — surface sliver
+                            // Same patch, moderate ratio -- surface sliver
                             classification = "WELD_SAME_PATCH";
                         else if( bothBLWall && ratio < 0.50 )
-                            // Both BL wall patches, moderate ratio — TE knife-edge
+                            // Both BL wall patches, moderate ratio -- TE knife-edge
                             classification = "WELD_BL_WALL_PAIR";
                         else if( ratio > 0.80 )
-                            // High ratio — may be legitimate geometry
+                            // High ratio -- may be legitimate geometry
                             classification = "FLAG_HIGH_RATIO";
                         else
-                            // Cross-patch or unknown — flag for review
+                            // Cross-patch or unknown -- flag for review
                             classification = "FLAG_CROSS_PATCH_CANDIDATE";
 
                         if( verbose )
@@ -555,7 +555,7 @@ void cartesianMeshGenerator::detectTripleJunctions
     if( suppressIdx.empty() || wallIdx.empty() || neutralIdx.empty() )
     {
         Info << "Triple-junction detection: one or more patch sets not found "
-             << "in surface — skipping" << endl;
+             << "in surface -- skipping" << endl;
         return;
     }
 
@@ -954,7 +954,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                 if( gate2NegBefore.size() > 0 )
                 {
-                    Info << "Gate2 local repair: skipped — "
+                    Info << "Gate2 local repair: skipped -- "
                          << gate2NegBefore.size()
                          << " negVol cells present, optimizer unsafe" << endl;
                 }
@@ -1077,7 +1077,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
         meshOptimizer mOpt(mesh_);
         mOpt.lockPoints(blPoints_);
         mOpt.untangleBoundaryLayer();
-        // Post-refinement BL optimisation — optional, off by default.
+        // Post-refinement BL optimisation -- optional, off by default.
         // Enable with: postRefineBLOptimisation true; in boundaryLayers dict.
         bool postRefineBLOpt = false;
         if( meshDict_.isDict("boundaryLayers") )
@@ -1147,7 +1147,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     if( enforceConstraints )
         optimizer.enforceConstraints();
 
-    // Compute acute corner global point list once — reused before both
+    // Compute acute corner global point list once -- reused before both
     // optimizeMeshFV and untangleMeshFV since optimizeBoundaryLayer
     // calls removeUserConstraints() internally, wiping the first lock.
     labelLongList acuteGlobalPts;
@@ -1174,7 +1174,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     optimizer.optimizeLowQualityFaces();
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
 
-    // Second low-quality face pass after BL refinement — targets skew
+    // Second low-quality face pass after BL refinement -- targets skew
     // introduced by boundary layer cells that weren't present pre-BL.
     optimizer.optimizeLowQualityFaces();
 
@@ -1187,7 +1187,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         if( badFaces.size() > 0 )
         {
             Info << "Post-BL audit: " << badFaces.size()
-                 << " incorrectly oriented faces — attempting validated face-flip repair"
+                 << " incorrectly oriented faces -- attempting validated face-flip repair"
                  << endl;
 
             labelHashSet negBefore;
@@ -1238,7 +1238,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                     Info << "Post-BL stage1 rejected: bad "
                          << badFaces.size() << "->" << badStage1.size()
                          << " skew " << maxSkewS1Before << "->" << maxSkewS1After
-                         << " — rolling back" << endl;
+                         << " -- rolling back" << endl;
                     polyMeshGenModifier meshModifier2(mesh_);
                     pointFieldPMG& pts = meshModifier2.pointsAccess();
                     pts = pointsBefore;
@@ -1377,7 +1377,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                              << " owner=" << ownCell
                              << " neighbour=" << neiCell
                              << " nPts=" << faces[faceI].size()
-                             << " — skipping flip" << endl;
+                             << " -- skipping flip" << endl;
                     }
 
                     continue;
@@ -1452,7 +1452,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     // them during final untangle prevents closure of cells adjacent to
     // junctions. The natural constraint reset is the correct policy here.
     //
-    // Protect with accept/reject rollback — untangle can occasionally
+    // Protect with accept/reject rollback -- untangle can occasionally
     // make junction cells worse (skew 233, neg vol) on bad OMP paths.
     {
         labelHashSet badBefore;
@@ -1473,7 +1473,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         if( negBefore.size() > 0 )
         {
-            Info << "optimiseFinalMesh: skipping untangleMeshFV — "
+            Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
                  << negBefore.size()
                  << " negVol cells present, volume optimizer unsafe" << endl;
         }
@@ -1514,7 +1514,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                  << badBefore.size() << "->" << badAfter.size()
                  << " negVol " << negBefore.size() << "->" << negAfter.size()
                  << " openCells " << openBefore.size() << "->" << openAfter.size()
-                 << " — rolling back" << endl;
+                 << " -- rolling back" << endl;
             polyMeshGenModifier meshModifier(mesh_);
             pointFieldPMG& pts = meshModifier.pointsAccess();
             pts = pointsBefore;
@@ -1593,7 +1593,7 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
 
     Info << "Pre-BL snap: re-projecting surface after volume optimisation" << endl;
 
-    // Rebuild octree — deleted by optimiseFinalMesh
+    // Rebuild octree -- deleted by optimiseFinalMesh
     meshOctree* snapOctreePtr = new meshOctree(*surfacePtr_);
     meshOctreeCreator
     (
@@ -1616,7 +1616,7 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
         mapper.setBLNeutralPointPatches(blNeutralPointPatch_);
     }
 
-    // Only snap true single-patch points — generic nearest-surface
+    // Only snap true single-patch points -- generic nearest-surface
     // projection is safe only for pure wall-face interior points.
     // Multi-patch edges/corners/junctions need feature-aware mapping.
     const labelList& bPoints = mse.boundaryPoints();
@@ -1624,6 +1624,15 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
     const VRWGraph& pPatches = mPart.pointPatches();
 
     labelLongList snapPoints;
+    // Displacement filter: only snap points with meaningful drift from STL.
+    // Projecting all ~500k boundary points perturbs already-good surface
+    // points and creates thousands of spurious bad pyramids.
+    const scalar snapTolSq = sqr(scalar(1e-6));
+    Info << "Pre-BL snap displacement tolerance = "
+         << Foam::sqrt(snapTolSq) << " m" << endl;
+    label nSinglePatch = 0;
+    label nAlreadyOnSurface = 0;
+    label nSnapCandidates = 0;
     forAll(bPoints, bpI)
     {
         const label meshPtI = bPoints[bpI];
@@ -1631,11 +1640,31 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
             continue;
         if( pPatches.sizeOfRow(bpI) != 1 )
             continue;
+        ++nSinglePatch;
+        point testPt;
+        scalar testDsq;
+        label testNt;
+        snapOctreePtr->findNearestSurfacePointInRegion
+        (
+            testPt,
+            testDsq,
+            testNt,
+            pPatches(bpI, 0),
+            mesh_.points()[meshPtI]
+        );
+        if( testDsq < snapTolSq )
+        {
+            ++nAlreadyOnSurface;
+            continue;
+        }
         snapPoints.append(bpI);
+        ++nSnapCandidates;
     }
 
-    Info << "Pre-BL snap: projecting " << snapPoints.size()
-         << " single-patch boundary points onto STL" << endl;
+    Info << "Pre-BL snap candidates: singlePatch=" << nSinglePatch
+         << " alreadyOnSurface=" << nAlreadyOnSurface
+         << " snapCandidates=" << nSnapCandidates
+         << endl;
 
     if( snapPoints.size() == 0 )
     {
@@ -1656,13 +1685,19 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
     polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
     polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrAfter);
 
+    const label pyrIncrease =
+        label(pyrAfter.size()) - label(pyrBefore.size());
+    const label allowedPyrIncrease =
+        Foam::max(label(25),
+            label(0.001 * Foam::max(label(1), label(pyrBefore.size()))));
     if( negAfter.size() > negBefore.size()
-     || pyrAfter.size() > pyrBefore.size() )
+     || pyrIncrease > allowedPyrIncrease )
     {
         Info << "Pre-BL snap rejected: negVol "
              << negBefore.size() << "->" << negAfter.size()
              << " badPyramids " << pyrBefore.size() << "->" << pyrAfter.size()
-             << " — rolling back" << endl;
+             << " allowedPyrIncrease " << allowedPyrIncrease
+             << " -- rolling back" << endl;
         pointField& pts = mesh_.points();
         pts = pointsBeforeSnap;
         mesh_.clearAddressingData();
@@ -1672,6 +1707,7 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
         Info << "Pre-BL snap accepted: negVol "
              << negBefore.size() << "->" << negAfter.size()
              << " badPyramids " << pyrBefore.size() << "->" << pyrAfter.size()
+             << " allowedPyrIncrease " << allowedPyrIncrease
              << endl;
     }
 
@@ -1696,7 +1732,7 @@ void cartesianMeshGenerator::generateMesh()
         {
             // Patch assignment moved before surface projection so that
             // mapVerticesOntoSurface has valid patch identity available.
-            // edgeExtractor uses only mesh topology + octree — no
+            // edgeExtractor uses only mesh topology + octree -- no
             // dependency on projected surface positions.
             extractPatches();
         }
@@ -1714,7 +1750,7 @@ void cartesianMeshGenerator::generateMesh()
             // Detect BL/no-BL transition edge points before any snapping
             // so all mapper instances in this block can exclude them
             // from generic nearest-surface projection.
-            // Uses meshDict nLayersForPatch only — no mesh modification.
+            // Uses meshDict nLayersForPatch only -- no mesh modification.
             {
                 boundaryLayers blDetect(mesh_, meshDict_);
                 blDetect.detectBLNoBlTransitionEdges();
@@ -1764,7 +1800,7 @@ void cartesianMeshGenerator::generateMesh()
 
 
             // Step 1: snap corner points first (damped relaxation)
-            // Single pass — full BL/no-BL and BL/neutral protection.
+            // Single pass -- full BL/no-BL and BL/neutral protection.
             {
                 scalar cornerSnapRelax = 0.25;
                 if( meshDict_.isDict("boundaryLayers") )
@@ -1851,7 +1887,7 @@ void cartesianMeshGenerator::generateMesh()
         {
             if( finalUntangleRejected_ )
             {
-                Info << "refBoundaryLayers: skipped — final untangle was rejected, mesh state unsafe" << endl;
+                Info << "refBoundaryLayers: skipped -- final untangle was rejected, mesh state unsafe" << endl;
             }
             else
             {
@@ -2093,7 +2129,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
             Info << "  weldTolerance: " << weldTol << " m" << endl;
             if( reportOnly )
             {
-                // Non-mutating scan — no geometry modification
+                // Non-mutating scan -- no geometry modification
                 meshOctree* scanOctree = new meshOctree(*surfacePtr_);
                 meshOctreeCreator
                 (
@@ -2120,7 +2156,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
 
                 if( selectiveWeld )
                 {
-                    // Phase 2C: selective weld — direct point scan, no octree.
+                    // Phase 2C: selective weld -- direct point scan, no octree.
                     // Building a temporary octree here triggers OMP-parallel lazy
                     // cache population on surfacePtr_ mutable members, racing with
                     // the main octree build and corrupting mesh quality.
@@ -2129,7 +2165,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     const pointField& pts = surfacePtr_->points();
                     const wordList pNames = surfacePtr_->patchNames();
 
-                    // Build BL patch index set — honor both per-patch and global nLayers
+                    // Build BL patch index set -- honor both per-patch and global nLayers
                     labelHashSet blPatchIdx;
                     if( meshDict_.isDict("boundaryLayers") )
                     {
@@ -2148,7 +2184,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                                 }
                             }
                         }
-                        // Global nLayers fallback — mark all non-explicitly-zero patches as BL
+                        // Global nLayers fallback -- mark all non-explicitly-zero patches as BL
                         if( bndL.found("nLayers") )
                         {
                             const label globalN = readLabel(bndL.lookup("nLayers"));
@@ -2226,7 +2262,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     label nNeutralRejected = 0;
                     label nCrossPatchRejected = 0;
 
-                    // Direct O(n^2) scan — safe, deterministic, no octree needed
+                    // Direct O(n^2) scan -- safe, deterministic, no octree needed
                     // At typical surface sizes (~5000 pts) this is <10M comparisons
                     for(label pI=0; pI<label(pts.size()); ++pI)
                     {
@@ -2337,7 +2373,7 @@ cartesianMeshGenerator::cartesianMeshGenerator(const Time& time)
                     }
                     else
                     {
-                        Info << "  selectiveWeld: no approved pairs — surface unchanged" << endl;
+                        Info << "  selectiveWeld: no approved pairs -- surface unchanged" << endl;
                     }
                 }
                 else

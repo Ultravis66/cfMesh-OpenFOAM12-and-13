@@ -281,7 +281,7 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
         {
             WarningIn("triSurfaceCleanupDuplicates::mergeApprovedPairs")
                 << "Invalid merge target " << root
-                << " for point " << pI << " — skipping" << endl;
+                << " for point " << pI << " -- skipping" << endl;
             newPointLabel[pI] = pI;
             continue;
         }
@@ -329,7 +329,7 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
         clusterCount[root]++;
     }
 
-    // Step 3: Move root points to cluster midpoint — DISABLED for debug
+    // Step 3: Move root points to cluster midpoint -- DISABLED for debug
     Info << "mergeApprovedPairs: DEBUG midpoint motion disabled; keeping root coordinates" << endl;
     // forAll(pts, pI)
     // {
@@ -337,7 +337,7 @@ void triSurfaceCleanupDuplicates::mergeApprovedPairs
     //         pts[pI] = clusterSum[pI] / scalar(clusterCount[pI]);
     // }
 
-    // Step 4: Compact point list — two-pass to avoid index ordering bugs
+    // Step 4: Compact point list -- two-pass to avoid index ordering bugs
     // Pass 4a: assign compacted indices to root points only
     label counter(0);
     labelLongList compactedLabel(pts.size());

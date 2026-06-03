@@ -260,7 +260,7 @@ void partTriMesh::updateVerticesSMP(const List<LongList<labelledPoint> >& np)
         const LongList<labelledPoint>& newPoints = np[0];
         # endif
 
-        // Point writes parallel — each pointI unique per thread
+        // Point writes parallel -- each pointI unique per thread
         forAll(newPoints, i)
             pts[newPoints[i].pointLabel()] = newPoints[i].coordinates();
 
@@ -404,7 +404,7 @@ void partTriMesh::updateVertices(const labelLongList& movedPoints)
 
     //- update coordinates of vertices which exist in the surface
     //- of the volume mesh
-    // Parallel: point position writes — each triPointI unique — safe
+    // Parallel: point position writes -- each triPointI unique -- safe
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif

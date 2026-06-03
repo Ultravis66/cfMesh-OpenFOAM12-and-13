@@ -197,7 +197,7 @@ void meshSurfacePartitioner::calculateCornersEdgesAndAddressing()
         }
     }
 
-    //- find patches at a surface points — build BEFORE classification
+    //- find patches at a surface points -- build BEFORE classification
     //- so patch-count can be used to promote corners/edges robustly
     pointPatches_.setSize(pointFaces.size());
     forAll(pointFaces, bpI)

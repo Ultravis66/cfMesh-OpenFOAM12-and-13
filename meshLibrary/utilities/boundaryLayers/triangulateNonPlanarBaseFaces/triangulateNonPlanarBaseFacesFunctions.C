@@ -97,7 +97,7 @@ bool triangulateNonPlanarBaseFaces::findNonPlanarBoundaryFaces()
             {
                 const scalar d = (points[bf[pI]] - triCentre) & n;
 
-                // Fix: use mag(d) — original missed negative-side non-planarity
+                // Fix: use mag(d) -- original missed negative-side non-planarity
                 if( Foam::mag(d) > tol_ * lengthScale )
                 {
                     faceInvalid = true;

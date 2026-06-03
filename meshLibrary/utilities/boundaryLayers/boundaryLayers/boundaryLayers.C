@@ -61,7 +61,7 @@ namespace
         const label nbpI
     )
     {
-        // Same patch — always safe
+        // Same patch -- always safe
         forAllRow(pPatches, bpI, pi)
         {
             const label patchI = pPatches(bpI, pi);
@@ -326,7 +326,7 @@ void boundaryLayers::findPatchesToBeTreatedTogether()
             const label geI = receivedData[counter++].pointLabel();
             if( !globalToLocal.found(geI) )
             {
-                // Skip — unknown edge label on this processor.
+                // Skip -- unknown edge label on this processor.
                 // Consume face-size + face-point entries to keep counter in sync.
                 const label fSize = receivedData[counter++].pointLabel();
                 counter += fSize;
@@ -857,7 +857,7 @@ void boundaryLayers::detectBLNoBlTransitionEdges() const
     const edgeList& edges = mse.edges();
     const labelList& bPoints = mse.boundaryPoints();
 
-    // Classify patches from patchRole_ — single source of truth
+    // Classify patches from patchRole_ -- single source of truth
     boolList isBLPatch(patchNames_.size(), false);
     forAll(patchNames_, patchI)
         if( patchI < label(patchRole_.size()) && patchRole_[patchI] == 0 )
@@ -979,7 +979,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     const meshSurfacePartitioner& mPart = surfacePartitioner();
     const VRWGraph& pPatches = mPart.pointPatches();
 
-    // Classify patches using patchRole_ — the single source of truth.
+    // Classify patches using patchRole_ -- the single source of truth.
     // patchRole_: 0=BL, 1=TERMINATION, 2=NEUTRAL
     // Previously derived from nLayersForPatch_==0 which treated neutral
     // patches (periodic/symmetry) the same as termination (inlet/outlet).
@@ -993,7 +993,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             isBLPatch[patchI]          = (patchRole_[patchI] == 0);
             isTerminationPatch[patchI] = (patchRole_[patchI] == 1);
             // patchRole_==2 (neutral) is neither BL nor termination
-            // — no suppression triggered at periodic/symmetry junctions
+            // -- no suppression triggered at periodic/symmetry junctions
         }
     }
 
@@ -1049,7 +1049,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         const VRWGraph& ptPts = pointPoints;
         const label nBP = bPoints.size();
 
-        // Ring 1: immediate neighbours — strong suppression
+        // Ring 1: immediate neighbours -- strong suppression
         boolList gapRing0(nBP, false);
         forAllConstIter(labelHashSet, gapPoints_, it)
         {
@@ -1251,7 +1251,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // Topology-aware scale assignment:
     // Upgrade transition point suppression based on point topology class.
     // Corner points (3+ patches) at BL/no-BL transitions are geometrically
-    // overconstrained — full suppress regardless of angle.
+    // overconstrained -- full suppress regardless of angle.
     // Two-patch edge points get full suppress only if patch angle is sharp.
     {
         const scalar cosSharp = Foam::cos(scalar(75.0) * M_PI / 180.0);
@@ -1278,7 +1278,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 else ++nNeutPt;
             }
             const label nPt = ptPatchList.size();
-            // Corner: 3+ patches with BL + explicit termination — full suppress
+            // Corner: 3+ patches with BL + explicit termination -- full suppress
             // Neutral patches (periodic etc) do not trigger suppression
             if( nPt >= 3 && nBLPt >= 1 && nTermPt >= 1 )
             {
@@ -1672,7 +1672,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
          << " ring6=" << nRing6
          << endl;
     // Acute corner local taper
-    // Seeded from blblAcuteCornerPoints_ — stronger suppression than general ramp
+    // Seeded from blblAcuteCornerPoints_ -- stronger suppression than general ramp
     // Propagates along BL wall patches only
     if( blblAcuteCornerPoints_.size() > 0 )
     {
@@ -1842,7 +1842,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
     // Virtual topology: zero/taper layerScale_ at acute triple-junctions.
     // blblAcuteCornerPoints_ and layerScale_ fully built above.
-    // Must run before return — vertex creation reads layerScale_.
+    // Must run before return -- vertex creation reads layerScale_.
     applyVirtualTopologyExclusion();
 
     // Gap face-ring: taper layerScale_ around gap contact points
@@ -1949,7 +1949,7 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
         }
     }
 
-    // Apply layerScale_ — smallest ring wins for shared points.
+    // Apply layerScale_ -- smallest ring wins for shared points.
     forAll(faceRing, bfI)
     {
         const label ring = faceRing[bfI];
@@ -1969,7 +1969,7 @@ void boundaryLayers::applyVirtualTopologyExclusion() const
         }
     }
 
-    // Export face ring for refineBoundaryLayers — BL/BL ramp skips VT-handled faces
+    // Export face ring for refineBoundaryLayers -- BL/BL ramp skips VT-handled faces
     vtFaceRing_ = faceRing;
 
     // Diagnostics
@@ -2060,7 +2060,7 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     {
         // Patch-restricted seeding: only suppress faces on the designated
         // suppress-side patches (hub/shroud). Blade and periodic faces
-        // adjacent to the triple junction must NOT be suppressed —
+        // adjacent to the triple junction must NOT be suppressed --
         // they need BL for correct turbomachinery flow resolution.
         if( tripleJunctionSuppressPatches_.size() > 0 )
         {
@@ -2084,7 +2084,7 @@ void boundaryLayers::applyGapFaceRingExclusion() const
         else
         {
             Info << "Triple-junction face-ring exclusion: "
-                 << "no suppress patch filter defined — skipping" << endl;
+                 << "no suppress patch filter defined -- skipping" << endl;
         }
     }
 
@@ -2145,13 +2145,13 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     }
 
     // Populate face-level suppression mask for ring0 faces
-    // createNewFacesAndCells will skip these entirely — no prism topology
+    // createNewFacesAndCells will skip these entirely -- no prism topology
     suppressLayerAtBndFace_.setSize(nBF, false);
     forAll(faceRing, bfI)
         if( faceRing[bfI] == 0 )
             suppressLayerAtBndFace_[bfI] = true;
 
-    // Apply layerScale_ — scales configurable via meshDict
+    // Apply layerScale_ -- scales configurable via meshDict
     forAll(faceRing, bfI)
     {
         const label ring = faceRing[bfI];
@@ -2198,7 +2198,7 @@ void boundaryLayers::reportBLTransitionSeeds() const
 
 void boundaryLayers::buildBLTransitionPlan() const
 {
-    // Diagnostic only — computes and reports ring face counts by patch.
+    // Diagnostic only -- computes and reports ring face counts by patch.
     // No topology mutation.
     if( gapPoints_.size() == 0 && tripleJunctionPoints_.size() == 0 )
     {
@@ -2321,7 +2321,7 @@ void boundaryLayers::buildBLTransitionPlan() const
         }
     }
 
-    Info << "BL transition planner (diagnostic — no mutation):" << nl
+    Info << "BL transition planner (diagnostic -- no mutation):" << nl
          << "  ring0 suppress faces: " << nF0 << nl
          << "  ring1 cap-to-1 faces: " << nF1 << nl
          << "  ring2 cap-to-2 faces: " << nF2 << nl
@@ -2336,7 +2336,7 @@ void boundaryLayers::buildBLTransitionPlan() const
     }
     Info << "  (tripleJunctionFaceRingExclusion="
          << (tripleJunctionFaceRingExclusion_ ? "true" : "false")
-         << " — topology unchanged)" << endl;
+         << " -- topology unchanged)" << endl;
 }
 
 void boundaryLayers::reportBLPlanningPerPatch() const

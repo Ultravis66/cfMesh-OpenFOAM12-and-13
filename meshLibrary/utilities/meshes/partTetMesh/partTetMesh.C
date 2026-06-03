@@ -467,7 +467,7 @@ void partTetMesh::updateVerticesSMP(const List<LongList<labelledPoint> >& np)
         const LongList<labelledPoint>& newPoints = np[0];
         # endif
 
-        // Point writes: each pointI is unique per thread list — safe
+        // Point writes: each pointI is unique per thread list -- safe
         forAll(newPoints, i)
             points_[newPoints[i].pointLabel()] = newPoints[i].coordinates();
 

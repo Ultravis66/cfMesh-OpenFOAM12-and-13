@@ -110,7 +110,7 @@ void extrudeLayer::createDuplicateFrontFaces(const LongList<labelPair>& front)
     extrudedFaces_.setSize(counter);
     pairOrientation_.setSize(counter);
 
-    // Serial: faces[], extrudedFaces_[], pairOrientation_[] write races —
+    // Serial: faces[], extrudedFaces_[], pairOrientation_[] write races --
     // multiple faceI can map to same fOwn/fNei; transfer() especially unsafe
     forAll(faceInFront, faceI)
     {
@@ -175,7 +175,7 @@ void extrudeLayer::createDuplicateFrontFaces(const LongList<labelPair>& front)
     }
 
     //- renumber the cells
-    // Serial: multiple faces share owner/neighbour cells —
+    // Serial: multiple faces share owner/neighbour cells --
     // concurrent writes to c[fI] corrupt cell-face connectivity
     forAll(faceInFront, faceI)
     {
@@ -218,7 +218,7 @@ void extrudeLayer::createNewVertices()
     //- find the points in the marked front
     List<direction> frontPoints(points.size(), NONE);
 
-    // Serial: multiple extruded faces share points —
+    // Serial: multiple extruded faces share points --
     // frontPoints[f[pI]] |= FRONTVERTEX races on shared point indices
     forAll(extrudedFaces_, efI)
     {
