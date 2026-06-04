@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.9 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
+v0.10 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
 
 ### NOTE: NASA Rotor 37 is being used as a stress-test case because it is a sufficiently complex turbomachinery geometry, with tight blade/hub/shroud junctions, periodic sector boundaries, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific, but to use this geometry to expose robustness issues that should improve performance on other external and internal CFD geometries. Limited testing on CFD, a few tests have been run just to see if the mesh would work. 
 
@@ -9,6 +9,10 @@ v0.9 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop ra
 **Residual minor variance** Major OMP races fixed in v0.8–v0.9. Serial (OMP=1) runs fully deterministic. OMP=32 variance substantially reduced — primary races (updateType, otherVrts_, frontPoints) fixed. Minor residual variance remains under investigation.
 
 **optimiseBoundaryVolumeOptimizer call-site bug (fixed v0.9)** Original code passed `true`/`false` as iteration count to a function expecting `(nIterations, nonShrinking)`. Early boundary motion was unconstrained instead of non-shrinking; late boundary fallback was doing zero iterations. Fixed to `(1, true)` and `(1, false)`.
+
+**Visible surface protrusions at patch boundaries** — Partially resolved in v0.10. Root cause: volume optimizer moves boundary points off STL surface with no constraint. Surface-constrained optimizer (Layer 3) now reduces visible-scale drift (>100 micron points) by ~46%. Residual drift on periodic patches remains under active development.
+
+**Runtime increase with surface-constrained optimizer** — Serial octree pre-pass in `partTetMesh::updateOrigMesh` adds ~2x wall-clock time vs unconstrained. Can be disabled via `constrainOptimizerBoundaryMotion false`. Full parallel implementation planned.
 
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
@@ -124,6 +128,11 @@ checkMesh
 | `optimiseBoundaryVolumeOptimizer` call-site bug — true/false passed as nIterations not nonShrinking | Fix to (1,true) and (1,false) |
 | `tetMeshOptimisation::optimiseUsingMeshUntangler` missing helper[tetI]=true — false convergence declaration | Add missing assignment |
 | Untangle stagnation deadlock at small residual bad-face count | Detect stuck iterations, switch to unconstrained fallback after 4 unchanged iterations with ≤8 bad faces |
+| `mapVerticesOntoSurface` unconstrained global nearest-triangle projection causes visible protrusions at patch boundaries | Patch-constrained projection: validate returned patch against `pointPatches`; re-project to correct patch if mismatch |
+| Volume optimizer moves boundary points up to 1.3mm off STL surface with no constraint | Surface-constrained `partTetMesh::updateOrigMesh`: serial octree pre-pass + parallel limited-displacement write-back |
+| `volumeOptimizerEvaluateGradients` `FatalError` on degenerate zero-volume tets | Replace fatal with counted skip + end-of-function report |
+| `finalUntangleRejected_` flag incorrectly set when untangle skipped due to pre-existing negVol | Skip rollback check when untangle did not run; BL proceeds normally |
+
 
 ---
 
@@ -257,6 +266,42 @@ Generic protection system for points where BL patches meet no-BL patches (wall m
 ### BL/BL sharp-junction suppression
 Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
 
+## Surface-constrained optimizer (v0.10)
+
+Commercial-mesher-style Layer 3 architecture: boundary points are constrained to their STL patch surface during volume optimization, preventing drift accumulation.
+
+### Architecture
+The volume optimizer (`optimizeMeshFV`, `untangleMeshFV`, `optimizeLowQualityFaces`) previously moved boundary points freely in 3D with no surface awareness. Points could drift up to 1.3mm from the STL surface, causing visible protrusions that the downstream snap could not correct without inverting cells.
+
+Fix: `partTetMesh::updateOrigMesh` now applies a limited-displacement re-projection for single-patch boundary points before committing optimizer results:
+
+1. **Serial pre-pass**: query octree for each drifted boundary point (drift > `1e-5m`), compute limited target position (1% step toward STL)
+2. **Parallel write-back**: apply precomputed targets in OMP — no octree access in parallel path
+
+### Results on Rotor 37
+- Visible-scale drift (>100 micron points): 2863 → 1540 (46% reduction)
+- Max drift: 1.19mm → 0.52mm
+- BL coverage: 95–99% across all patches
+
+### meshDict controls
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `constrainOptimizerBoundaryMotion` | false | Enable surface-constrained optimizer |
+| `postBLSnapTolerance` | 1e-6 | Min drift to trigger post-optimizer snap (m) |
+| `postOptimizerReprojStepFraction` | 0.005 | Fraction of drift corrected per incremental pass |
+| `postOptimizerReprojPasses` | 10 | Max incremental re-projection passes |
+| `postBLSnap` | false | Enable pre-BL snap after volume optimization |
+| `postBLSnapAllowedPyramidIncrease` | 25 | Absolute pyramid increase allowed during snap |
+| `postBLSnapAllowedPyramidIncreaseFraction` | 0.001 | Fractional pyramid increase allowed |
+| `constrainOptimizerBoundaryMotion` | false | Enable surface-constrained optimizer (Layer 3) |
+| `postBLSnapTolerance` | 1e-6 | Min drift threshold for post-optimizer snap (m) |
+| `postOptimizerReprojStepFraction` | 0.005 | Step fraction per incremental re-projection pass |
+| `postOptimizerReprojPasses` | 10 | Max incremental re-projection passes after optimizer |
+| `postBLSnap` | false | Enable pre-BL surface re-projection |
+| `postBLSnapAllowedPyramidIncrease` | 25 | Absolute pyramid increase allowed during snap |
+| `postBLSnapAllowedPyramidIncreaseFraction` | 0.001 | Fractional pyramid increase allowed during snap |
+
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
 
@@ -304,22 +349,28 @@ All known race-sensitive OMP apply loops have been serialized across the full me
 
 Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 
-| Metric | v0.9 (current) | v0.8.3 | v0.8.2 | v0.8.1 | v0.8 |
-|--------|----------------|--------|--------|--------|------|
-| Cells | ~1.77M | ~1.77M | ~2.28M | ~2.28M | ~2.28M |
-| Average non-orthogonality | TBD | 9.77° | 9.88° | 9.86° | 9.86° |
-| Non-ortho errors | TBD | 0 | 0 | 1 | 1 |
-| Negative volume cells | TBD | 0 | 1 | 1 | 1 |
-| Bad pyramid faces | TBD | **0** | **0** | 6 | 8–11 |
-| Max skewness | TBD | 9.77 | 8.74 | 8.74 | 11.1 |
-| Runtime | ~90s | ~90s | ~83s | ~83s | ~85–91s |
-| Deterministic | Improving | Yes | Yes | Yes | Yes |
+| Metric | v0.10 (current) | v0.9 |
+|--------|-----------------|------|
+| Cells | ~1.77M | ~1.77M |
+| Average non-orthogonality | ~12.5° | TBD |
+| Non-ortho errors | 3–9 | TBD |
+| Negative volume cells | 2–5 | TBD |
+| Bad pyramid faces | 11–57 | TBD |
+| Max skewness | ~8.5–11.6 | TBD |
+| Visible-scale drift (>100µm pts) | ~1540 | ~2863 |
+| Runtime (OMP=4) | ~580s wall | ~90s |
+| Runtime (OMP=32) | ~204s wall | ~90s |
+| Deterministic | OMP=4 stable | Improving |
 ---
 
 ## Version history
 
 | Tag | Branch | Description |
 |-----|--------|-------------|
+| `v0.10` | `feature/bl-transition-topology` | Surface-constrained optimizer (Layer 3): patch-constrained projection in `mapVerticesOntoSurface`, limited-displacement `partTetMesh::updateOrigMesh` re-projection, two-phase serial/parallel write-back, post-optimizer incremental snap, pre-BL snap with displacement filter and pyramid-tolerant rollback. 46% reduction in visible-scale boundary drift. |
+| `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, partTetMesh/partTriMesh updateType races, otherVrts_ std::map race in BL vertex creation, frontPoints extrusion race, meshSurfaceEngineModifier marking races, optimiseBoundaryVolumeOptimizer call-site bug, MeshUntangler convergence fix, untangle stagnation detection. Serial runs fully deterministic; OMP=32 quality substantially improved. |
+| `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
+| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
 | `v0.8` | `feature/bl-transition-topology` | Full codebase audit 60+ bug fixes: OMP apply-loop serialization, globalToLocal guards, activePatch_ owner/patch bugs, face size guards, bounds guards throughout. Deterministic results on Rotor 37. |
 | `v0.7.1` | `feature/bl-transition-topology` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.7` | `feature/bl-transition-topology` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
@@ -329,9 +380,6 @@ Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
 | `v0.35` | `openfoam13` | VTK diagnostics for validity-rejected points |
 | `v0.2` | `openfoam13` | Skewness proxy in quality evaluator |
 | `v0.1-beta-stable` | `openfoam13` | Pipeline reorder + relative validity thresholds |
-| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
-| `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
-| `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, partTetMesh/partTriMesh updateType races, otherVrts_ std::map race in BL vertex creation, frontPoints extrusion race, meshSurfaceEngineModifier marking races, optimiseBoundaryVolumeOptimizer call-site bug, MeshUntangler convergence fix, untangle stagnation detection. Serial runs fully deterministic; OMP=32 quality substantially improved. |
 
 ---
 ## Running the regression test
