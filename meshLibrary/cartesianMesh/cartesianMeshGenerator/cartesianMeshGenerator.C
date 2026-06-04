@@ -32,6 +32,8 @@ Description
 #include "meshOctreeCreator.H"
 #include "cartesianMeshExtractor.H"
 #include "meshSurfaceEngine.H"
+#include "meshSurfaceEngineModifier.H"
+#include "polyMeshGenAddressing.H"
 #include "boundaryLayers.H"
 #include "meshSurfaceMapper.H"
 #include "edgeExtractor.H"
@@ -1140,8 +1142,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         surfOpt.optimizeSurface();
     }
 
-    deleteDemandDrivenData(octreePtr_);
-
     //- final optimisation
     meshOptimizer optimizer(mesh_);
     if( enforceConstraints )
@@ -1172,6 +1172,291 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
     optimizer.optimizeMeshFV();
     optimizer.optimizeLowQualityFaces();
+
+    // Post-optimizer surface re-projection: re-project drifted single-patch
+    // boundary points while octree is still live. Tolerance-filtered and
+    // validated -- same pattern as snapSurfaceBeforeBLRefinement.
+    if( octreePtr_ )
+    {
+        scalar reprojTol = 1e-6;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndLR = meshDict_.subDict("boundaryLayers");
+            if( bndLR.found("postBLSnapTolerance") )
+                reprojTol = readScalar(bndLR.lookup("postBLSnapTolerance"));
+        }
+        const scalar reprojTolSq = sqr(reprojTol);
+        Info << "Post-optimizer re-projection tolerance = "
+             << reprojTol << " m" << endl;
+
+        meshSurfaceEngine mseReproj(mesh_);
+        meshSurfaceMapper mapperReproj(mseReproj, *octreePtr_);
+        if( !blNoBlEdgePoints_.empty() )
+        {
+            mapperReproj.setProtectedPoints(blNoBlEdgePoints_);
+            mapperReproj.setProtectedPointPatches(blNoBlPointPatch_);
+        }
+        const labelList& bPtsR = mseReproj.boundaryPoints();
+        const meshSurfacePartitioner mPartR(mseReproj);
+        const VRWGraph& pPatchesR = mPartR.pointPatches();
+
+        // Per-patch drift diagnostics
+        Map<label> drift1e6ByPatch;
+        Map<label> drift1e5ByPatch;
+        Map<label> drift1e4ByPatch;
+        Map<scalar> maxDriftByPatch;
+
+        // Build protected point set: skip points attached to existing
+        // bad cells or bad pyramid faces -- those zones are fragile and
+        // any move near them risks creating new negVol.
+        labelHashSet negCellsBefore, pyrFacesBefore;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negCellsBefore);
+        polyMeshGenChecks::checkFacePyramids
+            (mesh_, false, -SMALL, &pyrFacesBefore);
+
+        labelHashSet protectedPts;
+        {
+            const faceListPMG& allFaces = mesh_.faces();
+            const cellListPMG& allCells = mesh_.cells();
+            const VRWGraph& ptPts = mesh_.addressingData().pointPoints();
+
+            // Points on bad pyramid faces + two-ring neighbors
+            labelHashSet pyrPts;
+            forAllConstIter(labelHashSet, pyrFacesBefore, it)
+            {
+                const face& f = allFaces[it.key()];
+                forAll(f, fpI) pyrPts.insert(f[fpI]);
+            }
+            // Ring 1
+            labelHashSet pyrPtsRing1;
+            forAllConstIter(labelHashSet, pyrPts, it)
+            {
+                protectedPts.insert(it.key());
+                forAllRow(ptPts, it.key(), nI)
+                {
+                    protectedPts.insert(ptPts(it.key(), nI));
+                    pyrPtsRing1.insert(ptPts(it.key(), nI));
+                }
+            }
+            // Ring 2
+            forAllConstIter(labelHashSet, pyrPtsRing1, it)
+            {
+                protectedPts.insert(it.key());
+                forAllRow(ptPts, it.key(), nI)
+                    protectedPts.insert(ptPts(it.key(), nI));
+            }
+
+            // Points on negative volume cells + one-ring neighbors
+            labelHashSet negPts;
+            forAllConstIter(labelHashSet, negCellsBefore, it)
+            {
+                const cell& c = allCells[it.key()];
+                forAll(c, cfI)
+                {
+                    const face& f = allFaces[c[cfI]];
+                    forAll(f, fpI) negPts.insert(f[fpI]);
+                }
+            }
+            forAllConstIter(labelHashSet, negPts, it)
+            {
+                protectedPts.insert(it.key());
+                forAllRow(ptPts, it.key(), nI)
+                    protectedPts.insert(ptPts(it.key(), nI));
+            }
+        }
+        Info << "Post-optimizer re-projection: protecting "
+             << protectedPts.size()
+             << " points near existing bad cells/faces (incl. 1-ring)" << endl;
+
+        labelLongList reprojPoints;
+        forAll(bPtsR, bpI)
+        {
+            const label meshPtI = bPtsR[bpI];
+            if( meshPtI < 0 || meshPtI >= label(mesh_.points().size()) )
+                continue;
+            if( pPatchesR.sizeOfRow(bpI) != 1 )
+                continue;
+            // Skip points attached to fragile cells/faces
+            if( protectedPts.found(meshPtI) )
+                continue;
+            const label patchI = pPatchesR(bpI, 0);
+            point testPt;
+            scalar testDsq;
+            label testNt;
+            octreePtr_->findNearestSurfacePointInRegion
+            (
+                testPt,
+                testDsq,
+                testNt,
+                patchI,
+                mesh_.points()[meshPtI]
+            );
+            const scalar drift = Foam::sqrt(testDsq);
+            if( drift > 1e-6 )
+            {
+                if( !drift1e6ByPatch.found(patchI) )
+                    drift1e6ByPatch.set(patchI, 0);
+                ++drift1e6ByPatch[patchI];
+            }
+            if( drift > 1e-5 )
+            {
+                if( !drift1e5ByPatch.found(patchI) )
+                    drift1e5ByPatch.set(patchI, 0);
+                ++drift1e5ByPatch[patchI];
+            }
+            if( drift > 1e-4 )
+            {
+                if( !drift1e4ByPatch.found(patchI) )
+                    drift1e4ByPatch.set(patchI, 0);
+                ++drift1e4ByPatch[patchI];
+            }
+            if( !maxDriftByPatch.found(patchI) ||
+                drift > maxDriftByPatch[patchI] )
+                maxDriftByPatch.set(patchI, drift);
+            if( testDsq < reprojTolSq )
+                continue;
+            reprojPoints.append(bpI);
+        }
+
+        // Print per-patch drift summary
+        const PtrList<boundaryPatch>& bPatches = mesh_.boundaries();
+        Info << "Post-optimizer drift by patch:" << endl;
+        forAll(bPatches, pI)
+        {
+            const label n6 = drift1e6ByPatch.found(pI) ?
+                drift1e6ByPatch[pI] : 0;
+            const label n5 = drift1e5ByPatch.found(pI) ?
+                drift1e5ByPatch[pI] : 0;
+            const label n4 = drift1e4ByPatch.found(pI) ?
+                drift1e4ByPatch[pI] : 0;
+            const scalar mxD = maxDriftByPatch.found(pI) ?
+                maxDriftByPatch[pI] : scalar(0);
+            if( n6 > 0 )
+                Info << "  patch " << bPatches[pI].patchName()
+                     << ": >1e-6=" << n6
+                     << " >1e-5=" << n5
+                     << " >1e-4=" << n4
+                     << " max=" << mxD
+                     << endl;
+        }
+
+        Info << "Post-optimizer re-projection candidates: "
+             << reprojPoints.size() << endl;
+
+        // Limited-displacement re-projection: move each drifted point
+        // a fraction of the way to the STL per pass. Cells gradually
+        // reshape toward the correct position rather than being inverted
+        // in one full snap. Read step fraction from meshDict.
+        scalar reprojStepFraction = 0.02;
+        label reprojMaxPasses = 5;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndLR2 =
+                meshDict_.subDict("boundaryLayers");
+            if( bndLR2.found("postOptimizerReprojStepFraction") )
+                reprojStepFraction =
+                    readScalar(bndLR2.lookup("postOptimizerReprojStepFraction"));
+            if( bndLR2.found("postOptimizerReprojPasses") )
+                reprojMaxPasses =
+                    readLabel(bndLR2.lookup("postOptimizerReprojPasses"));
+        }
+
+        if( reprojPoints.size() > 0 )
+        {
+            meshSurfaceEngineModifier surfModR(mseReproj);
+            label totalAccepted = 0;
+            label totalRolledBack = 0;
+
+            for( label passI = 0; passI < reprojMaxPasses; ++passI )
+            {
+                // Snapshot for this pass
+                const pointField passPtsBefore(mesh_.points());
+                labelHashSet negPassBefore, pyrPassBefore;
+                polyMeshGenChecks::checkCellVolumes
+                    (mesh_, false, &negPassBefore);
+                polyMeshGenChecks::checkFacePyramids
+                    (mesh_, false, -SMALL, &pyrPassBefore);
+
+                // Apply limited displacement toward STL
+                label nMoved = 0;
+                forAll(reprojPoints, rpI)
+                {
+                    const label bpI = reprojPoints[rpI];
+                    const label meshPtI = bPtsR[bpI];
+                    if( meshPtI < 0 ||
+                        meshPtI >= label(mesh_.points().size()) )
+                        continue;
+                    const label patchI = pPatchesR(bpI, 0);
+                    point snapPt;
+                    scalar snapDsq;
+                    label snapNt;
+                    octreePtr_->findNearestSurfacePointInRegion
+                    (
+                        snapPt,
+                        snapDsq,
+                        snapNt,
+                        patchI,
+                        mesh_.points()[meshPtI]
+                    );
+                    if( snapDsq < reprojTolSq )
+                        continue;
+                    const vector disp =
+                        snapPt - mesh_.points()[meshPtI];
+                    const point limitedPt =
+                        mesh_.points()[meshPtI]
+                        + reprojStepFraction * disp;
+                    surfModR.moveBoundaryVertexNoUpdate(bpI, limitedPt);
+                    ++nMoved;
+                }
+                surfModR.updateGeometry(reprojPoints);
+                mesh_.clearAddressingData();
+
+                labelHashSet negPassAfter, pyrPassAfter;
+                polyMeshGenChecks::checkCellVolumes
+                    (mesh_, false, &negPassAfter);
+                polyMeshGenChecks::checkFacePyramids
+                    (mesh_, false, -SMALL, &pyrPassAfter);
+
+                if( negPassAfter.size() > negPassBefore.size() )
+                {
+                    Info << "Post-optimizer re-projection pass "
+                         << passI << " rejected: negVol "
+                         << negPassBefore.size() << "->"
+                         << negPassAfter.size()
+                         << " badPyramids "
+                         << pyrPassBefore.size() << "->"
+                         << pyrPassAfter.size()
+                         << " -- rolling back" << endl;
+                    pointField& pts = mesh_.points();
+                    pts = passPtsBefore;
+                    mesh_.clearAddressingData();
+                    ++totalRolledBack;
+                    break;
+                }
+                else
+                {
+                    Info << "Post-optimizer re-projection pass "
+                         << passI << " accepted: moved " << nMoved
+                         << " negVol "
+                         << negPassBefore.size() << "->"
+                         << negPassAfter.size()
+                         << " badPyramids "
+                         << pyrPassBefore.size() << "->"
+                         << pyrPassAfter.size();
+                    if( pyrPassAfter.size() > pyrPassBefore.size() )
+                        Info << " WARNING: badPyramids increased"
+                             << " during limited correction";
+                    Info << endl;
+                    ++totalAccepted;
+                }
+            }
+            Info << "Post-optimizer re-projection: "
+                 << totalAccepted << " passes accepted, "
+                 << totalRolledBack << " rolled back" << endl;
+        }
+    }
+    deleteDemandDrivenData(octreePtr_);
+
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
 
     // Second low-quality face pass after BL refinement -- targets skew
@@ -1475,59 +1760,57 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         {
             Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
                  << negBefore.size()
-                 << " negVol cells present, volume optimizer unsafe" << endl;
+                 << " negVol cells present -- proceeding to BL" << endl;
+            // Untangle skipped -- mesh unchanged, no rollback needed.
+            // Do not set finalUntangleRejected_: BL must still run.
+            mesh_.clearAddressingData();
         }
         else
         {
             optimizer.untangleMeshFV();
-        }
 
-        labelHashSet badAfter;
-        polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badAfter);
-
-        labelHashSet negAfter;
-        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
-
-        labelHashSet openAfter;
-        polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openAfter);
-
-        scalarField skewAfter;
-        polyMeshGenChecks::checkFaceSkewness(mesh_, skewAfter);
-        const scalar maxSkewAfter =
-            skewAfter.size() > 0 ? max(skewAfter) : scalar(0.0);
-
-        // Hard cap: reject if skew exceeds 20 regardless of before/after ratio.
-        // Relative cap: reject if untangle more than doubles existing skew.
-        const bool skewOK =
-            maxSkewAfter <= scalar(20.0)
-         && maxSkewAfter <= scalar(2.0) * Foam::max(maxSkewBefore, scalar(1.0));
-
-        const bool untangleOK =
-            badAfter.size() <= badBefore.size()
-         && negAfter.size() <= negBefore.size()
-         && openAfter.size() <= openBefore.size()
-         && skewOK;
-
-        if( !untangleOK )
-        {
-            Info << "Final untangle rejected: badFaces "
-                 << badBefore.size() << "->" << badAfter.size()
-                 << " negVol " << negBefore.size() << "->" << negAfter.size()
-                 << " openCells " << openBefore.size() << "->" << openAfter.size()
-                 << " -- rolling back" << endl;
-            polyMeshGenModifier meshModifier(mesh_);
-            pointFieldPMG& pts = meshModifier.pointsAccess();
-            pts = pointsBefore;
-            mesh_.clearAddressingData();
-            finalUntangleRejected_ = true;
-        }
-        else
-        {
-            Info << "Final untangle accepted: badFaces "
-                 << badBefore.size() << "->" << badAfter.size()
-                 << " negVol " << negBefore.size() << "->" << negAfter.size()
-                 << " openCells " << openBefore.size() << "->" << openAfter.size()
-                 << endl;
+            labelHashSet badAfter;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &badAfter);
+            labelHashSet negAfter;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+            labelHashSet openAfter;
+            polyMeshGenChecks::checkClosedCells(mesh_, false, 0.5, &openAfter);
+            scalarField skewAfter;
+            polyMeshGenChecks::checkFaceSkewness(mesh_, skewAfter);
+            const scalar maxSkewAfter =
+                skewAfter.size() > 0 ? max(skewAfter) : scalar(0.0);
+            const bool skewOK =
+                maxSkewAfter <= scalar(20.0)
+             && maxSkewAfter <= scalar(2.0) *
+                    Foam::max(maxSkewBefore, scalar(1.0));
+            const bool untangleOK =
+                badAfter.size() <= badBefore.size()
+             && negAfter.size() <= negBefore.size()
+             && openAfter.size() <= openBefore.size()
+             && skewOK;
+            if( !untangleOK )
+            {
+                Info << "Final untangle rejected: badFaces "
+                     << badBefore.size() << "->" << badAfter.size()
+                     << " negVol " << negBefore.size() << "->" << negAfter.size()
+                     << " openCells "
+                     << openBefore.size() << "->" << openAfter.size()
+                     << " -- rolling back" << endl;
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = pointsBefore;
+                mesh_.clearAddressingData();
+                finalUntangleRejected_ = true;
+            }
+            else
+            {
+                Info << "Final untangle accepted: badFaces "
+                     << badBefore.size() << "->" << badAfter.size()
+                     << " negVol " << negBefore.size() << "->" << negAfter.size()
+                     << " openCells "
+                     << openBefore.size() << "->" << openAfter.size()
+                     << endl;
+            }
         }
     }
 
@@ -1623,16 +1906,20 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
     const meshSurfacePartitioner mPart(mse);
     const VRWGraph& pPatches = mPart.pointPatches();
 
+    // Read snap tolerance from meshDict -- default 1e-6 m
+    scalar snapTol = 1e-6;
+    if( bndL.found("postBLSnapTolerance") )
+        snapTol = readScalar(bndL.lookup("postBLSnapTolerance"));
+    const scalar snapTolSq = sqr(snapTol);
+    Info << "Pre-BL snap displacement tolerance = " << snapTol << " m" << endl;
+
     labelLongList snapPoints;
-    // Displacement filter: only snap points with meaningful drift from STL.
-    // Projecting all ~500k boundary points perturbs already-good surface
-    // points and creates thousands of spurious bad pyramids.
-    const scalar snapTolSq = sqr(scalar(1e-6));
-    Info << "Pre-BL snap displacement tolerance = "
-         << Foam::sqrt(snapTolSq) << " m" << endl;
     label nSinglePatch = 0;
     label nAlreadyOnSurface = 0;
     label nSnapCandidates = 0;
+    label nDrift1e9 = 0, nDrift1e8 = 0, nDrift1e7 = 0;
+    label nDrift1e6 = 0, nDrift1e5 = 0, nDrift1e4 = 0;
+    scalar maxDrift = 0.0;
     forAll(bPoints, bpI)
     {
         const label meshPtI = bPoints[bpI];
@@ -1652,6 +1939,14 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
             pPatches(bpI, 0),
             mesh_.points()[meshPtI]
         );
+        const scalar drift = Foam::sqrt(testDsq);
+        maxDrift = Foam::max(maxDrift, drift);
+        if( drift > 1e-9 ) ++nDrift1e9;
+        if( drift > 1e-8 ) ++nDrift1e8;
+        if( drift > 1e-7 ) ++nDrift1e7;
+        if( drift > 1e-6 ) ++nDrift1e6;
+        if( drift > 1e-5 ) ++nDrift1e5;
+        if( drift > 1e-4 ) ++nDrift1e4;
         if( testDsq < snapTolSq )
         {
             ++nAlreadyOnSurface;
@@ -1661,6 +1956,15 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
         ++nSnapCandidates;
     }
 
+    Info << "Pre-BL snap drift histogram: singlePatch=" << nSinglePatch
+         << " >1e-9=" << nDrift1e9
+         << " >1e-8=" << nDrift1e8
+         << " >1e-7=" << nDrift1e7
+         << " >1e-6=" << nDrift1e6
+         << " >1e-5=" << nDrift1e5
+         << " >1e-4=" << nDrift1e4
+         << " max=" << maxDrift
+         << endl;
     Info << "Pre-BL snap candidates: singlePatch=" << nSinglePatch
          << " alreadyOnSurface=" << nAlreadyOnSurface
          << " snapCandidates=" << nSnapCandidates
@@ -1687,9 +1991,20 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
 
     const label pyrIncrease =
         label(pyrAfter.size()) - label(pyrBefore.size());
+    label allowedPyrMin = 25;
+    scalar allowedPyrFrac = 0.001;
+    if( bndL.found("postBLSnapAllowedPyramidIncrease") )
+        allowedPyrMin =
+            readLabel(bndL.lookup("postBLSnapAllowedPyramidIncrease"));
+    if( bndL.found("postBLSnapAllowedPyramidIncreaseFraction") )
+        allowedPyrFrac =
+            readScalar(bndL.lookup("postBLSnapAllowedPyramidIncreaseFraction"));
     const label allowedPyrIncrease =
-        Foam::max(label(25),
-            label(0.001 * Foam::max(label(1), label(pyrBefore.size()))));
+        Foam::max
+        (
+            allowedPyrMin,
+            label(allowedPyrFrac * Foam::max(label(1), label(pyrBefore.size())))
+        );
     if( negAfter.size() > negBefore.size()
      || pyrIncrease > allowedPyrIncrease )
     {

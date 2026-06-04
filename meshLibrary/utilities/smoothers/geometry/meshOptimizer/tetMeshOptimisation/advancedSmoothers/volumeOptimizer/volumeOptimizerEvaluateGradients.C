@@ -117,6 +117,7 @@ void volumeOptimizer::evaluateGradientsExact
 {
     gradF = vector::zero;
     gradGradF = tensor::zero;
+    label nDegenerateTets = 0;
 
     const scalar K = evaluateStabilisationFactor();
 
@@ -217,6 +218,9 @@ void volumeOptimizer::evaluateGradientsExact
             LSqrTri * gradGradVstab / sqrVstab +
             2.0 * LSqrTri * (gradVstab * gradVstab) / (sqrVstab * Vstab);
     }
+    if( nDegenerateTets > 0 )
+        Info << "volumeOptimizer: skipped " << nDegenerateTets
+             << " degenerate tets (Vs < VSMALL)" << endl;
 }
 
 scalar volumeOptimizer::optimiseDivideAndConquer(const scalar tol)
