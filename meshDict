@@ -1,3 +1,4 @@
+cat > ~/rotor37_mesh/system/meshDict << 'MESHDICT'
 FoamFile
 {
     version   2.0;
@@ -7,76 +8,100 @@ FoamFile
     object    meshDict;
 }
 
+// ============================================================
+// NASA Rotor 37 -- cfMesh-OpenFOAM13 tutorial mesh
+// Repo: https://github.com/Ultravis66/cfMesh-OpenFOAM13
+// ============================================================
+
 surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
 
+// ------------------------------------------------------------
+// Geometry preprocessing
+// ------------------------------------------------------------
 geometryPreprocessing
 {
     active                true;
     reportOnly            false;
     weldNearPoints        false;
-    selectiveWeld         false;
+    selectiveWeld         false;   // must stay false -- weld breaks surface connectivity
     weldTolerance         1e-4;
     autoScaleWithCellSize false;
     minFeatureToCellRatio 0.20;
     writeDiagnostics      false;
 }
 
-maxCellSize 0.003;
+// ------------------------------------------------------------
+// Base mesh sizing
+// ------------------------------------------------------------
+maxCellSize      0.003;
 boundaryCellSize 0.001;
-minCellSize 0.0005;
-insideMesh (0.214 0.000 0.025);
+minCellSize      0.0005;
+insideMesh       (0.214 0.000 0.025);
 
+// ------------------------------------------------------------
+// Local surface refinement
+// ------------------------------------------------------------
 localRefinement
 {
     blade_1    { cellSize 0.0005; }
     blade_2    { cellSize 0.0005; }
     blade_3    { cellSize 0.0005; }
     blade_4    { cellSize 0.0005; }
-    hub        { cellSize 0.001; }
-    shroud     { cellSize 0.001; }
+    hub        { cellSize 0.001;  }
+    shroud     { cellSize 0.001;  }
     periodic_1 { cellSize 0.0005; }
     periodic_2 { cellSize 0.0005; }
 }
 
+// ------------------------------------------------------------
+// Boundary layer controls
+// ------------------------------------------------------------
 boundaryLayers
 {
-    nLayers 0;
-    terminationPatches (inlet outlet);
+    nLayers 0;                              // global default -- overridden per patch below
+    terminationPatches (inlet outlet);      // no BL on inlet/outlet
 
-    // BL/BL junction detection
-    blblFeatureAngleDeg     35.0;
+    // -- BL/BL junction detection --------------------------------
+    // Detects points where two BL patches meet at acute angles.
+    // Controls acute-corner taper to avoid zero-thickness extrusion.
+    blblFeatureAngleDeg      35.0;
     blblCornerAcuteThreshold 0.5;
-    lockAcuteCornerPoints   true;
+    lockAcuteCornerPoints    true;
 
-    // Acute corner local taper (seeded from blblAcuteCornerPoints_)
-    acuteCornerRing0        0.0;
-    acuteCornerRing1        0.02;
-    acuteCornerRing2        0.05;
-    acuteCornerRing3        0.15;
-    acuteCornerRing4        0.35;
-    acuteCornerRing5        0.60;
-    acuteCornerRing6        1.00;
+    // Acute corner layerScale taper (6-ring, seeded from blblAcuteCornerPoints_)
+    // Ring 0 = corner point (suppressed), ring 6 = full BL thickness
+    acuteCornerRing0  0.00;
+    acuteCornerRing1  0.02;
+    acuteCornerRing2  0.05;
+    acuteCornerRing3  0.15;
+    acuteCornerRing4  0.35;
+    acuteCornerRing5  0.60;
+    acuteCornerRing6  1.00;
+    acuteCornerCapLayers false;
 
-    acuteCornerCapLayers    false;
+    // -- BL optimisation -----------------------------------------
+    optimiseLayer        false;
+    optimiseLayerBuffer  false;
+    postRefineBLOptimisation true;
 
-    // Enable boundary layer optimisation pass
-    optimiseLayer           false;
-    optimiseLayerBuffer     false;
-
-    // Virtual topology: suppress BL at acute triple-junctions
-    virtualTopologyExclusion  true;
+    // -- Virtual topology: triple-junction suppression -----------
+    // Suppresses BL extrusion at hub/shroud-periodic-blade
+    // triple-junction corners using face-ring exclusion zones.
+    virtualTopologyExclusion true;
     virtualTopoRing0          0.05;
     virtualTopoRing1          0.15;
     virtualTopoRing2          0.40;
 
-    // Post-BL repair: classify periodic transition faces and avoid unsafe flips
-    periodicTransitionProtection true;
-    periodicTransitionSkipFlip   true;
-    periodicTransitionPatches    (periodic_1 periodic_2);
+    tripleJunctionSuppressPatches  (hub shroud);
+    tripleJunctionFaceRingExclusion true;
+    tripleJunctionWallPatches      (blade_1 blade_2 blade_3 blade_4);
+    tripleJunctionNeutralPatches   (periodic_1 periodic_2);
 
-    // Gap/proximity detection: suppress BL where BL patches are too close
-    detectGaps            true;
-    gapThreshold          1e-5;
+    // -- Gap/proximity detection ---------------------------------
+    // Suppresses BL where blade-tip clearance is too small for
+    // full extrusion. Prevents collapsed cells near shroud.
+    detectGaps       true;
+    gapThreshold     1e-5;
     gapPatchPairs
     (
         (blade_1 shroud)
@@ -84,69 +109,83 @@ boundaryLayers
         (blade_3 shroud)
         (blade_4 shroud)
     );
-    gapSuppressPatches (shroud hub);
-    tripleJunctionSuppressPatches (hub shroud);
-    tripleJunctionFaceRingExclusion true;
-    tripleJunctionWallPatches     (blade_1 blade_2 blade_3 blade_4);
-    tripleJunctionNeutralPatches  (periodic_1 periodic_2);  // suppress shroud+hub BL, protect blade
+    gapSuppressPatches  (shroud hub);
+    gapFaceRingExclusion true;
+    gapFaceRing0Scale    0.02;
+    gapFaceRing1Scale    0.05;
+    gapFaceRing2Scale    0.20;
 
-    // Post-optimizer surface re-projection (Layer 3 constraint recovery)
-    postBLSnap                          true;
-    postBLSnapTolerance                 1e-4;
-    postBLSnapAllowedPyramidIncrease    25;
-    postBLSnapAllowedPyramidIncreaseFraction 0.001;
+    // -- Periodic transition protection --------------------------
+    // Prevents unsafe face flips at periodic-patch BL transitions.
+    periodicTransitionProtection true;
+    periodicTransitionSkipFlip   true;
+    periodicTransitionPatches    (periodic_1 periodic_2);
 
-    // Surface-constrained optimizer: re-project boundary pts during optimization
+    // -- Surface-constrained optimizer (Layer 3) -----------------
+    // Re-projects single-patch boundary points onto their STL patch
+    // during volume optimization, preventing drift accumulation.
+    // Two-phase: serial octree pre-pass + parallel write-back.
+    // Set false to disable and revert to unconstrained optimization.
     constrainOptimizerBoundaryMotion true;
 
-    // Limited-displacement incremental re-projection after optimizeMeshFV
-    postOptimizerReprojStepFraction     0.005;
-    postOptimizerReprojPasses           10;
+    // -- Post-optimizer incremental re-projection ----------------
+    // After optimizeMeshFV, corrects residual drift using limited
+    // displacement passes. Only moves points farther than
+    // postBLSnapTolerance from the STL.
+    postOptimizerReprojStepFraction  0.005;  // fraction of drift corrected per pass
+    postOptimizerReprojPasses        10;     // max passes
 
-    gapFaceRingExclusion  true;
-    gapFaceRing0Scale     0.02;
-    gapFaceRing1Scale     0.05;
-    gapFaceRing2Scale     0.20;
+    // -- Pre-BL snap ---------------------------------------------
+    // Re-projects surface after volume optimisation, before BL
+    // extrusion. Uses displacement filter to avoid perturbing
+    // already-good points. Falls back gracefully if mesh worsens.
+    postBLSnap                           true;
+    postBLSnapTolerance                  1e-4;   // min drift to trigger snap (m)
+    postBLSnapAllowedPyramidIncrease     25;     // absolute pyramid increase allowed
+    postBLSnapAllowedPyramidIncreaseFraction 0.001; // fractional pyramid increase allowed
 
-    // Snap settings
-    cornerSnapRelaxation 0.25;
-    cornerSnapIterations 1;
-    edgeSnapRelaxation   1.0;
-    edgeSnapIterations   1;
-    snapMinPyramidHeight 1e-10;
-    postBLSnap           true;
-    postRefineBLOptimisation true;
+    // -- Snapping controls ---------------------------------------
+    cornerSnapRelaxation  0.25;
+    cornerSnapIterations  1;
+    edgeSnapRelaxation    1.0;
+    edgeSnapIterations    1;
+    snapMinPyramidHeight  1e-10;
 
-    // BL transition ramp — smooth 6-ring taper
-    layerScaleRing1 0.10;
-    layerScaleRing2 0.25;
-    layerScaleRing3 0.45;
-    layerScaleRing4 0.65;
-    layerScaleRing5 0.80;
-    layerScaleRing6 1.00;
+    // -- BL thickness ramp ---------------------------------------
+    // Smooth 6-ring taper from patch edge to full BL thickness.
+    layerScaleRing1  0.10;
+    layerScaleRing2  0.25;
+    layerScaleRing3  0.45;
+    layerScaleRing4  0.65;
+    layerScaleRing5  0.80;
+    layerScaleRing6  1.00;
 
     thicknessRatio          1.3;
     maxFirstLayerThickness  1e-4;
 
+    // -- Per-patch BL settings -----------------------------------
     patchBoundaryLayers
     {
-        blade_1 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
-        blade_2 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
-        blade_3 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
-        blade_4 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
-        hub     { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
-        shroud  { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
-        inlet   { nLayers 0; }
-        outlet  { nLayers 0; }
+        blade_1    { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_2    { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_3    { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        blade_4    { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
+        hub        { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
+        shroud     { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
+        inlet      { nLayers 0; }
+        outlet     { nLayers 0; }
         periodic_1 { nLayers 0; }
         periodic_2 { nLayers 0; }
     }
 }
 
+// ------------------------------------------------------------
+// Boundary patch renaming and types
+// ------------------------------------------------------------
 renameBoundary
 {
-    defaultName     walls;
-    defaultType     wall;
+    defaultName  walls;
+    defaultType  wall;
     newPatchNames
     {
         inlet      { newName inlet;      type patch; }
@@ -161,3 +200,5 @@ renameBoundary
         blade_4    { newName blade_4;    type wall;  }
     }
 }
+MESHDICT
+echo "meshDict written"
