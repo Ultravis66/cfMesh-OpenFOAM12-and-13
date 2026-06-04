@@ -575,19 +575,25 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
 
     if( surfaceOctreePtr_ && bndPointPatchesPtr_ && globalToBoundaryPointPtr_ )
     {
-        // Surface-constrained serial write-back: project single-patch
-        // boundary points onto their STL patch before committing.
-        // Serial to avoid OMP races on mutable octree caches.
+        // Two-phase constrained write-back:
+        // Phase 1 (serial): query octree for drifted boundary points,
+        //   compute limited target positions. Serial to avoid OMP races
+        //   on mutable octree caches.
+        // Phase 2 (parallel): apply precomputed targets and mark changed nodes.
+        const label nNodes = nodeLabelInOrigMesh_.size();
+        LongList<point> targetPoints(nNodes);
+        const scalar constraintTolSq = sqr(scalar(1e-5));
+        const scalar stepFraction = 0.01;
+
+        // Phase 1: serial octree queries
+        label nConstrained = 0;
         forAll(nodeLabelInOrigMesh_, pI)
         {
             const label globalPointI = nodeLabelInOrigMesh_[pI];
-            if( globalPointI == -1 )
-                continue;
-
-            changedNode[globalPointI] = true;
             point newP = points_[pI];
 
-            if( (smoothVertex_[pI] & BOUNDARY)
+            if( globalPointI != -1
+             && (smoothVertex_[pI] & BOUNDARY)
              && globalPointI < globalToBoundaryPointPtr_->size() )
             {
                 const label bpI = (*globalToBoundaryPointPtr_)[globalPointI];
@@ -607,19 +613,30 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
                         patchI,
                         newP
                     );
-
-                    // Only correct points with meaningful drift -- skip
-                    // sub-tolerance points to avoid unnecessary perturbations
-                    // and reduce serial pre-pass cost.
-                    const scalar constraintTolSq = sqr(scalar(1e-5));
                     if( dSq > constraintTolSq )
                     {
-                        const scalar stepFraction = 0.01;
                         newP = newP + stepFraction * (projectedP - newP);
+                        ++nConstrained;
                     }
                 }
             }
-            pts[globalPointI] = newP;
+            targetPoints[pI] = newP;
+        }
+        if( nConstrained > 0 )
+            Info << "Surface-constrained updateOrigMesh: corrected "
+                 << nConstrained << " boundary points" << endl;
+
+        // Phase 2: parallel write-back using precomputed targets
+        # ifdef USE_OMP
+        # pragma omp parallel for if( nNodes > 1000 )         schedule(guided, 10)
+        # endif
+        forAll(nodeLabelInOrigMesh_, pI)
+        {
+            const label globalPointI = nodeLabelInOrigMesh_[pI];
+            if( globalPointI == -1 )
+                continue;
+            changedNode[globalPointI] = true;
+            pts[globalPointI] = targetPoints[pI];
         }
     }
     else
