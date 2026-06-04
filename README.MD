@@ -1,6 +1,6 @@
 # cfMesh for OpenFOAM 13
 
-v0.10 beta: active development on OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, boundary-layer robustness, and surface-conformance fixes for complex STL-driven Cartesian/polyhedral meshing. Rotor 37 is currently used as the primary stress-test case. Serial runs are deterministic; parallel repeatability is substantially improved, with minor residual variance still under investigation.
+v0.10 beta: active development on OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, boundary-layer robustness, and surface-conformance fixes for complex STL-driven Cartesian/polyhedral meshing. Rotor 37 is currently used as the primary stress-test case. Serial test runs have been deterministic in current Rotor 37 testing; parallel repeatability is substantially improved, with minor residual variance still under investigation.
 
 ### NOTE: NASA Rotor 37 is used as a stress-test case because it combines tight blade/hub/shroud junctions, periodic sector boundaries, acute trailing-edge features, refinement transitions, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific; Rotor 37 is used to expose general robustness issues that should benefit other external, internal, and turbomachinery CFD geometries. CFD validation is still limited and should be treated as preliminary.
 
@@ -149,7 +149,7 @@ checkMesh
 ## Boundary Layer Generation Improvements
 
 ### Patch-based BL control
-Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
+Patches with `nLayers 0` such as inlet, outlet, and periodic patches are excluded from BL generation. Patches with `nLayers 0`, such as inlet, outlet, and periodic patches, are excluded from BL generation. The original behavior relied on hardcoded patch-name assumptions in several paths; this fork reads patch-layer intent from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths were updated: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, and `addLayerForAllPatches`./patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
 
 ### BL/BL junction topology infrastructure (C1)
 
@@ -184,7 +184,7 @@ The original cfMesh pipeline ran `mapMeshToSurface` (global surface projection) 
 Fix: `extractPatches` now runs before `mapMeshToSurface`, establishing patch identity on the raw Cartesian hex mesh before projection. A second `extractPatches` call after projection corrects misassignments from the unprojected hex geometry. This addressed one class of patch-boundary protrusions. Later diagnostics showed that a larger remaining source was boundary-point drift during volume optimization, addressed in v0.10 by the surface-constrained optimizer.
 
 ### Boundary point topology classifier
-Every boundary point is classified into one of five topology classes before projection:
+Boundary points are classified into topology roles before constrained projection:
 
 | Class | Description |
 |-------|-------------|
@@ -259,18 +259,24 @@ Generic protection system for points where BL patches meet no-BL patches (wall m
 | `lockAcuteCornerPoints` | true | Lock acute corners in final surface optimizer |
 | `acuteCornerRing0-6` | 0.0/0.0/0.05/0.15/0.35/0.60/1.00 | layerScale taper seeded from acute corner points |
 | `acuteCornerCapLayers` | false | Cap layer count near acute corners (experimental) |
-| `virtualTopologyExclusion` | false | Enable commercial-style BL exclusion face-rings at acute junctions |
+| `virtualTopologyExclusion` | false | Enable local BL exclusion face-rings at acute junctions |
 | `virtualTopoRing0-2` | 0.05/0.15/0.40 | layerScale for VT face-ring suppression zones |
 | `detectGaps` | false | Enable gap/contact proximity detection |
 | `gapThreshold` | 5e-4 | Proximity distance threshold in metres |
 | `gapPatchPairs` | none | Explicit patch pairs to check for proximity |
-| `gapSuppressPatches` | none | Patches to suppress BL on (others are protected) |
-| `gapFaceRingExclusion` | true | Enable face-ring BFS around gap points (suppresses prism topology) |
+| `gapSuppressPatches` | none | Patches to suppress BL on; other patches are protected |
+| `gapFaceRingExclusion` | true | Enable face-ring BFS around gap points to suppress prism topology locally |
 | `gapFaceRing0-2Scale` | 0.02/0.05/0.20 | layerScale for gap face-ring suppression zones |
 | `layerScaleRing1-6` | 0.10/0.25/0.45/0.65/0.80/1.00 | BL/no-BL transition ramp scales |
-| `terminationPatches` | none | Patches with no BL (inlet/outlet) |
-| `postBLSnap` | false | Post-BL surface re-projection (experimental) |
+| `terminationPatches` | none | Patches with no BL, such as inlet/outlet |
 | `postRefineBLOptimisation` | true | Run surface optimizer after BL refinement |
+| `constrainOptimizerBoundaryMotion` | false | Enable Layer 3 surface-constrained optimizer during volume optimization |
+| `postOptimizerReprojStepFraction` | 0.005 | Fraction of drift corrected per incremental post-optimizer re-projection pass |
+| `postOptimizerReprojPasses` | 10 | Maximum incremental post-optimizer re-projection passes |
+| `postBLSnap` | false | Post-optimizer/pre-BL surface re-projection safety pass (experimental) |
+| `postBLSnapTolerance` | 1e-6 | Minimum drift threshold for post-optimizer/pre-BL snap candidate selection (m) |
+| `postBLSnapAllowedPyramidIncrease` | 25 | Absolute bad-pyramid increase allowed during snap validation |
+| `postBLSnapAllowedPyramidIncreaseFraction` | 0.001 | Fractional bad-pyramid increase allowed during snap validation |
 
 
 ### BL/BL sharp-junction suppression
@@ -336,7 +342,7 @@ Corner points (3+ patches) at BL/termination junctions are fully suppressed (`la
 ### Parallel hardening and deterministic-optimizer work (v0.8–v0.9)
 Many known race-sensitive OMP apply loops have been serialized or guarded across the meshLibrary. v0.9 adds: negativeNode tet-marking loops (primary source of OMP=32 nondeterminism), isExitFace/isBndPoint/removeBndPoint shared-write races, and 100+ globalToLocal guards across 30+ files. Serial (OMP=1) runs are now fully deterministic. Minor residual variance at OMP=32 under continued investigation.
 ---
-## Mesh quality on NASA Rotor 37 (v0.9)
+## Mesh quality on NASA Rotor 37 (development baseline)
 
 Tested with boundary layers active. Current development testing commonly uses 3-layer blade boundary layers and 3–5 layer hub/shroud configurations depending on the experiment.
 
@@ -360,8 +366,8 @@ Tested with boundary layers active. Current development testing commonly uses 3-
 |-----|--------|-------------|
 | `v0.10` | `feature/bl-transition-topology` | Surface-constrained optimizer (Layer 3): patch-constrained projection in `mapVerticesOntoSurface`, limited-displacement `partTetMesh::updateOrigMesh` re-projection, two-phase serial/parallel write-back, post-optimizer incremental snap, pre-BL snap with displacement filter and pyramid-tolerant rollback. 46% reduction in visible-scale boundary drift. |
 | `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, partTetMesh/partTriMesh updateType races, otherVrts_ std::map race in BL vertex creation, frontPoints extrusion race, meshSurfaceEngineModifier marking races, optimiseBoundaryVolumeOptimizer call-site bug, MeshUntangler convergence fix, untangle stagnation detection. Serial runs fully deterministic; OMP=32 quality substantially improved. |
-| `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS (commercial-style BL exclusion zones at acute junctions), VT/BL-ramp priority hierarchy, side-aware gap closure with face-level suppressLayerAtBndFace_ mask, configurable gapPatchPairs/gapSuppressPatches. 0 bad pyramids, skew 9.77. |
-| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing (STL vertex welding), BL+BL+neutral corner classifier (acute/mild, angle-based), acute corner projection guard (`lockAcuteCornerPoints`), softer 4-ring taper. Zero bad pyramids, zero non-ortho errors. |
+| `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS..., in a selected Rotor 37 test run: 0 bad pyramids, skew 9.77. |
+| `v0.8.2` | `feature/bl-transition-topology` | Geometry preprocessing..., in a selected Rotor 37 test run: zero bad pyramids, zero non-ortho errors. |
 | `v0.8` | `feature/bl-transition-topology` | Full codebase audit 60+ bug fixes: OMP apply-loop serialization, globalToLocal guards, activePatch_ owner/patch bugs, face size guards, bounds guards throughout. Deterministic results on Rotor 37. |
 | `v0.7.1` | `feature/bl-transition-topology` | BL/neutral extrusion constraint + crossing clamp + layer rollback scaffold |
 | `v0.7` | `feature/bl-transition-topology` | BL/neutral edge detection + BL-side projection constraint + VTK diagnostics |
@@ -375,27 +381,18 @@ Tested with boundary layers active. Current development testing commonly uses 3-
 ---
 ## Running the regression test
 
-A automated validation script is included that runs `cartesianMesh` on the Rotor 37 case and checks all key quality metrics against known-good baselines.
+An automated validation script is included that runs `cartesianMesh` on the Rotor 37 case and checks all key quality metrics against known-good baselines.
 
 ```bash
 ~/cfMesh/tutorials/rotor37/regression_test.sh ~/rotor37_mesh
 ```
+Expected output will vary by thread count and active controls, but current Rotor 37 development runs are typically in this range:
 
-Expected output:
-```
-======================================================
-cfMesh Rotor 37 Regression Test
-...
-[ 1/3 ] Running cartesianMesh...
-[ 2/3 ] Running checkMesh...
-PASS: Cell count: ~1.8 (baseline: 2100000 +/-10%)
-PASS: Average non-orthogonality: ~10deg (limit: 15deg)
-PASS: High aspect ratio cells: 3-5 (known limit: 10)
-[ 3/3 ] Summary
-PASSED: 6
-FAILED: 0
-RESULT: PASS
-```
+```text
+cells:            ~1.77M
+Mesh non-orthogonality Max: ~89 degrees  average: ~8–13 degrees
+Number of severely non-orthogonal (> 70 degrees) faces: case-dependent
+Max skewness: ~8.5–11.6
 
 Run this after any code change to catch regressions before committing.
 
