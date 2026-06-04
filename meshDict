@@ -7,12 +7,8 @@ FoamFile
     object    meshDict;
 }
 
-// ─── Surface ────────────────────────────────────────────────────────────────
 surfaceFile "constant/triSurface/Rotor37_cfmesh.stl";
 
-// ─── Geometry preprocessing ─────────────────────────────────────────────────
-// Pre-mesh STL near-coincident vertex weld. Fixes knife-edge TE defects.
-// weldNearPoints false = safe default; set true only if STL has known gaps.
 geometryPreprocessing
 {
     active                true;
@@ -25,55 +21,60 @@ geometryPreprocessing
     writeDiagnostics      false;
 }
 
-// ─── Global cell size ────────────────────────────────────────────────────────
-maxCellSize      0.003;
+maxCellSize 0.003;
 boundaryCellSize 0.001;
-minCellSize      0.0005;
-insideMesh       (0.214 0.000 0.025);
+minCellSize 0.0005;
+insideMesh (0.214 0.000 0.025);
 
-// ─── Local refinement ────────────────────────────────────────────────────────
 localRefinement
 {
     blade_1    { cellSize 0.0005; }
     blade_2    { cellSize 0.0005; }
     blade_3    { cellSize 0.0005; }
     blade_4    { cellSize 0.0005; }
-    hub        { cellSize 0.001;  }
-    shroud     { cellSize 0.001;  }
+    hub        { cellSize 0.001; }
+    shroud     { cellSize 0.001; }
     periodic_1 { cellSize 0.0005; }
     periodic_2 { cellSize 0.0005; }
 }
 
-// ─── Boundary layers ─────────────────────────────────────────────────────────
 boundaryLayers
 {
-    nLayers 0;  // global default — per-patch values below override this
-
-    // Patches with no BL (inlet/outlet = termination, periodic = neutral)
+    nLayers 0;
     terminationPatches (inlet outlet);
 
-    // ── BL/BL junction detection ─────────────────────────────────────────
-    blblFeatureAngleDeg      35.0;
+    // BL/BL junction detection
+    blblFeatureAngleDeg     35.0;
     blblCornerAcuteThreshold 0.5;
-    lockAcuteCornerPoints    true;
+    lockAcuteCornerPoints   true;
 
-    // ── Acute corner local taper ──────────────────────────────────────────
+    // Acute corner local taper (seeded from blblAcuteCornerPoints_)
     acuteCornerRing0        0.0;
-    acuteCornerRing1        0.0;
-    acuteCornerRing2        0.0;
-    acuteCornerRing3        0.0;
-    acuteCornerRing4        0.05;
-    acuteCornerRing5        0.20;
-    acuteCornerRing6        0.50;
+    acuteCornerRing1        0.02;
+    acuteCornerRing2        0.05;
+    acuteCornerRing3        0.15;
+    acuteCornerRing4        0.35;
+    acuteCornerRing5        0.60;
+    acuteCornerRing6        1.00;
+
     acuteCornerCapLayers    false;
 
-    // ── Virtual topology exclusion ────────────────────────────────────────
+    // Enable boundary layer optimisation pass
+    optimiseLayer           false;
+    optimiseLayerBuffer     false;
+
+    // Virtual topology: suppress BL at acute triple-junctions
     virtualTopologyExclusion  true;
     virtualTopoRing0          0.05;
     virtualTopoRing1          0.15;
     virtualTopoRing2          0.40;
 
-    // ── Gap / contact detection ───────────────────────────────────────────
+    // Post-BL repair: classify periodic transition faces and avoid unsafe flips
+    periodicTransitionProtection true;
+    periodicTransitionSkipFlip   true;
+    periodicTransitionPatches    (periodic_1 periodic_2);
+
+    // Gap/proximity detection: suppress BL where BL patches are too close
     detectGaps            true;
     gapThreshold          1e-5;
     gapPatchPairs
@@ -83,25 +84,40 @@ boundaryLayers
         (blade_3 shroud)
         (blade_4 shroud)
     );
-    gapSuppressPatches (shroud hub);  // suppress shroud+hub BL, protect blade
+    gapSuppressPatches (shroud hub);
+    tripleJunctionSuppressPatches (hub shroud);
+    tripleJunctionFaceRingExclusion true;
+    tripleJunctionWallPatches     (blade_1 blade_2 blade_3 blade_4);
+    tripleJunctionNeutralPatches  (periodic_1 periodic_2);  // suppress shroud+hub BL, protect blade
 
-    // ── Gap face-ring exclusion ───────────────────────────────────────────
+    // Post-optimizer surface re-projection (Layer 3 constraint recovery)
+    postBLSnap                          true;
+    postBLSnapTolerance                 1e-4;
+    postBLSnapAllowedPyramidIncrease    25;
+    postBLSnapAllowedPyramidIncreaseFraction 0.001;
+
+    // Surface-constrained optimizer: re-project boundary pts during optimization
+    constrainOptimizerBoundaryMotion true;
+
+    // Limited-displacement incremental re-projection after optimizeMeshFV
+    postOptimizerReprojStepFraction     0.005;
+    postOptimizerReprojPasses           10;
+
     gapFaceRingExclusion  true;
     gapFaceRing0Scale     0.02;
     gapFaceRing1Scale     0.05;
     gapFaceRing2Scale     0.20;
 
-    // ── Snap and optimisation ─────────────────────────────────────────────
-    postBLSnap               false;
+    // Snap settings
+    cornerSnapRelaxation 0.25;
+    cornerSnapIterations 1;
+    edgeSnapRelaxation   1.0;
+    edgeSnapIterations   1;
+    snapMinPyramidHeight 1e-10;
+    postBLSnap           true;
     postRefineBLOptimisation true;
 
-    // IMPORTANT:
-    // Keep disabled unless testing refineBoundaryLayers buffer path.
-    // optimiseLayer true currently exercises the fragile buffer-refinement path.
-    optimiseLayer           false;
-    optimiseLayerBuffer     false;
-
-    // ── BL transition ramp ────────────────────────────────────────────────
+    // BL transition ramp — smooth 6-ring taper
     layerScaleRing1 0.10;
     layerScaleRing2 0.25;
     layerScaleRing3 0.45;
@@ -109,10 +125,9 @@ boundaryLayers
     layerScaleRing5 0.80;
     layerScaleRing6 1.00;
 
-    thicknessRatio         1.3;
-    maxFirstLayerThickness 1e-4;
+    thicknessRatio          1.3;
+    maxFirstLayerThickness  1e-4;
 
-    // ── Per-patch BL settings ─────────────────────────────────────────────
     patchBoundaryLayers
     {
         blade_1 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
@@ -121,18 +136,17 @@ boundaryLayers
         blade_4 { nLayers 3; thicknessRatio 1.2; maxFirstLayerThickness 5e-5; }
         hub     { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
         shroud  { nLayers 3; thicknessRatio 1.3; maxFirstLayerThickness 1e-4; }
-        inlet      { nLayers 0; }
-        outlet     { nLayers 0; }
+        inlet   { nLayers 0; }
+        outlet  { nLayers 0; }
         periodic_1 { nLayers 0; }
         periodic_2 { nLayers 0; }
     }
 }
 
-// ─── Boundary renaming ───────────────────────────────────────────────────────
 renameBoundary
 {
-    defaultName  walls;
-    defaultType  wall;
+    defaultName     walls;
+    defaultType     wall;
     newPatchNames
     {
         inlet      { newName inlet;      type patch; }
