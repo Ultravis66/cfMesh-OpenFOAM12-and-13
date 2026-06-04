@@ -1,8 +1,8 @@
 # cfMesh for OpenFOAM 13
 
-v0.10 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop races fixed in v0.8; major Rotor 37 quality metrics are now repeatable run-to-run, with minor residual variance still under investigation. 
+v0.10 beta: active development on OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, boundary-layer robustness, and surface-conformance fixes for complex STL-driven Cartesian/polyhedral meshing. Rotor 37 is currently used as the primary stress-test case. Serial runs are deterministic; parallel repeatability is substantially improved, with minor residual variance still under investigation.
 
-### NOTE: NASA Rotor 37 is being used as a stress-test case because it is a sufficiently complex turbomachinery geometry, with tight blade/hub/shroud junctions, periodic sector boundaries, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific, but to use this geometry to expose robustness issues that should improve performance on other external and internal CFD geometries. Limited testing on CFD, a few tests have been run just to see if the mesh would work. 
+### NOTE: NASA Rotor 37 is used as a stress-test case because it combines tight blade/hub/shroud junctions, periodic sector boundaries, acute trailing-edge features, refinement transitions, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific; Rotor 37 is used to expose general robustness issues that should benefit other external, internal, and turbomachinery CFD geometries. CFD validation is still limited and should be treated as preliminary.
 
 ---
 ### Known remaining issues
@@ -13,6 +13,15 @@ v0.10 beta: active development on OpenFOAM Foundation v13. Core OMP apply-loop r
 **Visible surface protrusions at patch boundaries** — Partially resolved in v0.10. Root cause: volume optimizer moves boundary points off STL surface with no constraint. Surface-constrained optimizer (Layer 3) now reduces visible-scale drift (>100 micron points) by ~46%. Residual drift on periodic patches remains under active development.
 
 **Runtime increase with surface-constrained optimizer** — Serial octree pre-pass in `partTetMesh::updateOrigMesh` adds ~2x wall-clock time vs unconstrained. Can be disabled via `constrainOptimizerBoundaryMotion false`. Full parallel implementation planned.
+
+### Current limitations
+
+- Rotor 37 is a stress test, not a general validation suite.
+- CFD validation is preliminary.
+- Boundary-layer generation is much improved but still under active development near acute blade/endwall/periodic singularities.
+- Surface-constrained optimization reduces boundary drift but currently increases runtime.
+- A small number of negative-volume cells, bad pyramid faces, and non-orthogonality errors may remain in current development runs.
+- The mesher is not yet production-certified; users should run `checkMesh`, inspect boundary surfaces visually, and validate solver behavior for their own cases.
 
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
@@ -58,6 +67,7 @@ checkMesh
 
 ## What works
 - `cartesianMesh` Cartesian hex-dominant mesher, primary supported executable, tested on NASA Rotor 37
+  - Current Rotor 37 results are promising but still under active development; this should not yet be treated as a production-certified mesher.
 - `tetMesh` Builds successfully, experimental, not fully validated
 - `pMesh` Builds successfully, experimental, not fully validated
 - `libmeshLibrary.so` Core mesh library
@@ -129,7 +139,7 @@ checkMesh
 | `tetMeshOptimisation::optimiseUsingMeshUntangler` missing helper[tetI]=true — false convergence declaration | Add missing assignment |
 | Untangle stagnation deadlock at small residual bad-face count | Detect stuck iterations, switch to unconstrained fallback after 4 unchanged iterations with ≤8 bad faces |
 | `mapVerticesOntoSurface` unconstrained global nearest-triangle projection causes visible protrusions at patch boundaries | Patch-constrained projection: validate returned patch against `pointPatches`; re-project to correct patch if mismatch |
-| Volume optimizer moves boundary points up to 1.3mm off STL surface with no constraint | Surface-constrained `partTetMesh::updateOrigMesh`: serial octree pre-pass + parallel limited-displacement write-back |
+| Volume optimizer moves boundary points up to 1.3mm off STL surface with no constraint | Surface-constrained `partTetMesh::updateOrigMesh`: limited-displacement single-patch boundary re-projection during optimizer write-back; current implementation uses a serial octree query phase with parallel write-back. |
 | `volumeOptimizerEvaluateGradients` `FatalError` on degenerate zero-volume tets | Replace fatal with counted skip + end-of-function report |
 | `finalUntangleRejected_` flag incorrectly set when untangle skipped due to pre-existing negVol | Skip rollback check when untangle did not run; BL proceeds normally |
 
@@ -166,12 +176,12 @@ Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient th
 
 ## Surface quality system (v0.1–v0.5)
 
-A commercial-mesher-style surface projection and repair pipeline, developed incrementally on top of the original cfMesh surface mapping code.
+A topology-aware surface projection and repair pipeline, developed incrementally on top of the original cfMesh surface mapping code.
 
 ### Architecture fix patch-identity-first projection
 The original cfMesh pipeline ran `mapMeshToSurface` (global surface projection) before `extractPatches` (patch identity assignment). This meant every boundary point was projected using a global nearest-triangle search with no patch constraint causing points near concave multi-patch corners to snap to the wrong patch surface, producing visible protrusions.
 
-Fix: `extractPatches` now runs before `mapMeshToSurface`, establishing patch identity on the raw Cartesian hex mesh before any projection occurs. A second `extractPatches` call after projection corrects any misassignments from the unprojected hex geometry. This is the primary fix for surface protrusions.
+Fix: `extractPatches` now runs before `mapMeshToSurface`, establishing patch identity on the raw Cartesian hex mesh before projection. A second `extractPatches` call after projection corrects misassignments from the unprojected hex geometry. This addressed one class of patch-boundary protrusions. Later diagnostics showed that a larger remaining source was boundary-point drift during volume optimization, addressed in v0.10 by the surface-constrained optimizer.
 
 ### Boundary point topology classifier
 Every boundary point is classified into one of five topology classes before projection:
@@ -268,7 +278,7 @@ Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are 
 
 ## Surface-constrained optimizer (v0.10)
 
-Commercial-mesher-style Layer 3 architecture: boundary points are constrained to their STL patch surface during volume optimization, preventing drift accumulation.
+Layer 3 surface-constrained optimizer architecture: boundary points are constrained to their STL patch surface during volume optimization, preventing drift accumulation.
 
 ### Architecture
 The volume optimizer (`optimizeMeshFV`, `untangleMeshFV`, `optimizeLowQualityFaces`) previously moved boundary points freely in 3D with no surface awareness. Points could drift up to 1.3mm from the STL surface, causing visible protrusions that the downstream snap could not correct without inverting cells.
@@ -282,25 +292,6 @@ Fix: `partTetMesh::updateOrigMesh` now applies a limited-displacement re-project
 - Visible-scale drift (>100 micron points): 2863 → 1540 (46% reduction)
 - Max drift: 1.19mm → 0.52mm
 - BL coverage: 95–99% across all patches
-
-### meshDict controls
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `constrainOptimizerBoundaryMotion` | false | Enable surface-constrained optimizer |
-| `postBLSnapTolerance` | 1e-6 | Min drift to trigger post-optimizer snap (m) |
-| `postOptimizerReprojStepFraction` | 0.005 | Fraction of drift corrected per incremental pass |
-| `postOptimizerReprojPasses` | 10 | Max incremental re-projection passes |
-| `postBLSnap` | false | Enable pre-BL snap after volume optimization |
-| `postBLSnapAllowedPyramidIncrease` | 25 | Absolute pyramid increase allowed during snap |
-| `postBLSnapAllowedPyramidIncreaseFraction` | 0.001 | Fractional pyramid increase allowed |
-| `constrainOptimizerBoundaryMotion` | false | Enable surface-constrained optimizer (Layer 3) |
-| `postBLSnapTolerance` | 1e-6 | Min drift threshold for post-optimizer snap (m) |
-| `postOptimizerReprojStepFraction` | 0.005 | Step fraction per incremental re-projection pass |
-| `postOptimizerReprojPasses` | 10 | Max incremental re-projection passes after optimizer |
-| `postBLSnap` | false | Enable pre-BL surface re-projection |
-| `postBLSnapAllowedPyramidIncrease` | 25 | Absolute pyramid increase allowed during snap |
-| `postBLSnapAllowedPyramidIncreaseFraction` | 0.001 | Fractional pyramid increase allowed during snap |
 
 ### refineFace graceful handling
 `refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
@@ -342,12 +333,12 @@ Blade/periodic junction points where a BL wall patch meets a periodic/symmetry p
 ### Topology-aware BL suppression
 Corner points (3+ patches) at BL/termination junctions are fully suppressed (`layerScale_ = 0.0`). Sharp two-patch BL/termination edges are suppressed based on patch normal angle (75° default threshold). Periodic/neutral patches never trigger suppression regardless of angle.
 
-### Full deterministic optimizer (v0.8–v0.9)
-All known race-sensitive OMP apply loops have been serialized across the full meshLibrary. v0.9 adds: negativeNode tet-marking loops (primary source of OMP=32 nondeterminism), isExitFace/isBndPoint/removeBndPoint shared-write races, and 100+ globalToLocal guards across 30+ files. Serial (OMP=1) runs are now fully deterministic. Minor residual variance at OMP=32 under continued investigation.
+### Parallel hardening and deterministic-optimizer work (v0.8–v0.9)
+Many known race-sensitive OMP apply loops have been serialized or guarded across the meshLibrary. v0.9 adds: negativeNode tet-marking loops (primary source of OMP=32 nondeterminism), isExitFace/isBndPoint/removeBndPoint shared-write races, and 100+ globalToLocal guards across 30+ files. Serial (OMP=1) runs are now fully deterministic. Minor residual variance at OMP=32 under continued investigation.
 ---
 ## Mesh quality on NASA Rotor 37 (v0.9)
 
-Tested with boundary layers active (3-layer blade, 5-layer hub/shroud).
+Tested with boundary layers active. Current development testing commonly uses 3-layer blade boundary layers and 3–5 layer hub/shroud configurations depending on the experiment.
 
 | Metric | v0.10 (current) | v0.9 |
 |--------|-----------------|------|
@@ -396,13 +387,10 @@ Expected output:
 cfMesh Rotor 37 Regression Test
 ...
 [ 1/3 ] Running cartesianMesh...
-PASS: cartesianMesh completed in ~85–95s
-PASS: Bad faces after untangling: 0 (limit: 10)
 [ 2/3 ] Running checkMesh...
 PASS: Cell count: ~1.8 (baseline: 2100000 +/-10%)
 PASS: Average non-orthogonality: ~10deg (limit: 15deg)
 PASS: High aspect ratio cells: 3-5 (known limit: 10)
-PASS: Negative volume cells: 0-2 (known limit: 5)
 [ 3/3 ] Summary
 PASSED: 6
 FAILED: 0
@@ -417,7 +405,7 @@ Run this after any code change to catch regressions before committing.
 
 **`cartesianMesh` not found after build:** Check `$FOAM_USER_APPBIN` is in your PATH. Run `source /opt/openfoam13/etc/bashrc` again.
 
-**Mesh hangs:** Should not occur in current version OMP nondeterminism in `mapEdgeNodes` was fixed in this port. If you encounter a hang, please open a GitHub issue with your STL and meshDict.
+**Mesh hangs or stalls:** Several known OMP and topology-repair hangs have been fixed, but this is still an active-development mesher. If a case hangs, rerun with `OMP_NUM_THREADS=1` to separate serial logic from parallel nondeterminism, then open an issue with the STL, `meshDict`, thread count, and relevant log output.
 
 ---
 
@@ -478,7 +466,8 @@ cd ~/rotor37_mesh
 cartesianMesh 2>&1 | tee mesh.log
 ```
 
-Expected runtime: ~85–95 seconds on a Ryzen 7950X3D / WSL2 test setup.
+Expected runtime depends strongly on whether `constrainOptimizerBoundaryMotion` is enabled. On a Ryzen 7950X3D / WSL2 test setup, unconstrained runs are significantly faster; v0.10 surface-constrained runs are currently slower because the octree projection pre-pass is still being optimized.
+
 ```
 Finished renaming boundary patches
 ```
@@ -494,7 +483,6 @@ cells:            ~1.77M
 Mesh non-orthogonality Max: ~89 degrees  average: ~8.6 degrees
 *Number of severely non-orthogonal (> 70 degrees) faces: ~600
 ***Max skewness = ~8.2-8.4
-Failed 1 mesh checks.
 
 ### 5. Visualize in ParaView
 
