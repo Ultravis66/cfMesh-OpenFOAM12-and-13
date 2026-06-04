@@ -31,6 +31,7 @@ Description
 #include "VRWGraphList.H"
 #include "polyMeshGenAddressing.H"
 #include "helperFunctions.H"
+#include "meshOctree.H"
 
 #include <map>
 
@@ -62,7 +63,10 @@ partTetMesh::partTetMesh(polyMeshGen& mesh, const labelLongList& lockedPoints)
     globalToLocalPointAddressingPtr_(NULL),
     neiProcsPtr_(NULL),
     pAtParallelBoundariesPtr_(NULL),
-    pAtBufferLayersPtr_(NULL)
+    pAtBufferLayersPtr_(NULL),
+    surfaceOctreePtr_(NULL),
+    bndPointPatchesPtr_(NULL),
+    globalToBoundaryPointPtr_(NULL)
 {
     List<direction> useCell(mesh.cells().size(), direction(1));
 
@@ -93,7 +97,10 @@ partTetMesh::partTetMesh
     globalToLocalPointAddressingPtr_(NULL),
     neiProcsPtr_(NULL),
     pAtParallelBoundariesPtr_(NULL),
-    pAtBufferLayersPtr_(NULL)
+    pAtBufferLayersPtr_(NULL),
+    surfaceOctreePtr_(NULL),
+    bndPointPatchesPtr_(NULL),
+    globalToBoundaryPointPtr_(NULL)
 {
     const faceListPMG& faces = mesh.faces();
     const cellListPMG& cells = mesh.cells();
@@ -222,7 +229,10 @@ partTetMesh::partTetMesh
     globalToLocalPointAddressingPtr_(NULL),
     neiProcsPtr_(NULL),
     pAtParallelBoundariesPtr_(NULL),
-    pAtBufferLayersPtr_(NULL)
+    pAtBufferLayersPtr_(NULL),
+    surfaceOctreePtr_(NULL),
+    bndPointPatchesPtr_(NULL),
+    globalToBoundaryPointPtr_(NULL)
 {
     const faceListPMG& faces = mesh.faces();
     const cellListPMG& cells = mesh.cells();
@@ -339,6 +349,18 @@ partTetMesh::~partTetMesh()
     deleteDemandDrivenData(neiProcsPtr_);
     deleteDemandDrivenData(pAtParallelBoundariesPtr_);
     deleteDemandDrivenData(pAtBufferLayersPtr_);
+}
+
+void partTetMesh::setSurfaceConstraint
+(
+    const meshOctree* octreePtr,
+    const VRWGraph* bndPointPatchesPtr,
+    const labelLongList* globalToBoundaryPointPtr
+)
+{
+    surfaceOctreePtr_ = octreePtr;
+    bndPointPatchesPtr_ = bndPointPatchesPtr;
+    globalToBoundaryPointPtr_ = globalToBoundaryPointPtr;
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -551,16 +573,68 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
 
     boolList changedNode(pts.size(), false);
 
-    # ifdef USE_OMP
-    # pragma omp parallel for if( pts.size() > 1000 ) \
-    schedule(guided, 10)
-    # endif
-    forAll(nodeLabelInOrigMesh_, pI)
-        if( nodeLabelInOrigMesh_[pI] != -1 )
+    if( surfaceOctreePtr_ && bndPointPatchesPtr_ && globalToBoundaryPointPtr_ )
+    {
+        // Surface-constrained serial write-back: project single-patch
+        // boundary points onto their STL patch before committing.
+        // Serial to avoid OMP races on mutable octree caches.
+        forAll(nodeLabelInOrigMesh_, pI)
         {
-            changedNode[nodeLabelInOrigMesh_[pI]] = true;
-            pts[nodeLabelInOrigMesh_[pI]] = points_[pI];
+            const label globalPointI = nodeLabelInOrigMesh_[pI];
+            if( globalPointI == -1 )
+                continue;
+
+            changedNode[globalPointI] = true;
+            point newP = points_[pI];
+
+            if( (smoothVertex_[pI] & BOUNDARY)
+             && globalPointI < globalToBoundaryPointPtr_->size() )
+            {
+                const label bpI = (*globalToBoundaryPointPtr_)[globalPointI];
+                if( bpI >= 0
+                 && bpI < label(bndPointPatchesPtr_->size())
+                 && bndPointPatchesPtr_->sizeOfRow(bpI) == 1 )
+                {
+                    const label patchI = (*bndPointPatchesPtr_)(bpI, 0);
+                    point projectedP;
+                    scalar dSq;
+                    label nearestTri;
+                    surfaceOctreePtr_->findNearestSurfacePointInRegion
+                    (
+                        projectedP,
+                        dSq,
+                        nearestTri,
+                        patchI,
+                        newP
+                    );
+
+                    // Only correct points with meaningful drift -- skip
+                    // sub-tolerance points to avoid unnecessary perturbations
+                    // and reduce serial pre-pass cost.
+                    const scalar constraintTolSq = sqr(scalar(1e-5));
+                    if( dSq > constraintTolSq )
+                    {
+                        const scalar stepFraction = 0.01;
+                        newP = newP + stepFraction * (projectedP - newP);
+                    }
+                }
+            }
+            pts[globalPointI] = newP;
         }
+    }
+    else
+    {
+        # ifdef USE_OMP
+        # pragma omp parallel for if( pts.size() > 1000 ) \
+        schedule(guided, 10)
+        # endif
+        forAll(nodeLabelInOrigMesh_, pI)
+            if( nodeLabelInOrigMesh_[pI] != -1 )
+            {
+                changedNode[nodeLabelInOrigMesh_[pI]] = true;
+                pts[nodeLabelInOrigMesh_[pI]] = points_[pI];
+            }
+    }
 
     if( changedFacePtr )
     {

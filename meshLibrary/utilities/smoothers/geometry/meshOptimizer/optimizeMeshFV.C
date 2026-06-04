@@ -174,6 +174,14 @@ void meshOptimizer::untangleMeshFV
                 badFaces,
                 (nGlobalIter / 2) + 1
             );
+            if( surfaceOctreePtr_ && bndPointPatchesPtr_
+             && globalToBoundaryPointPtr_ )
+                tetMesh.setSurfaceConstraint
+                (
+                    surfaceOctreePtr_,
+                    bndPointPatchesPtr_,
+                    globalToBoundaryPointPtr_
+                );
 
             //- construct tetMeshOptimisation and improve positions of
             //- points in the tet mesh
@@ -263,6 +271,14 @@ void meshOptimizer::untangleMeshFV
             // Use 1 layer of neighbours so optimizer has non-locked interior
             // points to work with when bad faces touch locked junction points.
             partTetMesh tetMesh(mesh_, lockedPoints, badFaces, 1);
+            if( surfaceOctreePtr_ && bndPointPatchesPtr_
+             && globalToBoundaryPointPtr_ )
+                tetMesh.setSurfaceConstraint
+                (
+                    surfaceOctreePtr_,
+                    bndPointPatchesPtr_,
+                    globalToBoundaryPointPtr_
+                );
 
             //- contruct tetMeshOptimisation
             tetMeshOptimisation tmo(tetMesh);
@@ -605,6 +621,14 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
             break;
 
         partTetMesh tetMesh(mesh_, lockedPoints, lowQualityFaces, 1);
+        if( surfaceOctreePtr_ && bndPointPatchesPtr_
+         && globalToBoundaryPointPtr_ )
+            tetMesh.setSurfaceConstraint
+            (
+                surfaceOctreePtr_,
+                bndPointPatchesPtr_,
+                globalToBoundaryPointPtr_
+            );
 
         //- construct tetMeshOptimisation and improve positions
         //- of points in the tet mesh
@@ -638,6 +662,14 @@ void meshOptimizer::optimizeMeshNearBoundaries
     }
 
     partTetMesh tetMesh(mesh_, lockedPoints, numLayersOfCells);
+    if( surfaceOctreePtr_ && bndPointPatchesPtr_
+     && globalToBoundaryPointPtr_ )
+        tetMesh.setSurfaceConstraint
+        (
+            surfaceOctreePtr_,
+            bndPointPatchesPtr_,
+            globalToBoundaryPointPtr_
+        );
     tetMeshOptimisation tmo(tetMesh);
     Info << "Iteration:" << flush;
     do
@@ -730,6 +762,14 @@ void meshOptimizer::optimizeMeshFVBestQuality
         }
 
         partTetMesh tetMesh(mesh_, lockedPoints, lowQualityFaces, 2);
+        if( surfaceOctreePtr_ && bndPointPatchesPtr_
+         && globalToBoundaryPointPtr_ )
+            tetMesh.setSurfaceConstraint
+            (
+                surfaceOctreePtr_,
+                bndPointPatchesPtr_,
+                globalToBoundaryPointPtr_
+            );
 
         //- construct tetMeshOptimisation and improve positions
         //- of points in the tet mesh

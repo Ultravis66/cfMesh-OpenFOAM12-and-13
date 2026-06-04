@@ -1170,8 +1170,43 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         }
     }
 
-    optimizer.optimizeMeshFV();
-    optimizer.optimizeLowQualityFaces();
+    // Surface-constrained optimizer: gate by meshDict switch.
+    bool constrainOptimizerBoundary = false;
+    if( meshDict_.isDict("boundaryLayers") )
+    {
+        const dictionary& bndLC = meshDict_.subDict("boundaryLayers");
+        if( bndLC.found("constrainOptimizerBoundaryMotion") )
+            constrainOptimizerBoundary =
+                Switch(bndLC.lookup("constrainOptimizerBoundaryMotion"));
+    }
+
+    if( constrainOptimizerBoundary && octreePtr_ )
+    {
+        Info << "Surface-constrained optimizer: building boundary mapping"
+             << endl;
+        meshSurfaceEngine mseConstraint(mesh_);
+        meshSurfacePartitioner mPartConstraint(mseConstraint);
+        labelLongList globalToBp(mesh_.points().size(), -1);
+        const labelList& bPtsC = mseConstraint.boundaryPoints();
+        forAll(bPtsC, bpI)
+            globalToBp[bPtsC[bpI]] = bpI;
+        optimizer.setSurfaceConstraint
+        (
+            octreePtr_,
+            &mPartConstraint.pointPatches(),
+            &globalToBp
+        );
+        Info << "Surface-constrained optimizer: active -- "
+             << bPtsC.size() << " boundary points mapped" << endl;
+        optimizer.optimizeMeshFV();
+        optimizer.optimizeLowQualityFaces();
+        optimizer.setSurfaceConstraint(NULL, NULL, NULL);
+    }
+    else
+    {
+        optimizer.optimizeMeshFV();
+        optimizer.optimizeLowQualityFaces();
+    }
 
     // Post-optimizer surface re-projection: re-project drifted single-patch
     // boundary points while octree is still live. Tolerance-filtered and

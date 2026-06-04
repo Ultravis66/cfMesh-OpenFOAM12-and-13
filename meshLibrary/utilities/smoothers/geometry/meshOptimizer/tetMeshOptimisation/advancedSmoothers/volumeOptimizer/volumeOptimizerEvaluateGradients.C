@@ -171,16 +171,10 @@ void volumeOptimizer::evaluateGradientsExact
 
         if( Vs < VSMALL )
         {
-            Info << "Tet " << tet << endl;
-            Info << "gradV " << gradV << endl;
-            Info << "Vtri " << Vtri << endl;
-            IOstream::defaultPrecision(20);
-            Info << "Vstab " << Vs << endl;
-
-            FatalErrorIn
-            (
-                "void nodeDisplacementVolumeOptimizer()"
-            ) << "I cannot continue " << exit(FatalError);
+            // Degenerate tet: zero or negative stabilised volume.
+            // Skip gradient contribution and report after the tet loop.
+            ++nDegenerateTets;
+            continue;
         }
 
         //- calculate the gradient of the stabilisation volume

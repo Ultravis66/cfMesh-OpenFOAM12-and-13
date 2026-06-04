@@ -79,6 +79,17 @@ class meshOptimizer
         //- name of the subset contaning tangled points
         word badPointsSubsetName_;
 
+        //- optional surface octree for boundary point re-projection
+        //- during volume optimization. Null by default (no constraint).
+        const meshOctree* surfaceOctreePtr_;
+
+        //- point-patch membership indexed by boundary-point index
+        const VRWGraph* bndPointPatchesPtr_;
+
+        //- mapping: global mesh point label -> boundary point index
+        //- (-1 if interior point). Indexed by global point label.
+        const labelLongList* globalToBoundaryPointPtr_;
+
     // Private member functions
         //- return mesh surface
         const meshSurfaceEngine& meshSurface() const;
@@ -217,6 +228,16 @@ public:
         //- Points which must be moved away from the required position are
         //- stored into a point subset
         void enforceConstraints(const word subsetName="badPoints");
+
+        //- set optional surface constraint for boundary point re-projection
+        //- during volume optimization. All three pointers must be non-null
+        //- to activate. Pass null to disable (default).
+        void setSurfaceConstraint
+        (
+            const meshOctree* octreePtr,
+            const VRWGraph* bndPointPatchesPtr,
+            const labelLongList* globalToBoundaryPointPtr
+        );
 
         //- lock the cells which shall not be modified
         template<class labelListType>
