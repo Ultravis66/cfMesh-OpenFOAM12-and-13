@@ -66,7 +66,9 @@ partTetMesh::partTetMesh(polyMeshGen& mesh, const labelLongList& lockedPoints)
     pAtBufferLayersPtr_(NULL),
     surfaceOctreePtr_(NULL),
     bndPointPatchesPtr_(NULL),
-    globalToBoundaryPointPtr_(NULL)
+    globalToBoundaryPointPtr_(NULL),
+    featureCornerPointsPtr_(NULL),
+    featureCurveTangentsPtr_(NULL)
 {
     List<direction> useCell(mesh.cells().size(), direction(1));
 
@@ -100,7 +102,9 @@ partTetMesh::partTetMesh
     pAtBufferLayersPtr_(NULL),
     surfaceOctreePtr_(NULL),
     bndPointPatchesPtr_(NULL),
-    globalToBoundaryPointPtr_(NULL)
+    globalToBoundaryPointPtr_(NULL),
+    featureCornerPointsPtr_(NULL),
+    featureCurveTangentsPtr_(NULL)
 {
     const faceListPMG& faces = mesh.faces();
     const cellListPMG& cells = mesh.cells();
@@ -232,7 +236,9 @@ partTetMesh::partTetMesh
     pAtBufferLayersPtr_(NULL),
     surfaceOctreePtr_(NULL),
     bndPointPatchesPtr_(NULL),
-    globalToBoundaryPointPtr_(NULL)
+    globalToBoundaryPointPtr_(NULL),
+    featureCornerPointsPtr_(NULL),
+    featureCurveTangentsPtr_(NULL)
 {
     const faceListPMG& faces = mesh.faces();
     const cellListPMG& cells = mesh.cells();
@@ -355,12 +361,16 @@ void partTetMesh::setSurfaceConstraint
 (
     const meshOctree* octreePtr,
     const VRWGraph* bndPointPatchesPtr,
-    const labelLongList* globalToBoundaryPointPtr
+    const labelLongList* globalToBoundaryPointPtr,
+    const labelHashSet* featureCornerPointsPtr,
+    const vectorField* featureCurveTangentsPtr
 )
 {
     surfaceOctreePtr_ = octreePtr;
     bndPointPatchesPtr_ = bndPointPatchesPtr;
     globalToBoundaryPointPtr_ = globalToBoundaryPointPtr;
+    featureCornerPointsPtr_ = featureCornerPointsPtr;
+    featureCurveTangentsPtr_ = featureCurveTangentsPtr;
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -587,6 +597,10 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
 
         // Phase 1: serial octree queries
         label nConstrained = 0;
+        label nLockedCorners = 0;
+        label nFeatureProjected = 0;
+        const pointFieldPMG& origPts = origMesh_.points();
+
         forAll(nodeLabelInOrigMesh_, pI)
         {
             const label globalPointI = nodeLabelInOrigMesh_[pI];
@@ -597,31 +611,77 @@ void partTetMesh::updateOrigMesh(boolList* changedFacePtr)
              && globalPointI < globalToBoundaryPointPtr_->size() )
             {
                 const label bpI = (*globalToBoundaryPointPtr_)[globalPointI];
+
                 if( bpI >= 0
-                 && bpI < label(bndPointPatchesPtr_->size())
-                 && bndPointPatchesPtr_->sizeOfRow(bpI) == 1 )
+                 && bpI < label(bndPointPatchesPtr_->size()) )
                 {
-                    const label patchI = (*bndPointPatchesPtr_)(bpI, 0);
-                    point projectedP;
-                    scalar dSq;
-                    label nearestTri;
-                    surfaceOctreePtr_->findNearestSurfacePointInRegion
-                    (
-                        projectedP,
-                        dSq,
-                        nearestTri,
-                        patchI,
-                        newP
-                    );
-                    if( dSq > constraintTolSq )
+                    if( featureCornerPointsPtr_
+                     && featureCornerPointsPtr_->found(bpI) )
                     {
-                        newP = newP + stepFraction * (projectedP - newP);
-                        ++nConstrained;
+                        // 0D constraint: keep feature corners fixed.
+                        newP = origPts[globalPointI];
+                        ++nLockedCorners;
+                    }
+                    else
+                    {
+                        bool tangentFiltered = false;
+
+                        if( featureCurveTangentsPtr_
+                         && bpI < label(featureCurveTangentsPtr_->size()) )
+                        {
+                            const vector& t = (*featureCurveTangentsPtr_)[bpI];
+
+                            if( magSqr(t) > VSMALL )
+                            {
+                                // 1D constraint: preserve only optimizer motion
+                                // along the local feature-curve tangent.
+                                const point oldP = origPts[globalPointI];
+                                const vector disp = newP - oldP;
+                                newP = oldP + (disp & t) * t;
+                                tangentFiltered = true;
+                                ++nFeatureProjected;
+                            }
+                        }
+
+                        if( !tangentFiltered
+                         && bndPointPatchesPtr_->sizeOfRow(bpI) == 1 )
+                        {
+                            // 2D constraint: existing limited projection back
+                            // toward the owning patch surface.
+                            const label patchI = (*bndPointPatchesPtr_)(bpI, 0);
+                            point projectedP;
+                            scalar dSq;
+                            label nearestTri;
+                            surfaceOctreePtr_->findNearestSurfacePointInRegion
+                            (
+                                projectedP,
+                                dSq,
+                                nearestTri,
+                                patchI,
+                                newP
+                            );
+
+                            if( dSq > constraintTolSq )
+                            {
+                                newP = newP + stepFraction * (projectedP - newP);
+                                ++nConstrained;
+                            }
+                        }
                     }
                 }
             }
+
             targetPoints[pI] = newP;
         }
+
+        if( nLockedCorners > 0 )
+            Info << "Feature-curve locking: locked "
+                 << nLockedCorners << " corner points" << endl;
+
+        if( nFeatureProjected > 0 )
+            Info << "Feature-curve locking: tangent-filtered "
+                 << nFeatureProjected << " edge points" << endl;
+
         if( nConstrained > 0 )
             Info << "Surface-constrained updateOrigMesh: corrected "
                  << nConstrained << " boundary points" << endl;

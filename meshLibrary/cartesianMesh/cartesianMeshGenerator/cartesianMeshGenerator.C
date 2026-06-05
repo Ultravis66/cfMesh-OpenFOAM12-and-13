@@ -1190,17 +1190,108 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         const labelList& bPtsC = mseConstraint.boundaryPoints();
         forAll(bPtsC, bpI)
             globalToBp[bPtsC[bpI]] = bpI;
+
+        // Build feature curve tangent vectors indexed by boundary point.
+        // Zero vector = not a feature curve point.
+        // Corner points get zero tangent and are handled by corner locking.
+        const label nBp = bPtsC.size();
+        vectorField featureTangents(nBp, vector::zero);
+        {
+            const edgeList& edges = mseConstraint.edges();
+            const VRWGraph& bpEdges = mseConstraint.boundaryPointEdges();
+            const labelHashSet& featEdges = mPartConstraint.featureEdges();
+            const labelHashSet& edgePts = mPartConstraint.edgePoints();
+            const pointFieldPMG& pts = mesh_.points();
+            const labelList& bp = mseConstraint.bp();
+
+            label nTangents = 0;
+
+            forAllConstIter(labelHashSet, edgePts, it)
+            {
+                const label bpI = it.key();
+
+                if( bpI < 0 || bpI >= nBp )
+                    continue;
+
+                label nbr0 = -1;
+                label nbr1 = -1;
+
+                forAllRow(bpEdges, bpI, eI)
+                {
+                    const label beI = bpEdges(bpI, eI);
+
+                    if( !featEdges.found(beI) )
+                        continue;
+
+                    const edge& e = edges[beI];
+
+                    // edges store mesh point indices -- convert to bp indices
+                    const label ep0 = e.start();
+                    const label ep1 = e.end();
+
+                    if( ep0 < 0 || ep0 >= bp.size() || ep1 < 0 || ep1 >= bp.size() )
+                        continue;
+
+                    const label otherBp0 = bp[ep0];
+                    const label otherBp1 = bp[ep1];
+
+                    if( otherBp0 < 0 || otherBp1 < 0 )
+                        continue;
+
+                    label otherBp = -1;
+                    if( otherBp0 == bpI )
+                        otherBp = otherBp1;
+                    else if( otherBp1 == bpI )
+                        otherBp = otherBp0;
+
+                    if( otherBp < 0 || otherBp >= nBp )
+                        continue;
+
+                    if( nbr0 == -1 )
+                        nbr0 = otherBp;
+                    else if( nbr1 == -1 && otherBp != nbr0 )
+                        nbr1 = otherBp;
+                }
+
+                vector t = vector::zero;
+
+                if( nbr0 != -1 && nbr1 != -1 )
+                {
+                    t = pts[bPtsC[nbr1]] - pts[bPtsC[nbr0]];
+                }
+                else if( nbr0 != -1 )
+                {
+                    t = pts[bPtsC[nbr0]] - pts[bPtsC[bpI]];
+                }
+
+                if( magSqr(t) > VSMALL )
+                {
+                    featureTangents[bpI] = t / mag(t);
+                    ++nTangents;
+                }
+            }
+
+            Info << "Surface-constrained optimizer: built "
+                 << nTangents << " feature curve tangents" << endl;
+        }
+
+        Info << "Surface-constrained optimizer: active -- "
+             << bPtsC.size() << " boundary points mapped, "
+             << mPartConstraint.edgePoints().size() << " feature curve pts, "
+             << mPartConstraint.corners().size() << " corner pts locked"
+             << endl;
+
         optimizer.setSurfaceConstraint
         (
             octreePtr_,
             &mPartConstraint.pointPatches(),
-            &globalToBp
+            &globalToBp,
+            &mPartConstraint.corners(),
+            &featureTangents
         );
-        Info << "Surface-constrained optimizer: active -- "
-             << bPtsC.size() << " boundary points mapped" << endl;
         optimizer.optimizeMeshFV();
         optimizer.optimizeLowQualityFaces();
-        optimizer.setSurfaceConstraint(NULL, NULL, NULL);
+        optimizer.setSurfaceConstraint(NULL, NULL, NULL, NULL, NULL);
     }
     else
     {

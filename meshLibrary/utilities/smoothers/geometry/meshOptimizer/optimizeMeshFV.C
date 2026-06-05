@@ -180,7 +180,9 @@ void meshOptimizer::untangleMeshFV
                 (
                     surfaceOctreePtr_,
                     bndPointPatchesPtr_,
-                    globalToBoundaryPointPtr_
+                    globalToBoundaryPointPtr_,
+                    featureCornerPointsPtr_,
+                    featureCurveTangentsPtr_
                 );
 
             //- construct tetMeshOptimisation and improve positions of
@@ -277,7 +279,9 @@ void meshOptimizer::untangleMeshFV
                 (
                     surfaceOctreePtr_,
                     bndPointPatchesPtr_,
-                    globalToBoundaryPointPtr_
+                    globalToBoundaryPointPtr_,
+                    featureCornerPointsPtr_,
+                    featureCurveTangentsPtr_
                 );
 
             //- contruct tetMeshOptimisation
@@ -627,7 +631,9 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
             (
                 surfaceOctreePtr_,
                 bndPointPatchesPtr_,
-                globalToBoundaryPointPtr_
+                globalToBoundaryPointPtr_,
+                featureCornerPointsPtr_,
+                featureCurveTangentsPtr_
             );
 
         //- construct tetMeshOptimisation and improve positions
@@ -668,7 +674,9 @@ void meshOptimizer::optimizeMeshNearBoundaries
         (
             surfaceOctreePtr_,
             bndPointPatchesPtr_,
-            globalToBoundaryPointPtr_
+            globalToBoundaryPointPtr_,
+            featureCornerPointsPtr_,
+            featureCurveTangentsPtr_
         );
     tetMeshOptimisation tmo(tetMesh);
     Info << "Iteration:" << flush;
@@ -768,7 +776,9 @@ void meshOptimizer::optimizeMeshFVBestQuality
             (
                 surfaceOctreePtr_,
                 bndPointPatchesPtr_,
-                globalToBoundaryPointPtr_
+                globalToBoundaryPointPtr_,
+                featureCornerPointsPtr_,
+                featureCurveTangentsPtr_
             );
 
         //- construct tetMeshOptimisation and improve positions

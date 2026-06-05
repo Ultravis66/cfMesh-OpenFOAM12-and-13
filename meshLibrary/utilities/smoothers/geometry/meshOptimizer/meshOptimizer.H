@@ -90,6 +90,13 @@ class meshOptimizer
         //- (-1 if interior point). Indexed by global point label.
         const labelLongList* globalToBoundaryPointPtr_;
 
+        //- boundary points at feature curve corners (3+ patches, fully locked)
+        const labelHashSet* featureCornerPointsPtr_;
+
+        //- feature curve tangent vectors indexed by boundary point
+        //- zero vector = not a feature curve point
+        const vectorField* featureCurveTangentsPtr_;
+
     // Private member functions
         //- return mesh surface
         const meshSurfaceEngine& meshSurface() const;
@@ -236,7 +243,9 @@ public:
         (
             const meshOctree* octreePtr,
             const VRWGraph* bndPointPatchesPtr,
-            const labelLongList* globalToBoundaryPointPtr
+            const labelLongList* globalToBoundaryPointPtr,
+            const labelHashSet* featureCornerPointsPtr = NULL,
+            const vectorField* featureCurveTangentsPtr = NULL
         );
 
         //- lock the cells which shall not be modified

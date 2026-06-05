@@ -115,6 +115,13 @@ class partTetMesh
         //- (-1 if interior). Size = mesh_.points().size().
         const labelLongList* globalToBoundaryPointPtr_;
 
+        //- boundary points at feature curve corners (3+ patches, fully locked)
+        const labelHashSet* featureCornerPointsPtr_;
+
+        //- feature curve tangent vectors indexed by boundary point
+        //- zero vector = not a feature curve point
+        const vectorField* featureCurveTangentsPtr_;
+
     // Private member functions
 
         //- create points and tets
@@ -285,7 +292,9 @@ public:
         (
             const meshOctree* octreePtr,
             const VRWGraph* bndPointPatchesPtr,
-            const labelLongList* globalToBoundaryPointPtr
+            const labelLongList* globalToBoundaryPointPtr,
+            const labelHashSet* featureCornerPointsPtr = NULL,
+            const vectorField* featureCurveTangentsPtr = NULL
         );
 
         void updateOrigMesh(boolList* changedFacePtr = NULL);
