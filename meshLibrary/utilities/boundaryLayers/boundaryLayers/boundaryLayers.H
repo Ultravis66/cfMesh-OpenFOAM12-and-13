@@ -111,6 +111,10 @@ class boundaryLayers
         scalar gapFaceRing1Scale_;     // default 0.05
         scalar gapFaceRing2Scale_;     // default 0.20
 
+        //- taper scale for protected (blade/periodic) ring0 faces at triple
+        //- junctions. Does not suppress topology -- only reduces BL height.
+        scalar tripleJunctionProtectedRing0Scale_;
+
         //- is it a 2D mesh
         bool is2DMesh_;
 

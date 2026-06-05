@@ -651,7 +651,8 @@ boundaryLayers::boundaryLayers
     tripleJunctionFaceRingExclusion_(false),
     gapFaceRing0Scale_(0.02),
     gapFaceRing1Scale_(0.05),
-    gapFaceRing2Scale_(0.20)
+    gapFaceRing2Scale_(0.20),
+    tripleJunctionProtectedRing0Scale_(1.0)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -757,6 +758,9 @@ boundaryLayers::boundaryLayers
             gapFaceRing1Scale_ = readScalar(bndLayers.lookup("gapFaceRing1Scale"));
         if( bndLayers.found("gapFaceRing2Scale") )
             gapFaceRing2Scale_ = readScalar(bndLayers.lookup("gapFaceRing2Scale"));
+        if( bndLayers.found("tripleJunctionProtectedRing0Scale") )
+            tripleJunctionProtectedRing0Scale_ =
+                readScalar(bndLayers.lookup("tripleJunctionProtectedRing0Scale"));
 
         if( bndLayers.isDict("patchBoundaryLayers") )
         {
@@ -2088,6 +2092,32 @@ void boundaryLayers::applyGapFaceRingExclusion() const
         }
     }
 
+    // Build protected-side taper mask: blade/periodic faces at triple
+    // junctions NOT on suppress-side patches. Taper only -- no topology suppression.
+    boolList protectedTripleRing0Face(nBF, false);
+    if( useTriple && tripleJunctionSuppressPatches_.size() > 0 )
+    {
+        forAllConstIter(labelHashSet, tripleJunctionPoints_, it)
+        {
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+            forAllRow(pointFaces, bpI, pfI)
+            {
+                const label bfI = pointFaces(bpI, pfI);
+                if( bfI < 0 || bfI >= nBF ) continue;
+                // Only taper faces NOT on suppress-side patches
+                if( tripleJunctionSuppressPatches_.found(facePatch[bfI]) )
+                    continue;
+                // Don't override an existing hard suppress
+                if( faceRing[bfI] == 0 )
+                    continue;
+                protectedTripleRing0Face[bfI] = true;
+            }
+        }
+    }
+
     // Build ring0 point set
     boolList ring0pt(nBP, false);
     forAll(faceRing, bfI)
@@ -2171,6 +2201,30 @@ void boundaryLayers::applyGapFaceRingExclusion() const
         }
     }
 
+    // Apply protected-side triple-junction taper.
+    // These faces are not topology-suppressed; only local BL height is reduced.
+    label nProtectedTripleR0 = 0;
+    forAll(protectedTripleRing0Face, bfI)
+    {
+        if( !protectedTripleRing0Face[bfI] )
+            continue;
+
+        ++nProtectedTripleR0;
+
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 || bpI >= nBP ) continue;
+
+            layerScale_[bpI] =
+                Foam::min(layerScale_[bpI], tripleJunctionProtectedRing0Scale_);
+        }
+    }
+
     // Diagnostics
     label nF0=0, nF1=0, nF2=0;
     forAll(faceRing, bfI)
@@ -2184,6 +2238,12 @@ void boundaryLayers::applyGapFaceRingExclusion() const
          << " scale=(" << gapFaceRing0Scale_
          << " " << gapFaceRing1Scale_
          << " " << gapFaceRing2Scale_ << ")" << endl;
+
+    if( nProtectedTripleR0 > 0 )
+        Info << "Triple-junction protected-side taper:"
+             << " faces=" << nProtectedTripleR0
+             << " scale=" << tripleJunctionProtectedRing0Scale_
+             << endl;
 }
 
 void boundaryLayers::reportBLTransitionSeeds() const

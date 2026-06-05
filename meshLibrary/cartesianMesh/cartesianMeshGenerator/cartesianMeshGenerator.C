@@ -2404,6 +2404,66 @@ void cartesianMeshGenerator::generateMesh()
                  << "negVol=" << finalNegCells.size()
                  << " badPyramids=" << finalBadPyrFaces.size()
                  << endl;
+
+            // Write final negative-volume cell centres for spatial diagnostics.
+            if( finalNegCells.size() > 0 )
+            {
+                const pointFieldPMG& pts = mesh_.points();
+                const cellListPMG& cells = mesh_.cells();
+                const faceListPMG& faces = mesh_.faces();
+
+                OFstream negVolFile("negVolCellCentres.csv");
+                negVolFile << "cellI,cx,cy,cz,nFaces,nUniquePoints" << nl;
+
+                forAllConstIter(labelHashSet, finalNegCells, it)
+                {
+                    const label cellI = it.key();
+
+                    if( cellI < 0 || cellI >= label(cells.size()) )
+                        continue;
+
+                    const cell& c = cells[cellI];
+
+                    labelHashSet uniquePts;
+                    forAll(c, cfI)
+                    {
+                        const label faceI = c[cfI];
+                        if( faceI < 0 || faceI >= label(faces.size()) )
+                            continue;
+
+                        const face& f = faces[faceI];
+                        forAll(f, fpI)
+                            uniquePts.insert(f[fpI]);
+                    }
+
+                    point cc = point::zero;
+                    label nUnique = 0;
+
+                    forAllConstIter(labelHashSet, uniquePts, pit)
+                    {
+                        const label pointI = pit.key();
+
+                        if( pointI < 0 || pointI >= label(pts.size()) )
+                            continue;
+
+                        cc += pts[pointI];
+                        ++nUnique;
+                    }
+
+                    if( nUnique > 0 )
+                        cc /= scalar(nUnique);
+
+                    negVolFile << cellI << ","
+                               << cc.x() << ","
+                               << cc.y() << ","
+                               << cc.z() << ","
+                               << c.size() << ","
+                               << nUnique << nl;
+                }
+
+                Info << "negVol cell centres written to negVolCellCentres.csv"
+                     << endl;
+            }
         }
 
         // BL effective coverage report
