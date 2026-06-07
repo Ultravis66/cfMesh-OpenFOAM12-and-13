@@ -120,6 +120,10 @@ class boundaryLayers
         //- Ring1 topology suppression applied to these patches in gap zones.
         labelHashSet gapLoserPatches_;
 
+        //- Loser-side patch names stored at detection time (STL name space).
+        //- Avoids STL->polyMesh index space conversion bugs.
+        wordList gapLoserPatchNames_;
+
         //- Enable ring1 topology suppression on loser side (default true).
         bool gapLoserRing1Suppress_;
 
@@ -457,26 +461,15 @@ public:
         {
             gapLoserPatches_ = loserPatches;
         }
-        //- return loser-side patch names for gap conflict layer capping
-        wordList gapLoserPatchNames() const
+        //- set loser-side patch names (built at detection time, STL name space)
+        void setGapLoserPatchNames(const wordList& names)
         {
-            const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
-            label nNames = 0;
-            forAllConstIter(labelHashSet, gapLoserPatches_, it)
-            {
-                const label pI = it.key();
-                if( pI >= 0 && pI < label(boundaries.size()) )
-                    ++nNames;
-            }
-            wordList names(nNames);
-            label i = 0;
-            forAllConstIter(labelHashSet, gapLoserPatches_, it)
-            {
-                const label pI = it.key();
-                if( pI >= 0 && pI < label(boundaries.size()) )
-                    names[i++] = boundaries[pI].patchName();
-            }
-            return names;
+            gapLoserPatchNames_ = names;
+        }
+        //- return loser-side patch names (stable, built at detection time)
+        const wordList& gapLoserPatchNames() const
+        {
+            return gapLoserPatchNames_;
         }
         void addTripleJunctionPoints(const labelHashSet& pts)
         {

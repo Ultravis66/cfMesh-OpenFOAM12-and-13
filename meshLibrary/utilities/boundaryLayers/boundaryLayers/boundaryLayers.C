@@ -655,6 +655,7 @@ boundaryLayers::boundaryLayers
     gapFaceRing3Scale_(0.50),
     tripleJunctionProtectedRing0Scale_(1.0),
     gapLoserPatches_(),
+    gapLoserPatchNames_(),
     gapLoserRing1Suppress_(true),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)

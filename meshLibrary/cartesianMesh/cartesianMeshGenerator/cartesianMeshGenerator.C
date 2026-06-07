@@ -470,6 +470,7 @@ void cartesianMeshGenerator::detectGapPoints
     };
 
     labelHashSet loserPatches;
+    DynList<word> loserPatchNamesDyn;  // built at detection time from STL names
     if( conflictMode == "manualSuppressPatches" )
     {
         // Legacy manual mode: gapSuppressPatches list is the loser side.
@@ -478,7 +479,10 @@ void cartesianMeshGenerator::detectGapPoints
             wordList suppressNames(bndL.lookup("gapSuppressPatches"));
             forAll(suppressNames, si)
                 if( nameToIdx.found(suppressNames[si]) )
+                {
                     loserPatches.insert(nameToIdx[suppressNames[si]]);
+                    loserPatchNamesDyn.appendIfNotIn(suppressNames[si]);
+                }
             Info << "Gap conflict: manual suppress-side patches: "
                  << suppressNames << endl;
         }
@@ -508,6 +512,7 @@ void cartesianMeshGenerator::detectGapPoints
             const label loserIdx  = (tA >= tB) ? idxA  : idxB;
             const word& loserName = (tA >= tB) ? nameA : nameB;
             loserPatches.insert(loserIdx);
+            loserPatchNamesDyn.appendIfNotIn(loserName);
             Info << "Gap conflict arbitration: pair (" << nameA
                  << " <-> " << nameB
                  << ") thickness=(" << tA << " " << tB << ")"
@@ -619,7 +624,15 @@ void cartesianMeshGenerator::detectGapPoints
     }
 
     if( loserPatches.size() > 0 )
+    {
         bl.setGapLoserPatches(loserPatches);
+        // Pass names built at detection time -- avoids STL/polyMesh index mismatch.
+        wordList loserPatchNames(loserPatchNamesDyn.size());
+        forAll(loserPatchNamesDyn, i)
+            loserPatchNames[i] = loserPatchNamesDyn[i];
+        bl.setGapLoserPatchNames(loserPatchNames);
+        Info << "Gap loser patch names: " << loserPatchNames << endl;
+    }
 }
 
 void cartesianMeshGenerator::detectTripleJunctions
