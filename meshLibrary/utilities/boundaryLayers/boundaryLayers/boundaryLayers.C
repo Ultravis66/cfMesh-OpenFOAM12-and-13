@@ -655,7 +655,9 @@ boundaryLayers::boundaryLayers
     gapFaceRing3Scale_(0.50),
     tripleJunctionProtectedRing0Scale_(1.0),
     gapLoserPatches_(),
-    gapLoserRing1Suppress_(true)
+    gapLoserRing1Suppress_(true),
+    gapLoserRing1MaxLayers_(1),
+    gapLoserRing2MaxLayers_(2)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -765,6 +767,10 @@ boundaryLayers::boundaryLayers
             gapFaceRing3Scale_ = readScalar(bndLayers.lookup("gapFaceRing3Scale"));
         if( bndLayers.found("gapLoserRing1Suppress") )
             gapLoserRing1Suppress_ = Switch(bndLayers.lookup("gapLoserRing1Suppress"));
+        if( bndLayers.found("gapLoserRing1MaxLayers") )
+            gapLoserRing1MaxLayers_ = readLabel(bndLayers.lookup("gapLoserRing1MaxLayers"));
+        if( bndLayers.found("gapLoserRing2MaxLayers") )
+            gapLoserRing2MaxLayers_ = readLabel(bndLayers.lookup("gapLoserRing2MaxLayers"));
         if( bndLayers.found("tripleJunctionProtectedRing0Scale") )
             tripleJunctionProtectedRing0Scale_ =
                 readScalar(bndLayers.lookup("tripleJunctionProtectedRing0Scale"));
@@ -2238,6 +2244,17 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     if( nLoserRing1Suppressed > 0 )
         Info << "Gap conflict arbitration: ring1 topology suppressed on loser side: "
              << nLoserRing1Suppressed << " faces" << endl;
+
+    // Gap layer-count cap metadata is passed to refineBoundaryLayers via
+    // gapPoints_ (mesh point labels) + gapLoserPatchNames() + ring max knobs.
+    // refineBoundaryLayers applies the cap locally at split-edge generation time
+    // using stable mesh-point-label + patch-name identification (Option B).
+    if( gapLoserPatches_.size() > 0 )
+        Info << "Gap layer-count caps: loser-side patches="
+             << gapLoserPatches_.size()
+             << " gap action points=" << gapPoints_.size()
+             << " (ring1max=" << gapLoserRing1MaxLayers_
+             << " ring2max=" << gapLoserRing2MaxLayers_ << ")" << endl;
 
     // Apply layerScale_ -- scales configurable via meshDict
     forAll(faceRing, bfI)

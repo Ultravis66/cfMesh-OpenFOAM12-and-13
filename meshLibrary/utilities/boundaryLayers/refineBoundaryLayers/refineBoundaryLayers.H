@@ -113,6 +113,14 @@ class refineBoundaryLayers
 
         //- boundary faces forced to single layer treatment
         labelHashSet forceSingleLayerFaces_;
+        //- gap conflict arbitration data for local split-edge layer capping.
+        //- gapActionPoints_: mesh point labels of loser-side gap zone points.
+        //- gapLoserPatchNames_: loser-side patch names.
+        //- Caps are applied only where BOTH conditions are met (local + side).
+        labelHashSet gapActionPoints_;
+        wordList     gapLoserPatchNames_;
+        label        gapRing1MaxLayers_;   // default 1
+        label        gapRing2MaxLayers_;   // default 2
         labelHashSet blblAcuteCornerPoints_;
         bool acuteCornerCapLayers_;
 
@@ -430,6 +438,20 @@ public:
         void setBlblAcuteCornerPoints(const labelHashSet& pts);
         void setVtFaceRing(const labelList& ring);
         void setAcuteCornerCapLayers(const bool cap) { acuteCornerCapLayers_ = cap; }
+        //- set gap conflict arbitration data for local split-edge layer capping
+        void setGapActionPoints(const labelHashSet& pts)
+        {
+            gapActionPoints_ = pts;
+        }
+        void setGapLoserPatchNames(const wordList& names)
+        {
+            gapLoserPatchNames_ = names;
+        }
+        void setGapRingMaxLayers(const label ring1Max, const label ring2Max)
+        {
+            gapRing1MaxLayers_ = ring1Max;
+            gapRing2MaxLayers_ = ring2Max;
+        }
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

@@ -737,6 +737,8 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     blblJunctionPoints_ = bl.junctionEdgePoints();
     blblAcuteCornerPoints_ = bl.blblAcuteCornerPoints();
     vtFaceRing_ = bl.vtFaceRing();
+    blGapActionPoints_    = bl.gapPoints();
+    blGapLoserPatchNames_ = bl.gapLoserPatchNames();
     Info << "Acute BL+BL+neutral corners captured: "
          << blblAcuteCornerPoints_.size() << endl;
 
@@ -762,6 +764,25 @@ void cartesianMeshGenerator::refBoundaryLayers()
         refLayers.setBlblJunctionPoints(blblJunctionPoints_);
         refLayers.setBlblAcuteCornerPoints(blblAcuteCornerPoints_);
         refLayers.setVtFaceRing(vtFaceRing_);
+        // Pass gap conflict data for Option B local split-edge layer capping.
+        // Uses stable mesh-point labels + patch names -- no face-index mismatch.
+        if( blGapActionPoints_.size() > 0 )
+        {
+            refLayers.setGapActionPoints(blGapActionPoints_);
+            refLayers.setGapLoserPatchNames(blGapLoserPatchNames_);
+            // Read ring max-layer knobs from meshDict
+            label ring1Max = 1;
+            label ring2Max = 2;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+                if( bndL.found("gapLoserRing1MaxLayers") )
+                    ring1Max = readLabel(bndL.lookup("gapLoserRing1MaxLayers"));
+                if( bndL.found("gapLoserRing2MaxLayers") )
+                    ring2Max = readLabel(bndL.lookup("gapLoserRing2MaxLayers"));
+            }
+            refLayers.setGapRingMaxLayers(ring1Max, ring2Max);
+        }
         {
             bool capLayers = false;
             if( meshDict_.isDict("boundaryLayers") )

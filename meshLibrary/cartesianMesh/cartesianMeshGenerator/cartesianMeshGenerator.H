@@ -86,6 +86,8 @@ class cartesianMeshGenerator
         labelHashSet blblJunctionPoints_;
         labelHashSet blblAcuteCornerPoints_;
         labelList vtFaceRing_;
+        labelHashSet blGapActionPoints_;
+        wordList     blGapLoserPatchNames_;
 
         //- BL/no-BL transition edge points (boundary-point indices)
         //- passed from boundaryLayers to post-BL mapper instances

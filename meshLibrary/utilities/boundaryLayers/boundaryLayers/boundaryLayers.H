@@ -123,6 +123,10 @@ class boundaryLayers
         //- Enable ring1 topology suppression on loser side (default true).
         bool gapLoserRing1Suppress_;
 
+        //- meshDict knobs for loser-side ring max layers
+        label gapLoserRing1MaxLayers_;   // default 1
+        label gapLoserRing2MaxLayers_;   // default 2
+
         //- is it a 2D mesh
         bool is2DMesh_;
 
@@ -428,6 +432,11 @@ public:
         {
             gapPoints_ = gpts;
         }
+        //- return loser-side gap action points (mesh point labels)
+        const labelHashSet& gapPoints() const
+        {
+            return gapPoints_;
+        }
         void addGapPoints(const labelHashSet& gpts)
         {
             forAllConstIter(labelHashSet, gpts, iter)
@@ -447,6 +456,27 @@ public:
         void setGapLoserPatches(const labelHashSet& loserPatches)
         {
             gapLoserPatches_ = loserPatches;
+        }
+        //- return loser-side patch names for gap conflict layer capping
+        wordList gapLoserPatchNames() const
+        {
+            const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+            label nNames = 0;
+            forAllConstIter(labelHashSet, gapLoserPatches_, it)
+            {
+                const label pI = it.key();
+                if( pI >= 0 && pI < label(boundaries.size()) )
+                    ++nNames;
+            }
+            wordList names(nNames);
+            label i = 0;
+            forAllConstIter(labelHashSet, gapLoserPatches_, it)
+            {
+                const label pI = it.key();
+                if( pI >= 0 && pI < label(boundaries.size()) )
+                    names[i++] = boundaries[pI].patchName();
+            }
+            return names;
         }
         void addTripleJunctionPoints(const labelHashSet& pts)
         {

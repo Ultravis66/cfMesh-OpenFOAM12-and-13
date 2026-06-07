@@ -67,7 +67,11 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     newVerticesForSplitEdge_(),
     facesFromFace_(),
     newFaces_(),
-    acuteCornerCapLayers_(false)
+    acuteCornerCapLayers_(false),
+    gapActionPoints_(),
+    gapLoserPatchNames_(),
+    gapRing1MaxLayers_(1),
+    gapRing2MaxLayers_(2)
 {}
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //

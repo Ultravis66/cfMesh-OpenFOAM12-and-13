@@ -570,6 +570,39 @@ void refineBoundaryLayers::generateNewVertices()
                 }
             }
 
+            // Option B split-edge cap: local gap-zone + loser-side check.
+            // Checks BOTH edge endpoints (orientation-independent).
+            // Uses mesh point labels (stable) + patch names (stable).
+            // Only caps where edge touches gap action zone AND loser patch.
+            // Minimum effective cap is 1 (ring0 already topology-suppressed).
+            if( gapActionPoints_.size() > 0 && gapLoserPatchNames_.size() > 0 )
+            {
+                const bool edgeInGap =
+                    gapActionPoints_.found(e.start())
+                 || gapActionPoints_.found(e.end());
+                if( edgeInGap )
+                {
+                    label edgeCap = -1;
+                    forAllRow(pointFaces, bpI, pfI)
+                    {
+                        const label bfI = pointFaces(bpI, pfI);
+                        if( bfI < 0 || bfI >= label(facePatch.size()) ) continue;
+                        const word& pName =
+                            boundaries[facePatch[bfI]].patchName();
+                        bool isLoser = false;
+                        forAll(gapLoserPatchNames_, pi)
+                            if( gapLoserPatchNames_[pi] == pName )
+                                { isLoser = true; break; }
+                        if( !isLoser ) continue;
+                        const label cap = Foam::max(label(1), gapRing1MaxLayers_);
+                        edgeCap = (edgeCap < 0) ?
+                            cap : Foam::min(edgeCap, cap);
+                    }
+                    if( edgeCap > 0 )
+                        nLayers = Foam::min(nLayers, edgeCap);
+                }
+            }
+
             //- store the information
             firstLayerThickness[seI] = thickness;
             thicknessRatio[seI] = ratio;
