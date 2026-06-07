@@ -110,10 +110,18 @@ class boundaryLayers
         scalar gapFaceRing0Scale_;     // default 0.02
         scalar gapFaceRing1Scale_;     // default 0.05
         scalar gapFaceRing2Scale_;     // default 0.20
+        scalar gapFaceRing3Scale_;     // default 0.50
 
         //- taper scale for protected (blade/periodic) ring0 faces at triple
         //- junctions. Does not suppress topology -- only reduces BL height.
         scalar tripleJunctionProtectedRing0Scale_;
+
+        //- Gap conflict arbitration: loser-side patch indices (STL space).
+        //- Ring1 topology suppression applied to these patches in gap zones.
+        labelHashSet gapLoserPatches_;
+
+        //- Enable ring1 topology suppression on loser side (default true).
+        bool gapLoserRing1Suppress_;
 
         //- is it a 2D mesh
         bool is2DMesh_;
@@ -163,7 +171,8 @@ class boundaryLayers
         mutable labelList vtFaceRing_;
 
         //- gap points for BL suppression in thin clearance regions
-        labelHashSet gapPoints_;
+        labelHashSet gapPoints_;       //- loser-side action points
+        labelHashSet gapZonePoints_;   //- symmetric zone points (both sides)
         //- triple-junction seed points (blade/hub-shroud/periodic singularities)
         labelHashSet tripleJunctionPoints_;
 
@@ -414,6 +423,7 @@ public:
         }
 
         //- set gap points for BL suppression in thin clearance regions
+        //- These are LOSER-SIDE action points only -- not symmetric zone points.
         void setGapPoints(const labelHashSet& gpts)
         {
             gapPoints_ = gpts;
@@ -423,9 +433,20 @@ public:
             forAllConstIter(labelHashSet, gpts, iter)
                 gapPoints_.insert(iter.key());
         }
+        //- set symmetric gap zone points (both sides) for classification only.
+        //- Does not trigger BL suppression -- use setGapPoints for that.
+        void setGapZonePoints(const labelHashSet& gpts)
+        {
+            gapZonePoints_ = gpts;
+        }
         void setTripleJunctionPoints(const labelHashSet& pts)
         {
             tripleJunctionPoints_ = pts;
+        }
+        //- set loser-side patch indices for gap conflict arbitration
+        void setGapLoserPatches(const labelHashSet& loserPatches)
+        {
+            gapLoserPatches_ = loserPatches;
         }
         void addTripleJunctionPoints(const labelHashSet& pts)
         {

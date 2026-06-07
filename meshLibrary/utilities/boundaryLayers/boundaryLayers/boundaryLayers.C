@@ -652,7 +652,10 @@ boundaryLayers::boundaryLayers
     gapFaceRing0Scale_(0.02),
     gapFaceRing1Scale_(0.05),
     gapFaceRing2Scale_(0.20),
-    tripleJunctionProtectedRing0Scale_(1.0)
+    gapFaceRing3Scale_(0.50),
+    tripleJunctionProtectedRing0Scale_(1.0),
+    gapLoserPatches_(),
+    gapLoserRing1Suppress_(true)
 {
     const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
     patchNames_.setSize(boundaries.size());
@@ -758,6 +761,10 @@ boundaryLayers::boundaryLayers
             gapFaceRing1Scale_ = readScalar(bndLayers.lookup("gapFaceRing1Scale"));
         if( bndLayers.found("gapFaceRing2Scale") )
             gapFaceRing2Scale_ = readScalar(bndLayers.lookup("gapFaceRing2Scale"));
+        if( bndLayers.found("gapFaceRing3Scale") )
+            gapFaceRing3Scale_ = readScalar(bndLayers.lookup("gapFaceRing3Scale"));
+        if( bndLayers.found("gapLoserRing1Suppress") )
+            gapLoserRing1Suppress_ = Switch(bndLayers.lookup("gapLoserRing1Suppress"));
         if( bndLayers.found("tripleJunctionProtectedRing0Scale") )
             tripleJunctionProtectedRing0Scale_ =
                 readScalar(bndLayers.lookup("tripleJunctionProtectedRing0Scale"));
@@ -1092,7 +1099,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             }
         }
 
-        // Ring 3: gentle restart
+        // Ring 3: gentle restart (scale via meshDict gapFaceRing3Scale)
+        boolList gapRing3(nBP, false);
         forAll(gapRing2, bpI)
         {
             if( !gapRing2[bpI] ) continue;
@@ -1101,7 +1109,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 const label nbpI = ptPts(bpI, ppI);
                 if( nbpI < 0 || nbpI >= nBP ) continue;
                 if( gapRing0[nbpI] || gapRing1[nbpI] || gapRing2[nbpI] ) continue;
-                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], 0.50);
+                gapRing3[nbpI] = true;
+                layerScale_[nbpI] = Foam::min(layerScale_[nbpI], gapFaceRing3Scale_);
             }
         }
     }
@@ -2174,12 +2183,61 @@ void boundaryLayers::applyGapFaceRingExclusion() const
         }
     }
 
-    // Populate face-level suppression mask for ring0 faces
-    // createNewFacesAndCells will skip these entirely -- no prism topology
-    suppressLayerAtBndFace_.setSize(nBF, false);
+    // Ring 3 face tracking
+    boolList ring2pt(nBP, false);
     forAll(faceRing, bfI)
+    {
+        if( faceRing[bfI] != 2 ) continue;
+        const face& f = bFaces[bfI];
+        forAll(f, pI)
+        {
+            const label meshPtI = f[pI];
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI >= 0 && bpI < nBP ) ring2pt[bpI] = true;
+        }
+    }
+
+    forAll(ring2pt, bpI)
+    {
+        if( !ring2pt[bpI] ) continue;
+        forAllRow(pointFaces, bpI, pfI)
+        {
+            const label bfI = pointFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= nBF ) continue;
+            if( faceRing[bfI] >= 0 ) continue;
+            faceRing[bfI] = 3;
+        }
+    }
+
+    // Populate face-level suppression mask.
+    // Ring0: always suppress topology (gap too tight for any BL).
+    // Ring1 on loser-side patches: suppress topology to give winner-side BL room.
+    // createNewFacesAndCells will skip suppressed faces entirely.
+    suppressLayerAtBndFace_.setSize(nBF, false);
+    const bool applyLoserRing1 =
+        gapLoserRing1Suppress_ && gapLoserPatches_.size() > 0;
+    label nLoserRing1Suppressed = 0;
+    forAll(faceRing, bfI)
+    {
         if( faceRing[bfI] == 0 )
+        {
             suppressLayerAtBndFace_[bfI] = true;
+        }
+        else if( faceRing[bfI] == 1 && applyLoserRing1 )
+        {
+            // Only suppress ring1 on the loser side of the gap conflict.
+            // Winner side keeps BL topology through the transition.
+            if( gapLoserPatches_.found(facePatch[bfI]) )
+            {
+                suppressLayerAtBndFace_[bfI] = true;
+                ++nLoserRing1Suppressed;
+            }
+        }
+    }
+    if( nLoserRing1Suppressed > 0 )
+        Info << "Gap conflict arbitration: ring1 topology suppressed on loser side: "
+             << nLoserRing1Suppressed << " faces" << endl;
 
     // Apply layerScale_ -- scales configurable via meshDict
     forAll(faceRing, bfI)
@@ -2190,6 +2248,7 @@ void boundaryLayers::applyGapFaceRingExclusion() const
         if(      ring == 0 ) scale = gapFaceRing0Scale_;
         else if( ring == 1 ) scale = gapFaceRing1Scale_;
         else if( ring == 2 ) scale = gapFaceRing2Scale_;
+        else if( ring == 3 ) scale = gapFaceRing3Scale_;
         const face& f = bFaces[bfI];
         forAll(f, pI)
         {
@@ -2226,18 +2285,21 @@ void boundaryLayers::applyGapFaceRingExclusion() const
     }
 
     // Diagnostics
-    label nF0=0, nF1=0, nF2=0;
+    label nF0=0, nF1=0, nF2=0, nF3=0;
     forAll(faceRing, bfI)
     {
         if(      faceRing[bfI] == 0 ) ++nF0;
         else if( faceRing[bfI] == 1 ) ++nF1;
         else if( faceRing[bfI] == 2 ) ++nF2;
+        else if( faceRing[bfI] == 3 ) ++nF3;
     }
     Info << "Gap face-ring exclusion:"
-         << " faces(r0=" << nF0 << " r1=" << nF1 << " r2=" << nF2 << ")"
+         << " faces(r0=" << nF0 << " r1=" << nF1
+         << " r2=" << nF2 << " r3=" << nF3 << ")"
          << " scale=(" << gapFaceRing0Scale_
          << " " << gapFaceRing1Scale_
-         << " " << gapFaceRing2Scale_ << ")" << endl;
+         << " " << gapFaceRing2Scale_
+         << " " << gapFaceRing3Scale_ << ")" << endl;
 
     if( nProtectedTripleR0 > 0 )
         Info << "Triple-junction protected-side taper:"
@@ -2418,9 +2480,14 @@ void boundaryLayers::reportBLPlanningPerPatch() const
             meshToBnd[meshPtI] = bpI;
     }
 
-    // Build gap and triple-junction boundary-point sets
+    // Build gap and triple-junction boundary-point sets.
+    // Use gapZonePoints_ (symmetric, both sides) for transition classification
+    // so the full geometric danger zone is visible to the transition detector.
+    // Fall back to gapPoints_ if no zone points available (legacy behavior).
     boolList isGapPoint(nBP, false);
-    forAllConstIter(labelHashSet, gapPoints_, it)
+    const labelHashSet& zoneSet =
+        gapZonePoints_.size() > 0 ? gapZonePoints_ : gapPoints_;
+    forAllConstIter(labelHashSet, zoneSet, it)
     {
         const label meshPtI = it.key();
         if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;

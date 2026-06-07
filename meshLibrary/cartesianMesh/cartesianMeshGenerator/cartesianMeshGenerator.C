@@ -428,17 +428,96 @@ void cartesianMeshGenerator::detectGapPoints
     const meshSurfacePartitioner mPart(mse);
     const VRWGraph& pPatches = mPart.pointPatches();
 
-    // Side-aware suppression: only suppress designated patches
-    labelHashSet suppressPatchIdx;
-    if( bndL.found("gapSuppressPatches") )
+    // Gap conflict arbitration: determine loser side for each pair BEFORE scan.
+    // Mode autoThickness: loser = patch with higher requested total BL thickness.
+    // Mode manualSuppressPatches: loser = user-provided gapSuppressPatches list.
+    // The same loser set controls both gap-point seeding and ring1 suppression.
+    const word conflictMode =
+        bndL.found("gapConflictMode") ?
+        word(bndL.lookup("gapConflictMode")) : word("autoThickness");
+
+    // Helper: compute requested total BL thickness for a named patch from meshDict.
+    // total = maxFirstLayerThickness * (1 - ratio^nLayers) / (1 - ratio)
+    auto requestedThickness = [&](const word& pName) -> scalar
     {
-        wordList suppressNames(bndL.lookup("gapSuppressPatches"));
-        forAll(suppressNames, si)
-            if( nameToIdx.found(suppressNames[si]) )
-                suppressPatchIdx.insert(nameToIdx[suppressNames[si]]);
-        Info << "Gap detection: suppress-side patches: " << suppressNames << endl;
+        scalar firstT = 1e-4;
+        scalar ratio  = 1.3;
+        label  nL     = 0;
+        if( bndL.found("maxFirstLayerThickness") )
+            firstT = readScalar(bndL.lookup("maxFirstLayerThickness"));
+        if( bndL.found("thicknessRatio") )
+            ratio = readScalar(bndL.lookup("thicknessRatio"));
+        if( bndL.found("nLayers") )
+            nL = readLabel(bndL.lookup("nLayers"));
+        if( bndL.isDict("patchBoundaryLayers") )
+        {
+            const dictionary& pbl = bndL.subDict("patchBoundaryLayers");
+            if( pbl.isDict(pName) )
+            {
+                const dictionary& pd = pbl.subDict(pName);
+                if( pd.found("maxFirstLayerThickness") )
+                    firstT = readScalar(pd.lookup("maxFirstLayerThickness"));
+                if( pd.found("thicknessRatio") )
+                    ratio = readScalar(pd.lookup("thicknessRatio"));
+                if( pd.found("nLayers") )
+                    nL = readLabel(pd.lookup("nLayers"));
+            }
+        }
+        if( nL <= 0 ) return 0.0;
+        if( mag(ratio - 1.0) < SMALL )
+            return firstT * scalar(nL);
+        return firstT * (1.0 - Foam::pow(ratio, scalar(nL))) / (1.0 - ratio);
+    };
+
+    labelHashSet loserPatches;
+    if( conflictMode == "manualSuppressPatches" )
+    {
+        // Legacy manual mode: gapSuppressPatches list is the loser side.
+        if( bndL.found("gapSuppressPatches") )
+        {
+            wordList suppressNames(bndL.lookup("gapSuppressPatches"));
+            forAll(suppressNames, si)
+                if( nameToIdx.found(suppressNames[si]) )
+                    loserPatches.insert(nameToIdx[suppressNames[si]]);
+            Info << "Gap conflict: manual suppress-side patches: "
+                 << suppressNames << endl;
+        }
     }
-    const bool sideAware = suppressPatchIdx.size() > 0;
+    else
+    {
+        // autoThickness: loser = higher requested BL thickness per pair.
+        // Uses idxPairs (already validated) -> pNames, not pairList, to avoid
+        // index mismatch when pairs are skipped during validation.
+        forAll(idxPairs, pI)
+        {
+            const label idxA = idxPairs[pI].first();
+            const label idxB = idxPairs[pI].second();
+            if( idxA < 0 || idxA >= label(pNames.size()) ) continue;
+            if( idxB < 0 || idxB >= label(pNames.size()) ) continue;
+            const word& nameA = pNames[idxA];
+            const word& nameB = pNames[idxB];
+            const scalar tA = requestedThickness(nameA);
+            const scalar tB = requestedThickness(nameB);
+            if( tA <= SMALL && tB <= SMALL )
+            {
+                Info << "Gap conflict arbitration: pair (" << nameA
+                     << " <-> " << nameB
+                     << ") zero BL thickness both sides; skipping" << endl;
+                continue;
+            }
+            const label loserIdx  = (tA >= tB) ? idxA  : idxB;
+            const word& loserName = (tA >= tB) ? nameA : nameB;
+            loserPatches.insert(loserIdx);
+            Info << "Gap conflict arbitration: pair (" << nameA
+                 << " <-> " << nameB
+                 << ") thickness=(" << tA << " " << tB << ")"
+                 << " loser=" << loserName
+                 << " [autoThickness]" << endl;
+        }
+        if( loserPatches.size() == 0 )
+            Info << "Gap conflict arbitration: WARNING no losers found"
+                 << " -- gap points will not be loser-side gated" << endl;
+    }
 
     labelHashSet gapPoints;
     label nScanned = 0;
@@ -462,16 +541,10 @@ void cartesianMeshGenerator::detectGapPoints
             }
             if( !onA && !onB ) continue;
 
-
-            // Side-aware: skip if not on suppress side
-            if( sideAware )
-            {
-                bool onSuppressSide = false;
-                forAllRow(pPatches, bpI, pI)
-                    if( suppressPatchIdx.found(pPatches(bpI, pI)) )
-                        { onSuppressSide = true; break; }
-                if( !onSuppressSide ) continue;
-            }
+            // Gap detection is symmetric: seed gap points on both sides of
+            // the narrow clearance. loserPatches_ is retained as side metadata
+            // for later loser-side layer capping/suppression, but it must not
+            // shrink the detected geometric danger zone.
 
             ++nScanned;
             const label searchPatch = onA ? pIdxB : pIdxA;
@@ -500,8 +573,53 @@ void cartesianMeshGenerator::detectGapPoints
          << " candidate points, found " << gapPoints.size()
          << " gap points from " << nGapHits << " hits" << endl;
 
+    // Pass symmetric zone points for classification (both sides).
     if( gapPoints.size() > 0 )
+        bl.setGapZonePoints(gapPoints);
+
+    // Pass loser-side action points for BL suppression.
+    // gapPoints_ in boundaryLayers means "action/suppression points" --
+    // not the full symmetric geometric zone.
+    if( gapPoints.size() > 0 && loserPatches.size() > 0 )
+    {
+        labelHashSet loserGapPoints;
+
+        // Reuse already-built reverse map: mesh point -> boundary point index.
+        labelList meshToBnd(mesh_.points().size(), -1);
+        forAll(bPoints, bpI)
+            meshToBnd[bPoints[bpI]] = bpI;
+
+        forAllConstIter(labelHashSet, gapPoints, it)
+        {
+            const label meshPtI = it.key();
+            if( meshPtI < 0 || meshPtI >= label(meshToBnd.size()) ) continue;
+            const label bpI = meshToBnd[meshPtI];
+            if( bpI < 0 ) continue;
+            forAllRow(pPatches, bpI, pI)
+            {
+                if( loserPatches.found(pPatches(bpI, pI)) )
+                {
+                    loserGapPoints.insert(meshPtI);
+                    break;
+                }
+            }
+        }
+
+        if( loserGapPoints.size() > 0 )
+            bl.setGapPoints(loserGapPoints);
+
+        Info << "Gap action points: " << loserGapPoints.size()
+             << " loser-side of " << gapPoints.size()
+             << " zone points" << endl;
+    }
+    else if( gapPoints.size() > 0 )
+    {
+        // No arbitration data: fall back to legacy symmetric action.
         bl.setGapPoints(gapPoints);
+    }
+
+    if( loserPatches.size() > 0 )
+        bl.setGapLoserPatches(loserPatches);
 }
 
 void cartesianMeshGenerator::detectTripleJunctions
