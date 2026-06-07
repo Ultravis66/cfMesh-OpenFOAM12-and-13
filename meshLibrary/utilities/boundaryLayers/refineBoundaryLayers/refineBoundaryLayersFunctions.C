@@ -603,6 +603,25 @@ void refineBoundaryLayers::generateNewVertices()
                 }
             }
 
+            // BL/termination edge cap: reduce layer count at inlet/outlet junctions.
+            // Checks BOTH endpoints. No patch-name check needed -- blTerminationEdgePoints_
+            // already contains only BL/no-BL transition points by construction.
+            // Default cap=3 means disabled (min(3,3)=3, no effect).
+            // Start conservative: blTerminationRing1MaxLayers=2 reduces 3->2 only.
+            if( blTerminationEdgePoints_.size() > 0
+             && blTerminationRing1MaxLayers_ < 3 )
+            {
+                const bool edgeAtTermination =
+                    blTerminationEdgePoints_.found(e.start())
+                 || blTerminationEdgePoints_.found(e.end());
+                if( edgeAtTermination )
+                {
+                    const label cap =
+                        Foam::max(label(1), blTerminationRing1MaxLayers_);
+                    nLayers = Foam::min(nLayers, cap);
+                }
+            }
+
             //- store the information
             firstLayerThickness[seI] = thickness;
             thicknessRatio[seI] = ratio;

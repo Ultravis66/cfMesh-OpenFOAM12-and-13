@@ -796,6 +796,46 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
             refLayers.setGapRingMaxLayers(ring1Max, ring2Max);
         }
+
+        // Pass BL/termination edge points for inlet/outlet layer-count cap.
+        // IMPORTANT: blNoBlEdgePoints_ is stored as boundary-point indices (bpI).
+        // refineBoundaryLayers splitEdges use global mesh point labels, so convert
+        // bpI -> mesh point label here. Do not change blNoBlEdgePoints_ globally,
+        // because mapper/projection paths may expect bpI indexing.
+        if( !blNoBlEdgePoints_.empty() )
+        {
+            const meshSurfaceEngine mseTerm(mesh_);
+            const labelList& bPointsTerm = mseTerm.boundaryPoints();
+            labelHashSet blTerminationMeshPoints;
+            label nBadBp = 0;
+            forAllConstIter(labelHashSet, blNoBlEdgePoints_, it)
+            {
+                const label bpI = it.key();
+                if( bpI >= 0 && bpI < label(bPointsTerm.size()) )
+                    blTerminationMeshPoints.insert(bPointsTerm[bpI]);
+                else
+                    ++nBadBp;
+            }
+            if( blTerminationMeshPoints.size() > 0 )
+                refLayers.setBlTerminationEdgePoints(blTerminationMeshPoints);
+            label tRing1Max = 3;  // disabled by default
+            label tRing2Max = 3;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+                if( bndL.found("blTerminationRing1MaxLayers") )
+                    tRing1Max = readLabel(bndL.lookup("blTerminationRing1MaxLayers"));
+                if( bndL.found("blTerminationRing2MaxLayers") )
+                    tRing2Max = readLabel(bndL.lookup("blTerminationRing2MaxLayers"));
+            }
+            refLayers.setBlTerminationRingMaxLayers(tRing1Max, tRing2Max);
+            Info << "BL termination edge cap: "
+                 << blNoBlEdgePoints_.size() << " bp-index edge points, "
+                 << blTerminationMeshPoints.size() << " mesh points"
+                 << " ring1max=" << tRing1Max
+                 << " ring2max=" << tRing2Max
+                 << " badBp=" << nBadBp << endl;
+        }
         {
             bool capLayers = false;
             if( meshDict_.isDict("boundaryLayers") )

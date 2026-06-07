@@ -121,6 +121,13 @@ class refineBoundaryLayers
         wordList     gapLoserPatchNames_;
         label        gapRing1MaxLayers_;   // default 1
         label        gapRing2MaxLayers_;   // default 2
+
+        //- BL/termination edge cap: reduce layer count at inlet/outlet junctions.
+        //- blTerminationEdgePoints_: mesh point labels on BL/no-BL edges.
+        //- No patch-name check needed -- locality is sufficient.
+        labelHashSet blTerminationEdgePoints_;
+        label        blTerminationRing1MaxLayers_;  // default 3 (disabled)
+        label        blTerminationRing2MaxLayers_;  // default 3 (disabled)
         labelHashSet blblAcuteCornerPoints_;
         bool acuteCornerCapLayers_;
 
@@ -451,6 +458,16 @@ public:
         {
             gapRing1MaxLayers_ = ring1Max;
             gapRing2MaxLayers_ = ring2Max;
+        }
+        //- set BL/termination edge points for inlet/outlet layer-count cap
+        void setBlTerminationEdgePoints(const labelHashSet& pts)
+        {
+            blTerminationEdgePoints_ = pts;
+        }
+        void setBlTerminationRingMaxLayers(const label ring1Max, const label ring2Max)
+        {
+            blTerminationRing1MaxLayers_ = ring1Max;
+            blTerminationRing2MaxLayers_ = ring2Max;
         }
 };
 

@@ -71,7 +71,10 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     gapActionPoints_(),
     gapLoserPatchNames_(),
     gapRing1MaxLayers_(1),
-    gapRing2MaxLayers_(2)
+    gapRing2MaxLayers_(2),
+    blTerminationEdgePoints_(),
+    blTerminationRing1MaxLayers_(3),
+    blTerminationRing2MaxLayers_(3)
 {}
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
