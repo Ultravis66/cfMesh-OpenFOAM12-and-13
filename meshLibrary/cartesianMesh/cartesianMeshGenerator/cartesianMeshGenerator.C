@@ -2564,55 +2564,150 @@ void cartesianMeshGenerator::generateMesh()
                 const cellListPMG& cells = mesh_.cells();
                 const faceListPMG& faces = mesh_.faces();
 
+                // Build attribution data for negVol spatial diagnosis.
+                const meshSurfaceEngine mseNV(mesh_);
+                const labelList& bPointsNV   = mseNV.boundaryPoints();
+                const labelList& facePatchNV = mseNV.boundaryFacePatches();
+                const VRWGraph& pointFacesNV = mseNV.pointFaces();
+                const PtrList<boundaryPatch>& boundariesNV = mesh_.boundaries();
+
+                // O(1) reverse map: mesh point label -> boundary point index
+                labelList meshToBpNV(pts.size(), -1);
+                forAll(bPointsNV, bpI)
+                {
+                    const label mpI = bPointsNV[bpI];
+                    if( mpI >= 0 && mpI < label(meshToBpNV.size()) )
+                        meshToBpNV[mpI] = bpI;
+                }
+
+                // Loser patch index set for O(1) lookup
+                labelHashSet loserPatchIdxNV;
+                forAll(boundariesNV, pI)
+                    forAll(blGapLoserPatchNames_, ni)
+                        if( boundariesNV[pI].patchName() == blGapLoserPatchNames_[ni] )
+                            loserPatchIdxNV.insert(pI);
+
+                // Gap action point positions for distance computation
+                List<point> gapPtPos(blGapActionPoints_.size());
+                {
+                    label gi = 0;
+                    forAllConstIter(labelHashSet, blGapActionPoints_, it)
+                    {
+                        const label mpI = it.key();
+                        if( mpI >= 0 && mpI < label(pts.size()) )
+                            gapPtPos[gi++] = pts[mpI];
+                    }
+                    gapPtPos.setSize(gi);
+                }
+
+                // Triple junction point positions
+                List<point> tjPtPos(blblJunctionPoints_.size());
+                {
+                    label ti = 0;
+                    forAllConstIter(labelHashSet, blblJunctionPoints_, it)
+                    {
+                        const label mpI = it.key();
+                        if( mpI >= 0 && mpI < label(pts.size()) )
+                            tjPtPos[ti++] = pts[mpI];
+                    }
+                    tjPtPos.setSize(ti);
+                }
+
                 OFstream negVolFile("negVolCellCentres.csv");
-                negVolFile << "cellI,cx,cy,cz,nFaces,nUniquePoints" << nl;
+                negVolFile << "cellI,cx,cy,cz,nFaces,nUniquePoints,"
+                           << "nearestPatch,isLoserPatch,"
+                           << "distGapAction,distTripleJunction" << nl;
 
                 forAllConstIter(labelHashSet, finalNegCells, it)
                 {
                     const label cellI = it.key();
-
                     if( cellI < 0 || cellI >= label(cells.size()) )
                         continue;
-
                     const cell& c = cells[cellI];
 
+                    // Collect unique mesh points for this cell
                     labelHashSet uniquePts;
                     forAll(c, cfI)
                     {
                         const label faceI = c[cfI];
-                        if( faceI < 0 || faceI >= label(faces.size()) )
-                            continue;
-
+                        if( faceI < 0 || faceI >= label(faces.size()) ) continue;
                         const face& f = faces[faceI];
                         forAll(f, fpI)
                             uniquePts.insert(f[fpI]);
                     }
 
+                    // Compute cell centre
                     point cc = point::zero;
                     label nUnique = 0;
-
                     forAllConstIter(labelHashSet, uniquePts, pit)
                     {
                         const label pointI = pit.key();
-
-                        if( pointI < 0 || pointI >= label(pts.size()) )
-                            continue;
-
+                        if( pointI < 0 || pointI >= label(pts.size()) ) continue;
                         cc += pts[pointI];
                         ++nUnique;
                     }
-
                     if( nUnique > 0 )
                         cc /= scalar(nUnique);
+
+                    // Nearest patch attribution using reverse map + all adjacent faces.
+                    // Prefer loser patch if any adjacent face touches one.
+                    label nearestPatchI = -1;
+                    bool isLoser = false;
+                    forAllConstIter(labelHashSet, uniquePts, pit)
+                    {
+                        if( isLoser ) break;
+                        const label pointI = pit.key();
+                        if( pointI < 0 || pointI >= label(meshToBpNV.size()) ) continue;
+                        const label bpI = meshToBpNV[pointI];
+                        if( bpI < 0 ) continue;
+                        forAllRow(pointFacesNV, bpI, pfI)
+                        {
+                            const label bfI = pointFacesNV(bpI, pfI);
+                            if( bfI < 0 || bfI >= label(facePatchNV.size()) ) continue;
+                            const label pI = facePatchNV[bfI];
+                            if( pI < 0 || pI >= label(boundariesNV.size()) ) continue;
+                            if( nearestPatchI < 0 )
+                                nearestPatchI = pI;
+                            if( loserPatchIdxNV.found(pI) )
+                            {
+                                nearestPatchI = pI;
+                                isLoser = true;
+                                break;
+                            }
+                        }
+                    }
+                    const word nearestPatch =
+                        nearestPatchI >= 0 ?
+                        boundariesNV[nearestPatchI].patchName() :
+                        word("unknown");
+
+                    // Distance to nearest gap action point
+                    scalar distGap = GREAT;
+                    forAll(gapPtPos, gi)
+                    {
+                        const scalar d = mag(gapPtPos[gi] - cc);
+                        if( d < distGap ) distGap = d;
+                    }
+
+                    // Distance to nearest triple junction point
+                    scalar distTJ = GREAT;
+                    forAll(tjPtPos, ti)
+                    {
+                        const scalar d = mag(tjPtPos[ti] - cc);
+                        if( d < distTJ ) distTJ = d;
+                    }
 
                     negVolFile << cellI << ","
                                << cc.x() << ","
                                << cc.y() << ","
                                << cc.z() << ","
                                << c.size() << ","
-                               << nUnique << nl;
+                               << nUnique << ","
+                               << nearestPatch << ","
+                               << (isLoser ? 1 : 0) << ","
+                               << distGap << ","
+                               << distTJ << nl;
                 }
-
                 Info << "negVol cell centres written to negVolCellCentres.csv"
                      << endl;
             }
