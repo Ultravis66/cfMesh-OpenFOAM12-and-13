@@ -511,6 +511,7 @@ void refineBoundaryLayers::generateNewVertices()
     const label nThreads = 1;
     # endif
 
+    boolList cappedEdge(splitEdges_.size(), false);
     # ifdef USE_OMP
     # pragma omp parallel num_threads(nThreads)
     # endif
@@ -598,8 +599,11 @@ void refineBoundaryLayers::generateNewVertices()
                         edgeCap = (edgeCap < 0) ?
                             cap : Foam::min(edgeCap, cap);
                     }
-                    if( edgeCap > 0 )
-                        nLayers = Foam::min(nLayers, edgeCap);
+                    if( edgeCap > 0 && edgeCap < nLayers )
+                    {
+                        nLayers = edgeCap;
+                        cappedEdge[seI] = true;
+                    }
                 }
             }
 
@@ -618,7 +622,11 @@ void refineBoundaryLayers::generateNewVertices()
                 {
                     const label cap =
                         Foam::max(label(1), blTerminationRing1MaxLayers_);
-                    nLayers = Foam::min(nLayers, cap);
+                    if( cap < nLayers )
+                    {
+                        nLayers = cap;
+                        cappedEdge[seI] = true;
+                    }
                 }
             }
 
@@ -635,6 +643,74 @@ void refineBoundaryLayers::generateNewVertices()
             {
                 nNodesAtEdge[seI] = 3;
             }
+        }
+    }
+
+    // Split-edge layer-count compatibility smoothing.
+    // Only runs when a cap actually reduced at least one split edge.
+    // Prevents 3->1 or 3->2 isolated topology cliffs.
+    // Does not propagate on geometries with intentional layer differences.
+    {
+        label nInitiallyCapped = 0;
+        forAll(cappedEdge, seI)
+            if( cappedEdge[seI] )
+                ++nInitiallyCapped;
+
+        if( nInitiallyCapped > 0 )
+        {
+            const label nSplitEdges = splitEdges_.size();
+            bool changed = true;
+            label nAdjusted = 0;
+            label nPasses = 0;
+            const label maxPasses = 20;
+
+            while( changed && nPasses < maxPasses )
+            {
+                changed = false;
+                ++nPasses;
+
+                forAll(splitEdges_, seI)
+                {
+                    const edge& e = splitEdges_[seI];
+                    const label nL = nLayersAtEdge[seI];
+
+                    forAllRow(splitEdgesAtPoint_, e.start(), i)
+                    {
+                        const label seJ = splitEdgesAtPoint_(e.start(), i);
+                        if( seJ == seI || seJ < 0 || seJ >= nSplitEdges )
+                            continue;
+                        if( nLayersAtEdge[seJ] > nL + 1 )
+                        {
+                            nLayersAtEdge[seJ] = nL + 1;
+                            nNodesAtEdge[seJ] =
+                                specialMode_ ? 3 : nLayersAtEdge[seJ] + 1;
+                            changed = true;
+                            ++nAdjusted;
+                        }
+                    }
+
+                    forAllRow(splitEdgesAtPoint_, e.end(), i)
+                    {
+                        const label seJ = splitEdgesAtPoint_(e.end(), i);
+                        if( seJ == seI || seJ < 0 || seJ >= nSplitEdges )
+                            continue;
+                        if( nLayersAtEdge[seJ] > nL + 1 )
+                        {
+                            nLayersAtEdge[seJ] = nL + 1;
+                            nNodesAtEdge[seJ] =
+                                specialMode_ ? 3 : nLayersAtEdge[seJ] + 1;
+                            changed = true;
+                            ++nAdjusted;
+                        }
+                    }
+                }
+            }
+
+            Info << "Split-edge layer-count smoothing: "
+                 << "initialCapped=" << nInitiallyCapped
+                 << " adjusted=" << nAdjusted
+                 << " passes=" << nPasses
+                 << endl;
         }
     }
 
