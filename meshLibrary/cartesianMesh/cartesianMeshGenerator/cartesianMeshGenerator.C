@@ -2074,10 +2074,17 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         const pointField pointsBefore(mesh_.points());
 
-        // Always attempt untangleMeshFV -- it exists to fix inverted cells.
-        // optimizeMeshFV can create negVol cells; skipping the untangler
-        // when negVol>0 is self-defeating. The rollback below rejects the
-        // result if untangle makes things worse (negVol increases).
+        if( negBefore.size() > 0 )
+        {
+            Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
+                 << negBefore.size()
+                 << " negVol cells present -- proceeding to BL" << endl;
+            // Untangle can stall on pre-existing constrained negVol cells.
+            // Keep the mesh unchanged here; use lineage diagnostics to
+            // identify bad-cell survivor neighborhoods for BL suppression.
+            mesh_.clearAddressingData();
+        }
+        else
         {
             optimizer.untangleMeshFV();
 
