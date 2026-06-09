@@ -2074,16 +2074,10 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         const pointField pointsBefore(mesh_.points());
 
-        if( negBefore.size() > 0 )
-        {
-            Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
-                 << negBefore.size()
-                 << " negVol cells present -- proceeding to BL" << endl;
-            // Untangle skipped -- mesh unchanged, no rollback needed.
-            // Do not set finalUntangleRejected_: BL must still run.
-            mesh_.clearAddressingData();
-        }
-        else
+        // Always attempt untangleMeshFV -- it exists to fix inverted cells.
+        // optimizeMeshFV can create negVol cells; skipping the untangler
+        // when negVol>0 is self-defeating. The rollback below rejects the
+        // result if untangle makes things worse (negVol increases).
         {
             optimizer.untangleMeshFV();
 
@@ -2502,9 +2496,89 @@ void cartesianMeshGenerator::generateMesh()
             }
         }
 
+        // Stage-gated bad-cell lineage writer.
+        // Writes negVolCellCentres_<stage>.csv at 5 pipeline checkpoints.
+        // Comparing stages tells us which step creates the bad cells.
+        bool writeLineageDiagnostics = false;
+        if( meshDict_.found("writeLineageDiagnostics") )
+            writeLineageDiagnostics =
+                Switch(meshDict_.lookup("writeLineageDiagnostics"));
+
+        auto writeLineageCSV = [&](const std::string& stageName)
+        {
+            if( !writeLineageDiagnostics ) return;
+
+            wordList enabledStages;
+            if( meshDict_.found("writeLineageStages") )
+                enabledStages = wordList(meshDict_.lookup("writeLineageStages"));
+            else
+                enabledStages = wordList(2);
+
+            if( enabledStages.size() == 2 && enabledStages[0].empty() )
+            {
+                enabledStages[0] = word("postRefBL");
+                enabledStages[1] = word("final");
+            }
+
+            bool stageEnabled = false;
+            forAll(enabledStages, si)
+            {
+                if( enabledStages[si] == word(stageName.c_str()) )
+                {
+                    stageEnabled = true;
+                    break;
+                }
+            }
+
+            if( !stageEnabled ) return;
+
+            mesh_.clearAddressingData();
+            labelHashSet stageCells;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &stageCells);
+            if( stageCells.size() == 0 ) return;
+            const pointFieldPMG& pts  = mesh_.points();
+            const cellListPMG&   cells = mesh_.cells();
+            const faceListPMG&   faces = mesh_.faces();
+            const std::string fname =
+                "negVolCellCentres_" + stageName + ".csv";
+            OFstream stageFile(fname);
+            stageFile << "cellI,cx,cy,cz,nFaces,nUniquePoints" << nl;
+            forAllConstIter(labelHashSet, stageCells, it)
+            {
+                const label cellI = it.key();
+                if( cellI < 0 || cellI >= label(cells.size()) ) continue;
+                const cell& c = cells[cellI];
+                labelHashSet uniquePts;
+                forAll(c, cfI)
+                {
+                    const label faceI = c[cfI];
+                    if( faceI < 0 || faceI >= label(faces.size()) ) continue;
+                    const face& f = faces[faceI];
+                    forAll(f, fpI) uniquePts.insert(f[fpI]);
+                }
+                point cc = point::zero;
+                label nUnique = 0;
+                forAllConstIter(labelHashSet, uniquePts, pit)
+                {
+                    const label pI = pit.key();
+                    if( pI < 0 || pI >= label(pts.size()) ) continue;
+                    cc += pts[pI]; ++nUnique;
+                }
+                if( nUnique > 0 ) cc /= scalar(nUnique);
+                stageFile << cellI << ","
+                          << cc.x() << "," << cc.y() << "," << cc.z() << ","
+                          << c.size() << "," << nUnique << nl;
+            }
+            Info << "Lineage [" << stageName.c_str() << "]: "
+                 << stageCells.size() << " negVol cells -> "
+                 << fname.c_str() << endl;
+        };
+
         if( controller_.runCurrentStep("boundaryLayerGeneration") )
         {
+            writeLineageCSV("preBL");
             generateBoundaryLayers();
+            writeLineageCSV("postBLCreate");
         }
 
         if( controller_.runCurrentStep("meshOptimisation") )
@@ -2512,10 +2586,9 @@ void cartesianMeshGenerator::generateMesh()
             optimiseFinalMesh();
 
             projectSurfaceAfterBackScaling();
+            writeLineageCSV("postOptimize");
         }
-
         snapSurfaceBeforeBLRefinement();
-
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
             if( finalUntangleRejected_ )
@@ -2525,6 +2598,7 @@ void cartesianMeshGenerator::generateMesh()
             else
             {
                 refBoundaryLayers();
+                writeLineageCSV("postRefBL");
             }
         }
 
@@ -2596,6 +2670,7 @@ void cartesianMeshGenerator::generateMesh()
                  << "negVol=" << finalNegCells.size()
                  << " badPyramids=" << finalBadPyrFaces.size()
                  << endl;
+            writeLineageCSV("final");
 
             // Write final negative-volume cell centres for spatial diagnostics.
             if( finalNegCells.size() > 0 )
