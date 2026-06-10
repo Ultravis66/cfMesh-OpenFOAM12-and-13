@@ -1304,6 +1304,20 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             {
                 layerScale_[bpI] = 0.0;
                 ++nCornerSuppressed;
+
+                if( nCornerSuppressed <= 200 )
+                {
+                    const point& p = points[bPoints[bpI]];
+                    Info << "TERMDIAG corner bpI=" << bpI
+                         << " nPt=" << nPt
+                         << " nBL=" << nBLPt
+                         << " nTerm=" << nTermPt
+                         << " x=" << p.x()
+                         << " y=" << p.y()
+                         << " z=" << p.z()
+                         << endl;
+                }
+
                 continue;
             }
 

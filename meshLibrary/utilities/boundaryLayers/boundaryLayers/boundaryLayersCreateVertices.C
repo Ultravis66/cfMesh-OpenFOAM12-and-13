@@ -1487,67 +1487,12 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
         }
     }
 
-    // Local topology-aware layer rollback (second createNewVertices).
-    {
-        const meshSurfaceEngine& mseRB = surfaceEngine();
-        const VRWGraph& ptFacesRB = mseRB.pointFaces();
-        const faceList::subList& bFacesRB = mseRB.boundaryFaces();
-        const label maxRollbackIter = 5;
-        const scalar dampFactor = 0.5;
-        label nRolledBack = 0;
-
-        labelHashSet rollbackSet;
-        forAllConstIter(labelHashSet, blNeutralEdgePoints_, it)
-            rollbackSet.insert(it.key());
-        forAllConstIter(labelHashSet, blNoBlEdgePoints_, it)
-            rollbackSet.insert(it.key());
-        forAllConstIter(labelHashSet, blblJunctionPoints_, it)
-            rollbackSet.insert(it.key());
-
-        for(label iter=0; iter<maxRollbackIter; ++iter)
-        {
-            label nBad = 0;
-            forAll(bPoints, bpI)
-            {
-                if( !rollbackSet.found(bpI) ) continue;
-                const label meshPtI = bPoints[bpI];
-                const label origPtI = newLabelForVertex_[meshPtI];
-                if( origPtI < 0 ) continue;
-                const point layerPt = points[meshPtI];
-                const point basePt  = points[origPtI];
-                bool bad = false;
-                forAllRow(ptFacesRB, bpI, pfI)
-                {
-                    const face& f = bFacesRB[ptFacesRB(bpI, pfI)];
-                    point fc = point::zero;
-                    forAll(f, fi) fc += points[f[fi]];
-                    fc /= scalar(f.size());
-                    vector fn = vector::zero;
-                    const point& fp0 = points[f[0]];
-                    for(label pi=1; pi<f.size()-1; ++pi)
-                        fn += (points[f[pi]]-fp0)^(points[f[pi+1]]-fp0);
-                    const scalar areaMag = mag(fn);
-                    if( areaMag < VSMALL ) continue;
-                    const scalar tol = 1e-12 * areaMag;
-                    const scalar volLayer = (layerPt - fc) & fn;
-                    const scalar volBase  = (basePt  - fc) & fn;
-                    if( mag(volBase) > tol && volBase*volLayer < -tol )
-                    { bad = true; break; }
-                }
-                if( bad )
-                {
-                    points[meshPtI] = dampFactor*layerPt
-                                   + (1.0-dampFactor)*basePt;
-                    ++nBad;
-                    ++nRolledBack;
-                }
-            }
-            if( nBad == 0 ) break;
-        }
-        if( nRolledBack > 0 )
-            Info << "Layer rollback (pass2): " << nRolledBack
-                 << " topology-sensitive vertices relaxed" << endl;
-    }
+    // Local topology-aware layer rollback disabled for diagnostic test.
+    // Commercial-mesher invariant: do not repeatedly damp isolated BL vertices
+    // toward the wall without a minimum extrusion-height floor and local
+    // cell-quality accept/reject. This block can create near-zero-height
+    // extrusion points at neutral/periodic/junction edges.
+    Info << "Layer rollback (pass2): disabled for diagnostic test" << endl;
 }
 
 void boundaryLayers::createNewPartitionVerticesParallel
