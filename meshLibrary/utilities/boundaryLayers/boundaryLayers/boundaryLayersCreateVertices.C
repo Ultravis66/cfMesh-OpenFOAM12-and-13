@@ -130,6 +130,10 @@ point boundaryLayers::createNewVertex
     vector normal(vector::zero);
     scalar dist(VGREAT);
     const point& p = points[bPoints[bpI]];
+    // BIRTHDIAG trackers (function scope)
+    label  bd_branch = -1;   // 0=edge size1, 2=corner size2, 3=multipatch, 9=interior
+    scalar bd_edgeDotNormal = -2.0;
+    scalar bd_rawDist = -1.0;
     if( patchVertex[bpI] & EDGENODE )
     {
         # ifdef DEBUGLayer
@@ -348,6 +352,12 @@ point boundaryLayers::createNewVertex
                 normal = p - points[bPoints[otherVertex]];
                 dist = 0.5 * mag(normal) + VSMALL;
                 normal /= 2.0 * dist;
+                bd_branch = 2;
+                {
+                    const vector trueN = pNormals[bpI];
+                    const scalar mn = mag(normal)*mag(trueN) + VSMALL;
+                    bd_edgeDotNormal = (normal & trueN)/mn;
+                }
             }
         }
         else
@@ -581,6 +591,7 @@ point boundaryLayers::createNewVertex
 
     // Apply layerScale_ ramp at BL/no-BL transition zones
     const scalar rawDist = dist;
+    bd_rawDist = rawDist;
     if( terminateLayersAtConcaveEdges_ && layerScale_.size() > bpI )
     {
         const scalar oldDist = dist;
@@ -704,6 +715,33 @@ point boundaryLayers::createNewVertex
                 }
                 break;
             }
+        }
+    }
+    // BIRTHDIAG: log near-zero extrusion OR tangential 2-patch corner extrusion.
+    {
+        static label nBirthDiag = 0;
+        const scalar finalH = mag(newP - p);
+        const scalar lsThis =
+            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+
+        const bool nearZeroBirth = finalH < scalar(1e-6);
+        const bool tangentCorner =
+            (bd_branch == 2 && mag(bd_edgeDotNormal) < scalar(0.10));
+
+        if( (nearZeroBirth || tangentCorner) && nBirthDiag < 800 )
+        {
+            ++nBirthDiag;
+            Info << "BIRTHDIAG bpI=" << bpI
+                 << " branch=" << bd_branch
+                 << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                 << " finalH=" << finalH
+                 << " rawDist=" << rawDist
+                 << " dist=" << dist
+                 << " layerScale=" << lsThis
+                 << " edgeDotN=" << bd_edgeDotNormal
+                 << " nearZero=" << nearZeroBirth
+                 << " tangentCorner=" << tangentCorner
+                 << endl;
         }
     }
     return newP;
