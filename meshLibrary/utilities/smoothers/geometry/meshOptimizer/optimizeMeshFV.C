@@ -128,6 +128,10 @@ void meshOptimizer::untangleMeshFV
         nIter = 0;
 
         label minNumBadFaces(10 * faces.size()), minIter(-1);
+        label uphillStrikes(0);
+        pointField bestPoints(mesh_.points());
+        bool restoredBestInInnerLoop(false);
+
         do
         {
             if( !relaxedCheck )
@@ -164,6 +168,43 @@ void meshOptimizer::untangleMeshFV
             {
                 minNumBadFaces = nBadFaces;
                 minIter = nIter;
+                uphillStrikes = 0;
+                bestPoints = mesh_.points();
+            }
+            else if( nIter > 0 )
+            {
+                ++uphillStrikes;
+            }
+
+            // Trust-region brake with rollback. Allow one uphill exploration
+            // step but not a staircase uphill. Two consecutive uphill
+            // iterations or 2x damage triggers restore-and-break.
+            if
+            (
+                nIter > 0
+             && (
+                    uphillStrikes >= 2
+                 || nBadFaces > 2 * Foam::max(minNumBadFaces, label(1))
+                )
+            )
+            {
+                Info << "untangleMeshFV: uphill/divergence at iter "
+                     << nIter << " badFaces=" << nBadFaces
+                     << " min=" << minNumBadFaces
+                     << " uphillStrikes=" << uphillStrikes
+                     << " -- restoring best inner-loop points" << endl;
+
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = bestPoints;
+                mesh_.clearAddressingData();
+
+                forAll(changedFace, fI)
+                    changedFace[fI] = true;
+
+                nBadFaces = minNumBadFaces;
+                restoredBestInInnerLoop = true;
+                break;
             }
 
             //- create a tet mesh from the mesh and the labels of bad faces
@@ -200,6 +241,37 @@ void meshOptimizer::untangleMeshFV
 
         } while( (nIter < minIter+5) && (++nIter < maxNumIterations) );
 
+        // If the final inner-loop state is worse than the best seen,
+        // restore best. The original +5 window can overshoot on bad meshes.
+        if( !restoredBestInInnerLoop && minIter >= 0 )
+        {
+            labelHashSet restoreCheckBadFaces;
+            const label currentBadFaces =
+                relaxedCheck
+              ? polyMeshGenChecks::findBadFacesRelaxed
+                (mesh_, restoreCheckBadFaces, false, &changedFace)
+              : polyMeshGenChecks::findBadFaces
+                (mesh_, restoreCheckBadFaces, false, &changedFace);
+
+            if( currentBadFaces > minNumBadFaces )
+            {
+                Info << "untangleMeshFV: restoring best inner-loop state "
+                     << "badFaces " << currentBadFaces
+                     << "->" << minNumBadFaces
+                     << " from iter " << minIter << endl;
+
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = bestPoints;
+                mesh_.clearAddressingData();
+
+                forAll(changedFace, fI)
+                    changedFace[fI] = true;
+
+                nBadFaces = minNumBadFaces;
+            }
+        }
+
         if( (nBadFaces == 0) || (++nGlobalIter >= maxNumGlobalIterations) )
             break;
 
@@ -207,6 +279,10 @@ void meshOptimizer::untangleMeshFV
         nIter = 0;
         label nSurfStuck(0);
         label prevSurfBadFaces(-1);
+        label minSurfBadFaces(10 * faces.size()), minSurfIter(-1);
+        label surfUphillStrikes(0);
+        pointField bestSurfPoints(mesh_.points());
+        bool restoredBestSurfaceLoop(false);
 
         while( nIter++ < maxNumSurfaceIterations )
         {
@@ -235,6 +311,46 @@ void meshOptimizer::untangleMeshFV
 
             Info << "Iteration " << nIter
                 << ". Number of bad faces is " << nBadFaces << endl;
+
+            if( nBadFaces < minSurfBadFaces )
+            {
+                minSurfBadFaces = nBadFaces;
+                minSurfIter = nIter;
+                surfUphillStrikes = 0;
+                bestSurfPoints = mesh_.points();
+            }
+            else if( nIter > 1 )
+            {
+                ++surfUphillStrikes;
+            }
+
+            if
+            (
+                nIter > 1
+             && (
+                    surfUphillStrikes >= 2
+                 || nBadFaces > 2 * Foam::max(minSurfBadFaces, label(1))
+                )
+            )
+            {
+                Info << "untangleMeshFV: surface uphill/divergence at iter "
+                     << nIter << " badFaces=" << nBadFaces
+                     << " min=" << minSurfBadFaces
+                     << " uphillStrikes=" << surfUphillStrikes
+                     << " -- restoring best surface-loop points" << endl;
+
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = bestSurfPoints;
+                mesh_.clearAddressingData();
+
+                forAll(changedFace, fI)
+                    changedFace[fI] = true;
+
+                nBadFaces = minSurfBadFaces;
+                restoredBestSurfaceLoop = true;
+                break;
+            }
 
             //- perform optimisation
             if( nBadFaces == 0 )
@@ -315,6 +431,35 @@ void meshOptimizer::untangleMeshFV
 
             tetMesh.updateOrigMesh(&changedFace);
 
+        }
+
+        if( !restoredBestSurfaceLoop && minSurfIter >= 0 )
+        {
+            labelHashSet restoreCheckBadFaces;
+            const label currentBadFaces =
+                relaxedCheck
+              ? polyMeshGenChecks::findBadFacesRelaxed
+                (mesh_, restoreCheckBadFaces, false, &changedFace)
+              : polyMeshGenChecks::findBadFaces
+                (mesh_, restoreCheckBadFaces, false, &changedFace);
+
+            if( currentBadFaces > minSurfBadFaces )
+            {
+                Info << "untangleMeshFV: restoring best surface-loop state "
+                     << "badFaces " << currentBadFaces
+                     << "->" << minSurfBadFaces
+                     << " from iter " << minSurfIter << endl;
+
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = bestSurfPoints;
+                mesh_.clearAddressingData();
+
+                forAll(changedFace, fI)
+                    changedFace[fI] = true;
+
+                nBadFaces = minSurfBadFaces;
+            }
         }
 
     } while( nBadFaces );
@@ -670,6 +815,11 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
             lockedPoints.append(pointI);
     }
 
+    label minLowBadFaces(10 * faces.size()), minLowIter(-1);
+    label lowUphillStrikes(0);
+    pointField bestLowPoints(mesh_.points());
+    bool restoredBestLowQualityLoop(false);
+
     do
     {
         labelHashSet lowQualityFaces;
@@ -688,6 +838,46 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
 
         Info << "Iteration " << nIter
             << ". Number of bad faces is " << nBadFaces << endl;
+
+        if( nBadFaces < minLowBadFaces )
+        {
+            minLowBadFaces = nBadFaces;
+            minLowIter = nIter;
+            lowUphillStrikes = 0;
+            bestLowPoints = mesh_.points();
+        }
+        else if( nIter > 0 )
+        {
+            ++lowUphillStrikes;
+        }
+
+        if
+        (
+            nIter > 0
+         && (
+                lowUphillStrikes >= 2
+             || nBadFaces > 2 * Foam::max(minLowBadFaces, label(1))
+            )
+        )
+        {
+            Info << "optimizeLowQualityFaces: uphill/divergence at iter "
+                 << nIter << " badFaces=" << nBadFaces
+                 << " min=" << minLowBadFaces
+                 << " uphillStrikes=" << lowUphillStrikes
+                 << " -- restoring best low-quality-loop points" << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = bestLowPoints;
+            mesh_.clearAddressingData();
+
+            forAll(changedFace, fI)
+                changedFace[fI] = true;
+
+            nBadFaces = minLowBadFaces;
+            restoredBestLowQualityLoop = true;
+            break;
+        }
 
         //- perform optimisation
         if( nBadFaces == 0 )
@@ -715,6 +905,30 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
         tetMesh.updateOrigMesh(&changedFace);
 
     } while( ++nIter < maxNumIterations );
+
+    if( !restoredBestLowQualityLoop && minLowIter >= 0 )
+    {
+        labelHashSet restoreCheckFaces;
+        const label currentBadFaces =
+            polyMeshGenChecks::findLowQualityFaces
+            (mesh_, restoreCheckFaces, false, &changedFace);
+
+        if( currentBadFaces > minLowBadFaces )
+        {
+            Info << "optimizeLowQualityFaces: restoring best state "
+                 << "badFaces " << currentBadFaces
+                 << "->" << minLowBadFaces
+                 << " from iter " << minLowIter << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = bestLowPoints;
+            mesh_.clearAddressingData();
+
+            forAll(changedFace, fI)
+                changedFace[fI] = true;
+        }
+    }
 }
 
 void meshOptimizer::optimizeMeshNearBoundaries

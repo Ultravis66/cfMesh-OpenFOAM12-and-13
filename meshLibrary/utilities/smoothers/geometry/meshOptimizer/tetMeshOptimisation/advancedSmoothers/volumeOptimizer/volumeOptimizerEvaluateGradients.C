@@ -212,9 +212,7 @@ void volumeOptimizer::evaluateGradientsExact
             LSqrTri * gradGradVstab / sqrVstab +
             2.0 * LSqrTri * (gradVstab * gradVstab) / (sqrVstab * Vstab);
     }
-    if( nDegenerateTets > 0 )
-        Info << "volumeOptimizer: skipped " << nDegenerateTets
-             << " degenerate tets (Vs < VSMALL)" << endl;
+    // Suppressed per-call degenerate-tet spam. Re-enable locally if needed.
 }
 
 scalar volumeOptimizer::optimiseDivideAndConquer(const scalar tol)
