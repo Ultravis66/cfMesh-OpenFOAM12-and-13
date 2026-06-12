@@ -1372,6 +1372,26 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 Switch(bndLC.lookup("constrainOptimizerBoundaryMotion"));
     }
 
+    // Gate constrained optimizer on mesh validity.
+    // Running surface-constrained optimization on a mesh with pre-existing
+    // negVol cells can diverge catastrophically. Keep the capability, but
+    // defer it until the mesh is valid enough for aggressive constrained motion.
+    {
+        mesh_.clearAddressingData();
+
+        labelHashSet negVolCheck;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negVolCheck);
+
+        if( negVolCheck.size() > 0 )
+        {
+            Info << "optimiseFinalMesh: " << negVolCheck.size()
+                 << " negVol cells present -- skipping constrained optimizer, "
+                 << "falling through to plain optimizeMeshFV" << endl;
+
+            constrainOptimizerBoundary = false;
+        }
+    }
+
     if( constrainOptimizerBoundary && octreePtr_ )
     {
         Info << "Surface-constrained optimizer: building boundary mapping"
@@ -2590,9 +2610,52 @@ void cartesianMeshGenerator::generateMesh()
 
         if( controller_.runCurrentStep("meshOptimisation") )
         {
+            mesh_.clearAddressingData();
+            labelHashSet meshOptBadBefore;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &meshOptBadBefore);
+            labelHashSet meshOptNegBefore;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &meshOptNegBefore);
+            const pointField meshOptPointsBefore(mesh_.points());
+            Info << "MESHOPTDIAG before: badPyramids="
+                 << meshOptBadBefore.size()
+                 << " negVol=" << meshOptNegBefore.size()
+                 << endl;
             optimiseFinalMesh();
 
             projectSurfaceAfterBackScaling();
+            mesh_.clearAddressingData();
+            labelHashSet meshOptBadAfter;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &meshOptBadAfter);
+            labelHashSet meshOptNegAfter;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &meshOptNegAfter);
+            Info << "MESHOPTDIAG after: badPyramids="
+                 << meshOptBadAfter.size()
+                 << " negVol=" << meshOptNegAfter.size()
+                 << endl;
+            if
+            (
+                meshOptNegAfter.size() > meshOptNegBefore.size()
+             || meshOptBadAfter.size() > meshOptBadBefore.size()
+            )
+            {
+                Info << "MESHOPTDIAG rejected: badPyramids "
+                     << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
+                     << ", negVol " << meshOptNegBefore.size()
+                     << "->" << meshOptNegAfter.size()
+                     << " -- restoring pre-meshOptimisation points" << endl;
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = meshOptPointsBefore;
+                mesh_.clearAddressingData();
+                labelHashSet rbBad;
+                polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &rbBad);
+                labelHashSet rbNeg;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &rbNeg);
+                Info << "MESHOPTDIAG after rollback: badPyramids="
+                     << rbBad.size()
+                     << " negVol=" << rbNeg.size()
+                     << endl;
+            }
             writeLineageCSV("postOptimize");
         }
         snapSurfaceBeforeBLRefinement();
