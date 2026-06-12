@@ -237,6 +237,20 @@ void meshOptimizer::laplaceSmoother::laplacianWPC
                 continue;
             }
 
+            // Volume-sign guard: never move a vertex shared by a negVol cell.
+            // The quality smoother repositioning toward valid neighbours inverts them.
+            // untangleMeshFV owns negVol vertices; laplacianWPC must not touch them.
+            bool adjNegVol = false;
+            forAllRow(pointCells, pointI, pcI)
+            {
+                if( volumes[pointCells(pointI, pcI)] < scalar(0) )
+                {
+                    adjNegVol = true;
+                    break;
+                }
+            }
+            if( adjNegVol ) continue;
+
             point newP(vector::zero);
             scalar sumWeights(0.0);
             forAllRow(pointCells, pointI, pcI)
