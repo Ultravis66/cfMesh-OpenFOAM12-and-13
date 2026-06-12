@@ -123,6 +123,10 @@ void meshOptimizer::untangleMeshFV
 
     labelHashSet badFaces;
 
+    label bestGlobalBadFaces(10 * faces.size());
+    label globalNoProgressStrikes(0);
+    pointField bestGlobalPoints(mesh_.points());
+
     do
     {
         nIter = 0;
@@ -270,6 +274,37 @@ void meshOptimizer::untangleMeshFV
 
                 nBadFaces = minNumBadFaces;
             }
+        }
+
+        // Global progress gate after core inner loop.
+        if( nBadFaces < bestGlobalBadFaces )
+        {
+            bestGlobalBadFaces = nBadFaces;
+            globalNoProgressStrikes = 0;
+            bestGlobalPoints = mesh_.points();
+        }
+        else
+        {
+            ++globalNoProgressStrikes;
+        }
+
+        if( globalNoProgressStrikes >= 2 )
+        {
+            Info << "untangleMeshFV: no global progress after core loop "
+                 << "badFaces=" << nBadFaces
+                 << " bestGlobal=" << bestGlobalBadFaces
+                 << " -- restoring best global points and stopping" << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = bestGlobalPoints;
+            mesh_.clearAddressingData();
+
+            forAll(changedFace, fI)
+                changedFace[fI] = true;
+
+            nBadFaces = bestGlobalBadFaces;
+            break;
         }
 
         if( (nBadFaces == 0) || (++nGlobalIter >= maxNumGlobalIterations) )
@@ -460,6 +495,41 @@ void meshOptimizer::untangleMeshFV
 
                 nBadFaces = minSurfBadFaces;
             }
+        }
+
+        // Global progress gate after surface loop.
+        if( nBadFaces < bestGlobalBadFaces )
+        {
+            bestGlobalBadFaces = nBadFaces;
+            globalNoProgressStrikes = 0;
+            bestGlobalPoints = mesh_.points();
+        }
+        else if( nBadFaces > bestGlobalBadFaces )
+        {
+            Info << "untangleMeshFV: surface loop did not improve global best "
+                 << "badFaces=" << nBadFaces
+                 << " bestGlobal=" << bestGlobalBadFaces
+                 << " -- restoring best global points" << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            pointFieldPMG& pts = meshModifier.pointsAccess();
+            pts = bestGlobalPoints;
+            mesh_.clearAddressingData();
+
+            forAll(changedFace, fI)
+                changedFace[fI] = true;
+
+            nBadFaces = bestGlobalBadFaces;
+            ++globalNoProgressStrikes;
+        }
+
+        if( globalNoProgressStrikes >= 2 )
+        {
+            Info << "untangleMeshFV: stopping global loop after "
+                 << globalNoProgressStrikes
+                 << " no-progress passes, bestGlobalBadFaces="
+                 << bestGlobalBadFaces << endl;
+            break;
         }
 
     } while( nBadFaces );
