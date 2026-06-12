@@ -405,7 +405,52 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
 
         const pointField blOptPointsBefore(mesh_.points());
 
+        {
+            labelHashSet diagBad;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &diagBad);
+            labelHashSet diagNeg;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &diagNeg);
+            Info << "BLOPTDIAG stage=beforeOptimiseLayer"
+                 << " badPyramids=" << diagBad.size()
+                 << " negVol=" << diagNeg.size()
+                 << endl;
+        }
+
+           const pointField blStagePointsBefore(mesh_.points());
         optimiser.optimiseLayer();
+
+        {
+            mesh_.clearAddressingData();
+            labelHashSet diagBad;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &diagBad);
+            labelHashSet diagNeg;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &diagNeg);
+            Info << "BLOPTDIAG stage=afterOptimiseLayer"
+                 << " badPyramids=" << diagBad.size()
+                 << " negVol=" << diagNeg.size()
+                 << endl;
+            if
+            (
+                diagNeg.size() > blOptNegBefore.size()
+             || diagBad.size() > blOptBadBefore.size()
+            )
+            {
+                Info << "BLOPTDIAG optimiseLayer rejected: negVol "
+                     << blOptNegBefore.size() << "->" << diagNeg.size()
+                     << ", badPyramids " << blOptBadBefore.size()
+                     << "->" << diagBad.size()
+                     << " -- restoring points" << endl;
+                polyMeshGenModifier meshModifier(mesh_);
+                pointFieldPMG& pts = meshModifier.pointsAccess();
+                pts = blStagePointsBefore;
+                mesh_.clearAddressingData();
+                labelHashSet rbNeg;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &rbNeg);
+                Info << "BLOPTDIAG stage=afterOptimiseLayerRollback"
+                     << " negVol=" << rbNeg.size()
+                     << endl;
+            }
+        }
 
         //- check if the bnd layer is tangled somewhere
         labelLongList bndLayerCells;
@@ -442,8 +487,32 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
         //- optimize mesh quality
         optimizeMeshFV(5, 1, 50, 0);
 
+        {
+            mesh_.clearAddressingData();
+            labelHashSet diagBad;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &diagBad);
+            labelHashSet diagNeg;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &diagNeg);
+            Info << "BLOPTDIAG stage=afterOptimizeMeshFV"
+                 << " badPyramids=" << diagBad.size()
+                 << " negVol=" << diagNeg.size()
+                 << endl;
+        }
+
         //- untangle remaining faces and lock the boundary layer cells
         untangleMeshFV(2, 50, 0);
+
+        {
+            mesh_.clearAddressingData();
+            labelHashSet diagBad;
+            polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &diagBad);
+            labelHashSet diagNeg;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &diagNeg);
+            Info << "BLOPTDIAG stage=afterUntangleMeshFV"
+                 << " badPyramids=" << diagBad.size()
+                 << " negVol=" << diagNeg.size()
+                 << endl;
+        }
 
         labelHashSet blOptBadAfter;
         polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &blOptBadAfter);
