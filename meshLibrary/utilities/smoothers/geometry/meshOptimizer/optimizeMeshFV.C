@@ -693,6 +693,18 @@ void meshOptimizer::optimizeLowQualityFaces(const label maxNumIterations)
         if( nBadFaces == 0 )
             break;
 
+        // Safety guard: partTetMesh is unsafe when fed a large low-quality
+        // face set from heavily degraded BL/refinement topology, even when
+        // checkCellVolumes reports negVol=0. Skip rather than segfault.
+        if( nBadFaces > 500 )
+        {
+            Info << "optimizeLowQualityFaces: skipping partTetMesh repair -- "
+                 << nBadFaces
+                 << " low-quality faces exceeds safe constructor threshold"
+                 << endl;
+            break;
+        }
+
         partTetMesh tetMesh(mesh_, lockedPoints, lowQualityFaces, 1);
         if( surfaceOctreePtr_ && bndPointPatchesPtr_
          && globalToBoundaryPointPtr_ )
