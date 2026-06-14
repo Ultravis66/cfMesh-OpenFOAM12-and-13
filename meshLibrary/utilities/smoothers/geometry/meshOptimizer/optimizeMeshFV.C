@@ -528,11 +528,14 @@ void meshOptimizer::optimizeBoundaryLayer(const bool addBufferLayer)
         const scalar blOptMaxSkewAfter =
             blOptSkewAfter.size() > 0 ? max(blOptSkewAfter) : scalar(0.0);
 
+        const bool blOptSkewOK =
+            blOptMaxSkewAfter <= blOptMaxSkewBefore;
+
         const bool blOptOK =
             blOptBadAfter.size() <= blOptBadBefore.size()
          && blOptNegAfter.size() <= blOptNegBefore.size()
          && blOptOpenAfter.size() <= blOptOpenBefore.size()
-         && blOptMaxSkewAfter <= scalar(20.0);
+         && blOptSkewOK;
 
         if( !blOptOK )
         {

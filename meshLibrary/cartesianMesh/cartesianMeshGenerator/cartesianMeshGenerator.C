@@ -1181,15 +1181,17 @@ void cartesianMeshGenerator::refBoundaryLayers()
                   ? max(gate2SkewAfter)
                   : scalar(0.0);
 
+                const bool gate2SkewOK =
+                    gate2MaxSkewAfter <= gate2MaxSkewBefore;
+
                 const bool gate2RepairOK =
                     gate2BadAfter.size() < badPyramidFaces.size()
                  && (!gate2UnusedAfter || gate2UnusedBefore)
                  && gate2NegBefore.size() == 0
                  && gate2NegAfter.size() == 0
-                 && gate2OpenAfter.size() == 0
+                 && gate2OpenAfter.size() <= gate2OpenBefore.size()
                  && gate2NonOrthoAfter.size() <= gate2NonOrthoBefore.size()
-                 && gate2MaxSkewAfter <= gate2MaxSkewBefore
-                 && gate2MaxSkewAfter <= scalar(20.0);
+                 && gate2SkewOK;
 
                 if( gate2RepairOK )
                 {
@@ -1765,7 +1767,8 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                          << pyrPassBefore.size() << "->"
                          << pyrPassAfter.size()
                          << " -- rolling back" << endl;
-                    pointField& pts = mesh_.points();
+                    polyMeshGenModifier meshModifier(mesh_);
+                    pointFieldPMG& pts = meshModifier.pointsAccess();
                     pts = passPtsBefore;
                     mesh_.clearAddressingData();
                     ++totalRolledBack;
@@ -1840,11 +1843,14 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 const scalar maxSkewS1After =
                     skewS1After.size() > 0 ? max(skewS1After) : scalar(0.0);
 
+                const bool stage1SkewOK =
+                    maxSkewS1After <= maxSkewS1Before;
+
                 const bool stage1OK =
                     badStage1.size() <= badFaces.size()
                  && negStage1.size() <= negBefore.size()
                  && openStage1.size() <= openBefore.size()
-                 && maxSkewS1After <= scalar(20.0);
+                 && stage1SkewOK;
 
                 if( stage1OK )
                 {
@@ -2647,6 +2653,7 @@ void cartesianMeshGenerator::generateMesh()
                 pointFieldPMG& pts = meshModifier.pointsAccess();
                 pts = meshOptPointsBefore;
                 mesh_.clearAddressingData();
+                finalUntangleRejected_ = false;
                 labelHashSet rbBad;
                 polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &rbBad);
                 labelHashSet rbNeg;
