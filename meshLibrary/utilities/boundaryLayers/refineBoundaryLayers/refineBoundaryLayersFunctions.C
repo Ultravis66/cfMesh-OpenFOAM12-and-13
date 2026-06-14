@@ -578,9 +578,10 @@ void refineBoundaryLayers::generateNewVertices()
             // Minimum effective cap is 1 (ring0 already topology-suppressed).
             if( gapActionPoints_.size() > 0 && gapLoserPatchNames_.size() > 0 )
             {
+                // Gap action points are always boundary surface points (e.start()).
+                // Interior BL points (e.end()) are never in gapActionPoints_.
                 const bool edgeInGap =
-                    gapActionPoints_.found(e.start())
-                 || gapActionPoints_.found(e.end());
+                    gapActionPoints_.found(e.start());
                 if( edgeInGap )
                 {
                     label edgeCap = -1;

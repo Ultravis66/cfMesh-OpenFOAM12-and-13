@@ -353,6 +353,46 @@ void boundaryLayerOptimisation::calculateHairEdges()
 
     thinnedHairEdge_.setSize(hairEdges_.size());
 
+    // Hair-edge dependency audit. Non-mutating diagnostic only.
+    // duplicateEnds: multiple hair edges write the same end point.
+    // startIsEnd: one hair edge reads a point that another hair edge writes.
+    {
+        labelList endCount(mesh_.points().size(), 0);
+        labelList startCount(mesh_.points().size(), 0);
+
+        forAll(hairEdges_, heI)
+        {
+            const edge& he = hairEdges_[heI];
+
+            if( he.start() >= 0 && he.start() < label(startCount.size()) )
+                ++startCount[he.start()];
+
+            if( he.end() >= 0 && he.end() < label(endCount.size()) )
+                ++endCount[he.end()];
+        }
+
+        label duplicateEnds = 0;
+        label startIsEnd = 0;
+        label maxEndCount = 0;
+
+        forAll(endCount, pointI)
+        {
+            if( endCount[pointI] > 1 )
+                ++duplicateEnds;
+
+            if( endCount[pointI] > 0 && startCount[pointI] > 0 )
+                ++startIsEnd;
+
+            maxEndCount = Foam::max(maxEndCount, endCount[pointI]);
+        }
+
+        Info << "Hair-edge dependency audit: hairEdges=" << hairEdges_.size()
+             << " duplicateEndPoints=" << duplicateEnds
+             << " startAlsoEndPoints=" << startIsEnd
+             << " maxEndCount=" << maxEndCount
+             << endl;
+    }
+
     //- calculate which other hair edges influence a hair edges
     //- and store it in a graph
     hairEdgesNearHairEdge_.setSize(hairEdges_.size());
