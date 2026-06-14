@@ -1,6 +1,20 @@
 # cfMesh for OpenFOAM 13
+Active development fork of cfMesh for OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, robust Cartesian/polyhedral meshing, boundary-layer generation near difficult topology, and surface-conformance fixes for STL-driven CFD workflows.
 
-v0.10 beta: active development on OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, boundary-layer robustness, and surface-conformance fixes for complex STL-driven Cartesian/polyhedral meshing. Rotor 37 is currently used as the primary stress-test case. Serial test runs have been deterministic in current Rotor 37 testing; parallel repeatability is substantially improved, with minor residual variance still under investigation.
+The current primary stress-test case is a two-passage NASA Rotor 37 turbomachinery sector with active boundary layers. Rotor 37 is used because it combines many hard meshing features in one geometry: blade/hub/shroud junctions, periodic sector boundaries, acute trailing-edge features, refinement transitions, and boundary-layer growth near BL/no-BL interfaces.
+
+Current milestone: v0.2-rotor37-cfd-ready
+
+This milestone produces a ~1.77M-cell Rotor 37 mesh with:
+
+0 negative-volume cells
+checkMesh completes successfully
+boundary topology and cell addressing OK
+face pyramids reduced to a single residual periodic/transition issue in the latest development run
+max skew reduced from the earlier severe-failure regime to approximately 7–8
+remaining issues concentrated at BL/periodic transition topology, not general mesh collapse
+
+CFD validation is the next major milestone. This README describes an active research/development mesher, not a production-certified industrial tool.
 
 ### NOTE: NASA Rotor 37 is used as a stress-test case because it combines tight blade/hub/shroud junctions, periodic sector boundaries, acute trailing-edge features, refinement transitions, and boundary-layer growth challenges. The intent is not to make the mesher Rotor-37-specific; Rotor 37 is used to expose general robustness issues that should benefit other external, internal, and turbomachinery CFD geometries. CFD validation is still limited and should be treated as preliminary.
 
@@ -16,13 +30,12 @@ v0.10 beta: active development on OpenFOAM Foundation v13. This fork focuses on 
 
 ### Current limitations
 
-- Rotor 37 is a stress test, not a general validation suite.
-- CFD validation is preliminary.
-- Boundary-layer generation is much improved but still under active development near acute blade/endwall/periodic singularities.
-- Surface-constrained optimization reduces boundary drift but currently increases runtime.
-- A small number of negative-volume cells, bad pyramid faces, and non-orthogonality errors may remain in current development runs.
-- The mesher is not yet production-certified; users should run `checkMesh`, inspect boundary surfaces visually, and validate solver behavior for their own cases.
-
+-Rotor 37 is a stress test, not a complete validation suite.
+-CFD validation is still pending. The mesh is now suitable for first MRF/RANS solver testing, but pressure ratio, efficiency, mass flow, and residual behavior still need to be validated.
+-The remaining Rotor 37 quality issues are localized near BL/periodic/triple-junction transition topology. These are not currently solved by additional smoothing; the likely next mesher feature is defect-driven local BL retraction or local topology repair.
+-Boundary-layer generation is robust enough for the current 3–5 layer Rotor 37 stress-test mesh, but production y+≈1 turbomachinery meshes will require finer first-cell heights and more layers, which must be validated separately.
+-Parallel repeatability is much improved after OMP hardening, but OMP=1 remains the preferred deterministic debugging mode.
+-The mesher is not production-certified. Users should run checkMesh, inspect wall/periodic junctions in ParaView, and validate solver behavior for each new geometry.
 ---
 Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
 
@@ -344,26 +357,30 @@ Many known race-sensitive OMP apply loops have been serialized or guarded across
 ---
 ## Mesh quality on NASA Rotor 37 (development baseline)
 
-Tested with boundary layers active. Current development testing commonly uses 3-layer blade boundary layers and 3–5 layer hub/shroud configurations depending on the experiment.
+Development baseline: two-passage NASA Rotor 37 sector, Cartesian/polyhedral core with active boundary layers.
 
-| Metric | v0.10 (current) | v0.9 |
+| Metric | v0.2-rotor37-cfd-ready | Earlier v0.1-rotor37-3checks |
 |--------|-----------------|------|
 | Cells | ~1.77M | ~1.77M |
-| Average non-orthogonality | ~12.5° | TBD |
-| Non-ortho errors | 3–9 | TBD |
-| Negative volume cells | 2–5 | TBD |
-| Bad pyramid faces | 11–57 | TBD |
-| Max skewness | ~8.5–11.6 | TBD |
-| Visible-scale drift (>100µm pts) | ~1540 | ~2863 |
-| Runtime (OMP=4) | ~580s wall | ~90s |
-| Runtime (OMP=32) | ~204s wall | ~90s |
-| Deterministic | OMP=4 stable | Improving |
+| Negative Volume cells | 0 | 0 |
+| Failed checkMesh checks | 1–2 in recent OMP=4 runs | 3 |
+| Face pyramid errors | 0-1 residual | 1 |
+| Non-orthogonality errors | 0 | 1 |
+| Max skewness | ~7.5–8.5 | ~27 |
+| Highly skew faces | ~86–107 | ~87 |
+| Main remaining issue| BL/periodic transition topology| non-ortho + pyramid + skew |
+| Status | CFD-ready development milestone | earlier valid-mesh milestone |
+
+The remaining failed checks are localized near periodic/BL transition topology. The next meshing robustness feature is expected to be local BL retraction or local topology repair, not additional global smoothing.
+
 ---
 
 ## Version history
 
 | Tag | Branch | Description |
 |-----|--------|-------------|
+| `v0.2-rotor37-cfd-ready` | `feature/bl-transition-topology` | Code-review milestone: fixed skew-veto acceptance bugs in Gate2, Stage1, and BL optimization; fixed Gate2 open-cell comparator; cleared stale final-untangle rollback flag; added hair-edge dependency audit; 0 negVol Rotor37 mesh with remaining issues localized to BL/periodic transition topology. |
+| `v0.1-rotor37-3checks` | `feature/bl-transition-topology` | Valid-mesh milestone: 0 negVol, no segfault, 3 remaining `checkMesh` failures. |
 | `v0.10` | `feature/bl-transition-topology` | Surface-constrained optimizer (Layer 3): patch-constrained projection in `mapVerticesOntoSurface`, limited-displacement `partTetMesh::updateOrigMesh` re-projection, two-phase serial/parallel write-back, post-optimizer incremental snap, pre-BL snap with displacement filter and pyramid-tolerant rollback. 46% reduction in visible-scale boundary drift. |
 | `v0.9` | `feature/bl-transition-topology` | Comprehensive parallel hardening: 100+ globalToLocal guards, partTetMesh/partTriMesh updateType races, otherVrts_ std::map race in BL vertex creation, frontPoints extrusion race, meshSurfaceEngineModifier marking races, optimiseBoundaryVolumeOptimizer call-site bug, MeshUntangler convergence fix, untangle stagnation detection. Serial runs fully deterministic; OMP=32 quality substantially improved. |
 | `v0.8.3` | `feature/bl-transition-topology` | Virtual topology face-ring BFS..., in a selected Rotor 37 test run: 0 bad pyramids, skew 9.77. |
