@@ -985,17 +985,52 @@ void cartesianMeshGenerator::refBoundaryLayers()
                      << postOptBadFaces_.size()
                      << " bad faces available, tracing for inspection" << endl;
 
+                label diagRings = 1;
+                if( meshDict_.isDict("boundaryLayers") )
+                {
+                    const dictionary& bndL =
+                        meshDict_.subDict("boundaryLayers");
+                    if( bndL.found("postOptBLRetractionRings") )
+                        diagRings =
+                            readLabel(bndL.lookup("postOptBLRetractionRings"));
+                }
                 const labelHashSet seedFaces =
-                    traceToSeedFaces(postOptBadFaces_, 1);
+                    traceToSeedFaces(postOptBadFaces_, diagRings);
 
                 Info << "Pre-refBL retraction: would retract "
                      << seedFaces.size()
-                     << " boundary faces if enabled" << endl;
+                     << " boundary faces if enabled (rings="
+                     << diagRings << ")" << endl;
             }
         }
 
         nPointsBeforeBL_ = mesh_.points().size();
         refLayers.refineLayers();
+
+        // Post-refBL provenance diagnostic.
+        // Dumps all BL-generated cells to CSV for direct query.
+        // Does NOT depend on negVol -- bad pyramids have negVol=0 and are
+        // invisible to checkCellVolumes(). Query: grep "534099," the CSV.
+        {
+            const labelList& prov = refLayers.cellToBaseBndFace();
+            if( prov.size() > 0 )
+            {
+                OFstream provOs("postRefBL_cellProvenance.csv");
+                provOs << "cellI,primaryBfI" << nl;
+
+                label nMapped = 0;
+                forAll(prov, cellI)
+                {
+                    if( prov[cellI] < 0 )
+                        continue;
+                    ++nMapped;
+                    provOs << cellI << ',' << prov[cellI] << nl;
+                }
+
+                Info << "postRefBL provenance: mappedCells=" << nMapped
+                     << " wrote postRefBL_cellProvenance.csv" << endl;
+            }
+        }
 
         refLayers.pointsInBndLayer(blPoints_);
 
@@ -1030,10 +1065,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         // 3-gate post-refinement diagnostic (non-mutating)
         {
-            Pout << nl
+            Info << nl
                  << "### ENTERING 3-GATE POST-REFINEMENT DIAGNOSTIC ###"
                  << nl << endl;
-            Pout << "3-gate diagnostic: checking post-refinement BL quality" << endl;
+            Info << "3-gate diagnostic: checking post-refinement BL quality" << endl;
 
             labelHashSet badCells;
             labelHashSet badPyramidFaces;
@@ -1051,10 +1086,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 polyMeshGenChecks::checkFaceDotProduct
                 (mesh_, false, 85.0, &nonOrthoFaces);
 
-            Pout << "3-gate diagnostic results:" << endl;
-            Pout << "  Gate 1 (neg vol cells):    " << badCells.size() << endl;
-            Pout << "  Gate 2 (bad pyramids):     " << badPyramidFaces.size() << endl;
-            Pout << "  Gate 3 (non-ortho >85deg): " << nonOrthoFaces.size() << endl;
+            Info << "3-gate diagnostic results:" << endl;
+            Info << "  Gate 1 (neg vol cells):    " << badCells.size() << endl;
+            Info << "  Gate 2 (bad pyramids):     " << badPyramidFaces.size() << endl;
+            Info << "  Gate 3 (non-ortho >85deg): " << nonOrthoFaces.size() << endl;
 
             // Final bad-pyramid classifier. Non-mutating diagnostic only.
             // This classifies the remaining post-refinement bad faces by
@@ -1196,7 +1231,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         const scalar theta =
                             Foam::atan2(c.y(), c.x()) * 180.0 / constant::mathematical::pi;
 
-                        Pout << "  Gate2 badFace faceI=" << faceI
+                        Info << "  Gate2 badFace faceI=" << faceI
                              << " nPts=" << f.size()
                              << " owner=" << ownCell
                              << " neighbour=" << neiCell
@@ -1215,7 +1250,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                     }
                 }
 
-                Pout << "  Gate2 bad pyramid classes:"
+                Info << "  Gate2 bad pyramid classes:"
                      << " periodic=" << nPeriodicClass
                      << " blade=" << nBladeClass
                      << " hub=" << nHubClass
@@ -1224,7 +1259,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                      << " generic=" << nGenericClass
                      << endl;
 
-                Pout << "  Gate2 periodic-local repair candidate faces: "
+                Info << "  Gate2 periodic-local repair candidate faces: "
                      << gate2PeriodicBadFaces.size()
                      << endl;
 
@@ -1297,6 +1332,11 @@ void cartesianMeshGenerator::refBoundaryLayers()
                     Info << "Gate2 local repair: skipped -- "
                          << gate2NegBefore.size()
                          << " negVol cells present, optimizer unsafe" << endl;
+                }
+                else if( gate2PeriodicBadFaces.size() == 0 )
+                {
+                    Info << "Gate2 local repair: skipped -- "
+                         << "no periodic bad faces to target" << endl;
                 }
                 else
                 {
@@ -1406,13 +1446,13 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         rollbackBndFaces.insert(faceI - nInternalFaces);
                 }
 
-                Pout << "  Rollback candidates: "
+                Info << "  Rollback candidates: "
                      << rollbackBndFaces.size()
                      << " boundary faces would be targeted" << endl;
             }
             else
             {
-                Pout << "  All gates passed - no rollback needed" << endl;
+                Info << "  All gates passed - no rollback needed" << endl;
             }
         }
 
@@ -1849,97 +1889,312 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         if( reprojPoints.size() > 0 )
         {
+            // Default 0: any pyramid increase during re-projection triggers
+            // rollback. Prevents surface snap from inverting face pyramids
+            // on periodic-edge cells while keeping negVol unchanged.
+            label reprojAllowedPyrIncrease = 0;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndLR3 =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndLR3.found("postOptimizerReprojAllowedPyrIncrease") )
+                    reprojAllowedPyrIncrease = readLabel
+                    (
+                        bndLR3.lookup("postOptimizerReprojAllowedPyrIncrease")
+                    );
+            }
+
             meshSurfaceEngineModifier surfModR(mseReproj);
             label totalAccepted = 0;
             label totalRolledBack = 0;
 
+            // Causal retry: points proven to cause bad geometry are
+            // blocked for all subsequent passes. Preserves the safe
+            // majority of moves and rejects only proven bad actors.
+            // meshDict knob: postOptimizerReprojMaxCausalRetries (default 2)
+            label reprojMaxCausalRetries = 2;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndLR4 =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndLR4.found("postOptimizerReprojMaxCausalRetries") )
+                    reprojMaxCausalRetries = readLabel
+                    (
+                        bndLR4.lookup("postOptimizerReprojMaxCausalRetries")
+                    );
+            }
+
+            labelHashSet blockedReprojMeshPts;
+
+            // Capture pre-reproject baseline -- used as pyramid floor
+            // across ALL passes so accepted passes cannot ratchet up
+            // bad pyramid count incrementally.
+            labelHashSet negReprojBaseline, pyrReprojBaseline;
+            polyMeshGenChecks::checkCellVolumes
+                (mesh_, false, &negReprojBaseline);
+            polyMeshGenChecks::checkFacePyramids
+                (mesh_, false, -SMALL, &pyrReprojBaseline);
+
+            Info << "Post-optimizer re-projection baseline: negVol="
+                 << negReprojBaseline.size()
+                 << " badPyramids=" << pyrReprojBaseline.size()
+                 << endl;
+
             for( label passI = 0; passI < reprojMaxPasses; ++passI )
             {
-                // Snapshot for this pass
-                const pointField passPtsBefore(mesh_.points());
-                labelHashSet negPassBefore, pyrPassBefore;
-                polyMeshGenChecks::checkCellVolumes
-                    (mesh_, false, &negPassBefore);
-                polyMeshGenChecks::checkFacePyramids
-                    (mesh_, false, -SMALL, &pyrPassBefore);
+                bool passAccepted = false;
+                label nRetries = 0;
 
-                // Apply limited displacement toward STL
-                label nMoved = 0;
-                forAll(reprojPoints, rpI)
+                while( nRetries <= reprojMaxCausalRetries )
                 {
-                    const label bpI = reprojPoints[rpI];
-                    const label meshPtI = bPtsR[bpI];
-                    if( meshPtI < 0 ||
-                        meshPtI >= label(mesh_.points().size()) )
-                        continue;
-                    const label patchI = pPatchesR(bpI, 0);
-                    point snapPt;
-                    scalar snapDsq;
-                    label snapNt;
-                    octreePtr_->findNearestSurfacePointInRegion
-                    (
-                        snapPt,
-                        snapDsq,
-                        snapNt,
-                        patchI,
-                        mesh_.points()[meshPtI]
-                    );
-                    if( snapDsq < reprojTolSq )
-                        continue;
-                    const vector disp =
-                        snapPt - mesh_.points()[meshPtI];
-                    const point limitedPt =
-                        mesh_.points()[meshPtI]
-                        + reprojStepFraction * disp;
-                    surfModR.moveBoundaryVertexNoUpdate(bpI, limitedPt);
-                    ++nMoved;
-                }
-                surfModR.updateGeometry(reprojPoints);
-                mesh_.clearAddressingData();
+                    // Snapshot for this attempt
+                    const pointField passPtsBefore(mesh_.points());
+                    labelHashSet negPassBefore, pyrPassBefore;
+                    polyMeshGenChecks::checkCellVolumes
+                        (mesh_, false, &negPassBefore);
+                    polyMeshGenChecks::checkFacePyramids
+                        (mesh_, false, -SMALL, &pyrPassBefore);
 
-                labelHashSet negPassAfter, pyrPassAfter;
-                polyMeshGenChecks::checkCellVolumes
-                    (mesh_, false, &negPassAfter);
-                polyMeshGenChecks::checkFacePyramids
-                    (mesh_, false, -SMALL, &pyrPassAfter);
+                    // Move candidates, skipping protected and blocked points
+                    label nMoved = 0;
+                    DynList<label> movedMeshPtI;
+                    DynList<label> movedBpI;
+                    DynList<label> movedPatchI;
+                    DynList<point> movedOldPt;
+                    DynList<point> movedNewPt;
 
-                if( negPassAfter.size() > negPassBefore.size() )
-                {
+                    forAll(reprojPoints, rpI)
+                    {
+                        const label bpI = reprojPoints[rpI];
+                        const label meshPtI = bPtsR[bpI];
+                        if( meshPtI < 0 ||
+                            meshPtI >= label(mesh_.points().size()) )
+                            continue;
+                        const label patchI = pPatchesR(bpI, 0);
+                        point snapPt;
+                        scalar snapDsq;
+                        label snapNt;
+                        octreePtr_->findNearestSurfacePointInRegion
+                        (
+                            snapPt,
+                            snapDsq,
+                            snapNt,
+                            patchI,
+                            mesh_.points()[meshPtI]
+                        );
+                        if( snapDsq < reprojTolSq )
+                            continue;
+                        // Skip protected fragile zones
+                        if( protectedPts.found(meshPtI) )
+                            continue;
+                        // Skip points proven causal in prior attempts
+                        if( blockedReprojMeshPts.found(meshPtI) )
+                            continue;
+
+                        const point oldPt = mesh_.points()[meshPtI];
+                        const vector disp = snapPt - oldPt;
+                        const point limitedPt =
+                            oldPt + reprojStepFraction * disp;
+
+                        surfModR.moveBoundaryVertexNoUpdate(bpI, limitedPt);
+
+                        movedMeshPtI.append(meshPtI);
+                        movedBpI.append(bpI);
+                        movedPatchI.append(patchI);
+                        movedOldPt.append(oldPt);
+                        movedNewPt.append(limitedPt);
+                        ++nMoved;
+                    }
+
+                    surfModR.updateGeometry(reprojPoints);
+                    mesh_.clearAddressingData();
+
+                    labelHashSet negPassAfter, pyrPassAfter;
+                    polyMeshGenChecks::checkCellVolumes
+                        (mesh_, false, &negPassAfter);
+                    polyMeshGenChecks::checkFacePyramids
+                        (mesh_, false, -SMALL, &pyrPassAfter);
+
+                    // Compare against pre-reproject baseline, not per-pass
+                    // snapshot. Prevents ratcheting up bad pyramids across
+                    // accepted passes.
+                    const bool negVolWorsened =
+                        negPassAfter.size() > negReprojBaseline.size();
+                    const bool pyrWorsened =
+                        label(pyrPassAfter.size()) >
+                        label(pyrReprojBaseline.size()) + reprojAllowedPyrIncrease;
+
+                    if( !negVolWorsened && !pyrWorsened )
+                    {
+                        Info << "Post-optimizer re-projection pass "
+                             << passI
+                             << (nRetries > 0 ?
+                                 word(" (retry ") + name(nRetries) + ")" : "")
+                             << " accepted: moved " << nMoved
+                             << " negVol "
+                             << negPassBefore.size() << "->"
+                             << negPassAfter.size()
+                             << " badPyramids "
+                             << pyrPassBefore.size() << "->"
+                             << pyrPassAfter.size()
+                             << endl;
+                        passAccepted = true;
+                        ++totalAccepted;
+                        break;
+                    }
+
+                    // Pass failed -- identify causal points
                     Info << "Post-optimizer re-projection pass "
-                         << passI << " rejected: negVol "
+                         << passI
+                         << " attempt " << nRetries
+                         << " rejected: negVol "
                          << negPassBefore.size() << "->"
                          << negPassAfter.size()
                          << " badPyramids "
                          << pyrPassBefore.size() << "->"
                          << pyrPassAfter.size()
-                         << " -- rolling back" << endl;
-                    polyMeshGenModifier meshModifier(mesh_);
-                    pointFieldPMG& pts = meshModifier.pointsAccess();
-                    pts = passPtsBefore;
-                    mesh_.clearAddressingData();
-                    ++totalRolledBack;
-                    break;
-                }
-                else
-                {
+                         << (negVolWorsened ? " [negVol]" : "")
+                         << (pyrWorsened ? " [badPyramids]" : "")
+                         << endl;
+
+                    // Extract new bad face/cell point labels
+                    labelHashSet newBadFaces(pyrPassAfter);
+                    forAllConstIter(labelHashSet, pyrPassBefore, it)
+                        newBadFaces.erase(it.key());
+
+                    labelHashSet newNegCells(negPassAfter);
+                    forAllConstIter(labelHashSet, negPassBefore, it)
+                        newNegCells.erase(it.key());
+
+                    const faceListPMG& fs = mesh_.faces();
+                    const cellListPMG& cls = mesh_.cells();
+
+                    labelHashSet badFacePts;
+                    forAllConstIter(labelHashSet, newBadFaces, it)
+                    {
+                        const label fI = it.key();
+                        if( fI < 0 || fI >= fs.size() ) continue;
+                        const face& f = fs[fI];
+                        forAll(f, i) badFacePts.insert(f[i]);
+                    }
+                    forAllConstIter(labelHashSet, newNegCells, it)
+                    {
+                        const label cI = it.key();
+                        if( cI < 0 || cI >= cls.size() ) continue;
+                        const cell& c = cls[cI];
+                        forAll(c, fI)
+                        {
+                            const label faceI = c[fI];
+                            if( faceI < 0 || faceI >= fs.size() ) continue;
+                            const face& f = fs[faceI];
+                            forAll(f, pI) badFacePts.insert(f[pI]);
+                        }
+                    }
+
+                    // Rollback this attempt
+                    {
+                        polyMeshGenModifier meshModifier(mesh_);
+                        pointFieldPMG& pts = meshModifier.pointsAccess();
+                        pts = passPtsBefore;
+                        mesh_.clearAddressingData();
+                    }
+
+                    // Verify rollback restored baseline state
+                    {
+                        labelHashSet negRB, pyrRB;
+                        polyMeshGenChecks::checkCellVolumes
+                            (mesh_, false, &negRB);
+                        polyMeshGenChecks::checkFacePyramids
+                            (mesh_, false, -SMALL, &pyrRB);
+                        Info << "Post-optimizer re-projection rollback check"
+                             << " pass=" << passI
+                             << " attempt=" << nRetries
+                             << ": negVol=" << negRB.size()
+                             << " badPyramids=" << pyrRB.size()
+                             << (negRB.size() > negReprojBaseline.size() ||
+                                 pyrRB.size() > pyrReprojBaseline.size() ?
+                                 " WARNING: rollback incomplete" : " OK")
+                             << endl;
+                    }
+
+                    // Intersect moved points with bad face points
+                    labelHashSet newCausal;
+                    forAll(movedMeshPtI, i)
+                        if( badFacePts.found(movedMeshPtI[i]) )
+                            newCausal.insert(movedMeshPtI[i]);
+
+                    if( newCausal.empty() )
+                    {
+                        Info << "Post-optimizer re-projection pass "
+                             << passI
+                             << ": no causal points identified"
+                             << " -- abandoning pass" << endl;
+                        ++totalRolledBack;
+                        break;
+                    }
+
+                    forAllConstIter(labelHashSet, newCausal, it)
+                        blockedReprojMeshPts.insert(it.key());
+
                     Info << "Post-optimizer re-projection pass "
-                         << passI << " accepted: moved " << nMoved
-                         << " negVol "
-                         << negPassBefore.size() << "->"
-                         << negPassAfter.size()
-                         << " badPyramids "
-                         << pyrPassBefore.size() << "->"
-                         << pyrPassAfter.size();
-                    if( pyrPassAfter.size() > pyrPassBefore.size() )
-                        Info << " WARNING: badPyramids increased"
-                             << " during limited correction";
-                    Info << endl;
-                    ++totalAccepted;
+                         << passI
+                         << " retry " << (nRetries+1)
+                         << ": blocked " << newCausal.size()
+                         << " causal points ("
+                         << blockedReprojMeshPts.size()
+                         << " total blocked), retrying" << endl;
+
+                    ++nRetries;
                 }
+
+                if( !passAccepted )
+                    break;
             }
+
             Info << "Post-optimizer re-projection: "
                  << totalAccepted << " passes accepted, "
-                 << totalRolledBack << " rolled back" << endl;
+                 << totalRolledBack << " rolled back, "
+                 << blockedReprojMeshPts.size()
+                 << " points permanently blocked" << endl;
+
+            // Store blocked set for pre-BL snap to skip same bad actors
+            postOptimizerReprojBlockedPts_ = blockedReprojMeshPts;
+
+            // Write causal CSV
+            if( blockedReprojMeshPts.size() > 0 )
+            {
+                OFstream csvOs("postOptimizerReprojCausalPoints.csv");
+                csvOs << "meshPtI,bpI,patchI,"
+                      << "oldX,oldY,oldZ,snapX,snapY,snapZ,dispMag" << nl;
+                forAll(bPtsR, bpI)
+                {
+                    const label meshPtI = bPtsR[bpI];
+                    if( !blockedReprojMeshPts.found(meshPtI) )
+                        continue;
+                    if( pPatchesR.sizeOfRow(bpI) != 1 )
+                        continue;
+                    const label patchI = pPatchesR(bpI, 0);
+                    const point& oldPt = mesh_.points()[meshPtI];
+                    point snapPt;
+                    scalar snapDsq;
+                    label snapNt;
+                    octreePtr_->findNearestSurfacePointInRegion
+                    (
+                        snapPt, snapDsq, snapNt, patchI, oldPt
+                    );
+                    const vector dv = snapPt - oldPt;
+                    csvOs << meshPtI << ','
+                          << bpI << ','
+                          << patchI << ','
+                          << oldPt.x() << ',' << oldPt.y() << ',' << oldPt.z() << ','
+                          << snapPt.x() << ',' << snapPt.y() << ',' << snapPt.z() << ','
+                          << mag(dv) << nl;
+                }
+                Info << "postOptimizerReproj: "
+                     << blockedReprojMeshPts.size()
+                     << " blocked points written to postOptimizerReprojCausalPoints.csv"
+                     << endl;
+            }
         }
     }
     deleteDemandDrivenData(octreePtr_);
@@ -2418,6 +2673,10 @@ void cartesianMeshGenerator::snapSurfaceBeforeBLRefinement()
             continue;
         if( pPatches.sizeOfRow(bpI) != 1 )
             continue;
+        // Skip points proven causal during post-optimizer re-projection.
+        // Re-projecting these points again would repeat the same failure.
+        if( postOptimizerReprojBlockedPts_.found(meshPtI) )
+            continue;
         ++nSinglePatch;
         point testPt;
         scalar testDsq;
@@ -2689,12 +2948,12 @@ void cartesianMeshGenerator::generateMesh()
 
             wordList enabledStages;
             if( meshDict_.found("writeLineageStages") )
-                enabledStages = wordList(meshDict_.lookup("writeLineageStages"));
-            else
-                enabledStages = wordList(2);
-
-            if( enabledStages.size() == 2 && enabledStages[0].empty() )
             {
+                enabledStages = wordList(meshDict_.lookup("writeLineageStages"));
+            }
+            else
+            {
+                enabledStages.setSize(2);
                 enabledStages[0] = word("postRefBL");
                 enabledStages[1] = word("final");
             }
@@ -2797,11 +3056,18 @@ void cartesianMeshGenerator::generateMesh()
             {
                 postOptBadFaces_.clear();
             }
-            if
-            (
-                meshOptNegAfter.size() > meshOptNegBefore.size()
-             || meshOptBadAfter.size() > meshOptBadBefore.size()
-            )
+            // Rollback only if negVol got worse, OR negVol didn't improve
+            // AND badPyramids got worse. Never discard a negVol improvement
+            // just because badPyramids ticked up by 1.
+            const bool meshOptNegWorse =
+                meshOptNegAfter.size() > meshOptNegBefore.size();
+            const bool meshOptPyrWorse =
+                meshOptBadAfter.size() > meshOptBadBefore.size();
+            const bool meshOptNegImproved =
+                meshOptNegAfter.size() < meshOptNegBefore.size();
+
+            if( meshOptNegWorse
+             || (meshOptPyrWorse && !meshOptNegImproved) )
             {
                 Info << "MESHOPTDIAG rejected: badPyramids "
                      << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
@@ -2847,6 +3113,53 @@ void cartesianMeshGenerator::generateMesh()
             polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrBeforeRenumber);
             Info << "Pre-renumber validation: negVol=" << negBeforeRenumber.size()
                  << " badPyramids=" << pyrBeforeRenumber.size() << endl;
+
+            // Print pre-renumber bad pyramid face/cell IDs so they can be
+            // queried against postRefBL_cellProvenance.csv (also pre-renumber).
+            if( pyrBeforeRenumber.size() > 0 )
+            {
+                const labelList& own = mesh_.owner();
+                const labelList& nei = mesh_.neighbour();
+
+                labelHashSet badCells;
+
+                Info << "Pre-renumber bad pyramid face/cell map:" << endl;
+
+                Info << "  pyrBeforeRenumber raw IDs:";
+                forAllConstIter(labelHashSet, pyrBeforeRenumber, it2)
+                    Info << " " << it2.key();
+                Info << endl;
+
+                forAllConstIter(labelHashSet, pyrBeforeRenumber, it)
+                {
+                    const label faceI = it.key();
+
+                    label ownCell = -1;
+                    label neiCell = -1;
+
+                    if( faceI >= 0 && faceI < own.size() )
+                    {
+                        ownCell = own[faceI];
+                        badCells.insert(ownCell);
+                    }
+
+                    if( faceI >= 0 && faceI < nei.size() )
+                    {
+                        neiCell = nei[faceI];
+                        badCells.insert(neiCell);
+                    }
+
+                    Info << "  badPyrFace=" << faceI
+                         << " owner=" << ownCell
+                         << " neighbour=" << neiCell
+                         << endl;
+                }
+
+                Info << "Pre-renumber bad pyramid candidate cells:";
+                forAllConstIter(labelHashSet, badCells, it)
+                    Info << " " << it.key();
+                Info << endl;
+            }
         }
 
         renumberMesh();

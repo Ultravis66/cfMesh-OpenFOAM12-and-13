@@ -114,6 +114,7 @@ class cartesianMeshGenerator
         //- bad pyramid faces from gate2 diagnostic in optimiseFinalMesh()
         //- fed forward to refBoundaryLayers() for pre-refBL seed retraction
         labelHashSet postOptBadFaces_;
+        labelHashSet postOptimizerReprojBlockedPts_;
 
     // Private member functions
         //- trace global bad face indices to boundary-local bfI seed faces

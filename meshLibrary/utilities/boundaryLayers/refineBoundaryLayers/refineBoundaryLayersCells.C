@@ -1336,6 +1336,7 @@ void refineBoundaryLayers::generateNewCells()
 {
     labelList nCellsFromCell(mesh_.cells().size(), 1);
     labelList refType(mesh_.cells().size(), 0);
+    labelList cellToBfI(mesh_.cells().size(), -1);
 
     const meshSurfaceEngine& mse = surfaceEngine();
     const labelList& faceOwners = mse.faceOwners();
@@ -1348,7 +1349,11 @@ void refineBoundaryLayers::generateNewCells()
         nCellsFromCell[cellI] *= nLayersAtBndFace_[bfI];
 
         if( nLayersAtBndFace_[bfI] > 1 )
+        {
             ++refType[cellI];
+            if( cellToBfI[cellI] < 0 )
+                cellToBfI[cellI] = bfI;
+        }
     }
 
     //- add cells which shall be refined in a subset
@@ -1395,6 +1400,12 @@ void refineBoundaryLayers::generateNewCells()
     label nCells = cells.size();
     cells.setSize(nCells+nNewCells);
 
+    //- provenance map: newCellI -> bfI that generated it (-1 if not a BL cell)
+    cellToBaseBndFace_.setSize(nCells+nNewCells, -1);
+    forAll(cellToBfI, cI)
+        if( cellToBfI[cI] >= 0 )
+            cellToBaseBndFace_[cI] = cellToBfI[cI];
+
     //- start creating new cells
     //- store the information which new cells were generated from
     //- an existing cell
@@ -1436,6 +1447,7 @@ void refineBoundaryLayers::generateNewCells()
                 const DynList<DynList<label, 8>, 10>& nc = cellsFromCell[cI];
 
                 const label newCellI = cI==0?cellI:nCells++;
+                cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 newCellsFromCell.append(cellI, newCellI);
 
@@ -1488,6 +1500,7 @@ void refineBoundaryLayers::generateNewCells()
                 # endif
 
                 const label newCellI = cI==0?cellI:nCells++;
+                cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 newCellsFromCell.append(cellI, newCellI);
 
@@ -1540,6 +1553,7 @@ void refineBoundaryLayers::generateNewCells()
                 const DynList<DynList<label, 4>, 6>& nc = cellsFromCell[cI];
 
                 const label newCellI = cI==0?cellI:nCells++;
+                cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 newCellsFromCell.append(cellI, newCellI);
 

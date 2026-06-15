@@ -62,6 +62,7 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     is2DMesh_(false),
     specialMode_(false),
     nLayersAtBndFace_(),
+    cellToBaseBndFace_(),
     splitEdges_(),
     splitEdgesAtPoint_(),
     newVerticesForSplitEdge_(),

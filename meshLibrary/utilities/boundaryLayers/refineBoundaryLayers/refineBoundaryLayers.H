@@ -111,6 +111,10 @@ class refineBoundaryLayers
         //- a boundary face
         labelList nLayersAtBndFace_;
 
+        //- provenance map: for each cell generated during refineBoundaryLayers,
+        //- the boundary-local bfI that produced it. -1 for non-BL cells.
+        labelList cellToBaseBndFace_;
+
         //- boundary faces forced to single layer treatment
         labelHashSet forceSingleLayerFaces_;
         //- gap conflict arbitration data for local split-edge layer capping.
@@ -432,6 +436,10 @@ public:
 
         //- create a subset containing points in the boundary layer
         void pointsInBndLayer(const word subsetName="pointsInBndLayer");
+
+        //- provenance map accessor (newCellI -> original bfI, -1 if not a BL cell)
+        const labelList& cellToBaseBndFace() const
+        { return cellToBaseBndFace_; }
 
     // Static member functions
         //- read the settings from dictionary
