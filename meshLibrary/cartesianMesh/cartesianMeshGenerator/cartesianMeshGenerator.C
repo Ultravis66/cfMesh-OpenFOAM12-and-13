@@ -729,6 +729,88 @@ void cartesianMeshGenerator::detectTripleJunctions
     bl.addTripleJunctionPoints(triplePoints);
 }
 
+labelHashSet cartesianMeshGenerator::traceToSeedFaces
+(
+    const labelHashSet& badFaces,
+    const label nRings
+)
+{
+    const labelList& owner     = mesh_.owner();
+    const labelList& neighbour = mesh_.neighbour();
+    const cellListPMG& cells   = mesh_.cells();
+    const label nInternalFaces = mesh_.nInternalFaces();
+    const label nFaces         = mesh_.faces().size();
+    const label nCells         = mesh_.cells().size();
+    const label nBndFaces      = nFaces - nInternalFaces;
+
+    // Seed cells from bad internal faces
+    labelHashSet seedCells;
+    forAllConstIter(labelHashSet, badFaces, it)
+    {
+        const label faceI = it.key();
+        if( faceI < 0 || faceI >= label(owner.size()) ) continue;
+        const label ownC = owner[faceI];
+        if( ownC >= 0 && ownC < nCells ) seedCells.insert(ownC);
+        if( faceI < label(neighbour.size()) )
+        {
+            const label neiC = neighbour[faceI];
+            if( neiC >= 0 && neiC < nCells ) seedCells.insert(neiC);
+        }
+    }
+
+    // N-ring expansion
+    for( label ring = 0; ring < nRings; ++ring )
+    {
+        labelHashSet ringCells;
+        forAllConstIter(labelHashSet, seedCells, cit)
+        {
+            const cell& c = cells[cit.key()];
+            forAll(c, fI)
+            {
+                const label faceI = c[fI];
+                if( faceI < 0 || faceI >= nFaces ) continue;
+                if( faceI < label(owner.size()) )
+                {
+                    const label oc = owner[faceI];
+                    if( oc >= 0 && oc < nCells ) ringCells.insert(oc);
+                }
+                if( faceI < label(neighbour.size()) )
+                {
+                    const label nc = neighbour[faceI];
+                    if( nc >= 0 && nc < nCells ) ringCells.insert(nc);
+                }
+            }
+        }
+        forAllConstIter(labelHashSet, ringCells, it)
+            seedCells.insert(it.key());
+    }
+
+    // Collect boundary-local bfI from seed cells
+    labelHashSet seedBfI;
+    forAllConstIter(labelHashSet, seedCells, cit)
+    {
+        const cell& c = cells[cit.key()];
+        forAll(c, fI)
+        {
+            const label faceI = c[fI];
+            if( faceI >= nInternalFaces && faceI < nFaces )
+            {
+                const label bfI = faceI - nInternalFaces;
+                if( bfI >= 0 && bfI < nBndFaces )
+                    seedBfI.insert(bfI);
+            }
+        }
+    }
+
+    Info << "traceToSeedFaces: badFaces=" << badFaces.size()
+         << " seedCells=" << seedCells.size()
+         << " nRings=" << nRings
+         << " seedBndFaces(bfI)=" << seedBfI.size()
+         << endl;
+
+    return seedBfI;
+}
+
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
@@ -846,6 +928,70 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
             refLayers.setAcuteCornerCapLayers(capLayers);
             Info << "Acute corner face cap: " << (capLayers ? "enabled" : "disabled") << endl;
+        }
+
+        // Pre-refBL retraction: trace post-optimizer bad pyramid faces
+        // to boundary-local seed faces and force 1 layer there.
+        // Gated by meshDict: postOptBLRetraction true/false (default: false).
+        // Enable to attempt surgical BL suppression at bad cluster locations.
+        {
+            bool doRetraction = false;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndL.found("postOptBLRetraction") )
+                    doRetraction =
+                        bool(Switch(bndL.lookup("postOptBLRetraction")));
+            }
+
+            if( doRetraction && postOptBadFaces_.size() > 0 )
+            {
+                label retractionRings = 1;
+                if( meshDict_.isDict("boundaryLayers") )
+                {
+                    const dictionary& bndL =
+                        meshDict_.subDict("boundaryLayers");
+                    if( bndL.found("postOptBLRetractionRings") )
+                        retractionRings =
+                            readLabel(bndL.lookup("postOptBLRetractionRings"));
+                }
+
+                Info << "Pre-refBL retraction: tracing "
+                     << postOptBadFaces_.size()
+                     << " bad pyramid faces to seed faces"
+                     << " (rings=" << retractionRings << ")" << endl;
+
+                const labelHashSet seedFaces =
+                    traceToSeedFaces(postOptBadFaces_, retractionRings);
+
+                if( seedFaces.size() > 0 )
+                {
+                    refLayers.forceSingleLayerAtFaces(seedFaces);
+                    Info << "Pre-refBL retraction: "
+                         << seedFaces.size()
+                         << " boundary faces retracted to 1 layer" << endl;
+                }
+                else
+                {
+                    Info << "Pre-refBL retraction: no boundary seed faces "
+                         << "found -- retraction skipped" << endl;
+                }
+            }
+            else if( postOptBadFaces_.size() > 0 )
+            {
+                Info << "Pre-refBL retraction: DIAGNOSTIC MODE "
+                     << "(postOptBLRetraction false) -- "
+                     << postOptBadFaces_.size()
+                     << " bad faces available, tracing for inspection" << endl;
+
+                const labelHashSet seedFaces =
+                    traceToSeedFaces(postOptBadFaces_, 1);
+
+                Info << "Pre-refBL retraction: would retract "
+                     << seedFaces.size()
+                     << " boundary faces if enabled" << endl;
+            }
         }
 
         nPointsBeforeBL_ = mesh_.points().size();
@@ -2638,6 +2784,19 @@ void cartesianMeshGenerator::generateMesh()
                  << meshOptBadAfter.size()
                  << " negVol=" << meshOptNegAfter.size()
                  << endl;
+            // Capture post-optimizer bad pyramid faces for pre-refBL retraction.
+            // Only store if mesh is valid (0 negVol).
+            if( meshOptNegAfter.size() == 0 && meshOptBadAfter.size() > 0 )
+            {
+                postOptBadFaces_ = meshOptBadAfter;
+                Info << "postOptBadFaces captured: "
+                     << postOptBadFaces_.size()
+                     << " bad pyramid faces for pre-refBL retraction" << endl;
+            }
+            else
+            {
+                postOptBadFaces_.clear();
+            }
             if
             (
                 meshOptNegAfter.size() > meshOptNegBefore.size()

@@ -477,6 +477,44 @@ bool refineBoundaryLayers::analyseLayers()
              << " faces capped" << endl;
     }
 
+    // Post-optimizer BL retraction: cap forced faces to 1 layer.
+    // forceSingleLayerFaces_ contains boundary-local bfI indices.
+    // Applied after all global/patch layer-count logic so it always wins.
+    if( forceSingleLayerFaces_.size() )
+    {
+        label nForced = 0;
+        label nAlreadyOne = 0;
+        label nOutOfRange = 0;
+
+        forAllConstIter(labelHashSet, forceSingleLayerFaces_, it)
+        {
+            const label bfI = it.key();
+
+            if( bfI < 0 || bfI >= label(nLayersAtBndFace_.size()) )
+            {
+                ++nOutOfRange;
+                continue;
+            }
+
+            if( nLayersAtBndFace_[bfI] > 1 )
+            {
+                nLayersAtBndFace_[bfI] = 1;
+                ++nForced;
+            }
+            else
+            {
+                ++nAlreadyOne;
+            }
+        }
+
+        Info << "refineBoundaryLayers: forceSingleLayerAtFaces applied: "
+             << "forced=" << nForced
+             << " alreadyOneOrZero=" << nAlreadyOne
+             << " outOfRange=" << nOutOfRange
+             << " requested=" << forceSingleLayerFaces_.size()
+             << endl;
+    }
+
     # ifdef DEBUGLayer
     forAll(nLayersAtBndFace_, bfI)
     Pout << "Boundary face " << bfI << " in patch "

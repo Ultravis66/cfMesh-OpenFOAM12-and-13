@@ -111,8 +111,18 @@ class cartesianMeshGenerator
 
         //- true if optimiseFinalMesh() rejected and rolled back final untangle
         bool finalUntangleRejected_;
+        //- bad pyramid faces from gate2 diagnostic in optimiseFinalMesh()
+        //- fed forward to refBoundaryLayers() for pre-refBL seed retraction
+        labelHashSet postOptBadFaces_;
 
     // Private member functions
+        //- trace global bad face indices to boundary-local bfI seed faces
+        //- for pre-refBL retraction via forceSingleLayerAtFaces()
+        labelHashSet traceToSeedFaces
+        (
+            const labelHashSet& badFaces,
+            const label nRings = 1
+        );
         //- create cartesian mesh
         void createCartesianMesh();
 

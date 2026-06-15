@@ -523,10 +523,16 @@ void refineBoundaryLayers::readSettings
 
 void refineBoundaryLayers::forceSingleLayerAtFaces
 (
-    const labelHashSet&
+    const labelHashSet& faces
 )
 {
-    // disabled - two-pass rollback pending
+    // Post-optimizer BL retraction: store boundary-local bfI indices.
+    // These are applied in analyseLayers() after nLayersAtBndFace_ is
+    // initialised from global/patch settings, capping local layer count to 1.
+    forceSingleLayerFaces_ = faces;
+    Info << "refineBoundaryLayers: forceSingleLayerAtFaces: "
+         << forceSingleLayerFaces_.size()
+         << " boundary faces will be retracted to 1 layer" << endl;
 }
 
 void refineBoundaryLayers::setBlblJunctionPoints
