@@ -1904,7 +1904,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                     );
             }
 
-            meshSurfaceEngineModifier surfModR(mseReproj);
             label totalAccepted = 0;
             label totalRolledBack = 0;
 
@@ -1929,6 +1928,11 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             // Capture pre-reproject baseline -- used as pyramid floor
             // across ALL passes so accepted passes cannot ratchet up
             // bad pyramid count incrementally.
+            // Force fresh geometry/addressing before the global
+            // re-projection baseline. Without this, the baseline can be
+            // stale and rollback checks compare against a cached state.
+            mesh_.clearAddressingData();
+
             labelHashSet negReprojBaseline, pyrReprojBaseline;
             polyMeshGenChecks::checkCellVolumes
                 (mesh_, false, &negReprojBaseline);
@@ -1960,20 +1964,42 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 while( nRetries <= reprojMaxCausalRetries )
                 {
                     // Snapshot for this attempt
-                    const pointField passPtsBefore(mesh_.points());
+                    // Snapshot active points only (logical size, not oversized buffer).
+                    // pointFieldPMG::size() returns nElmts_ (logical count).
+                    // pointField copy-ctor from pointFieldPMG copies raw capacity (1.5x).
+                    // Explicit loop uses logical size and avoids the size mismatch.
+                    const label nActivePts = mesh_.points().size();
+                    pointField passPtsBefore(nActivePts);
+                    forAll(passPtsBefore, pI)
+                        passPtsBefore[pI] = mesh_.points()[pI];
+                    // Force fresh geometry/addressing before the
+                    // per-attempt baseline. This makes rollback verification
+                    // compare against the real current point state, not a
+                    // stale cached addressing state.
+                    mesh_.clearAddressingData();
+
                     labelHashSet negPassBefore, pyrPassBefore;
                     polyMeshGenChecks::checkCellVolumes
                         (mesh_, false, &negPassBefore);
                     polyMeshGenChecks::checkFacePyramids
                         (mesh_, false, -SMALL, &pyrPassBefore);
 
-                    // Move candidates, skipping protected and blocked points
+                    // Move candidates, skipping protected and blocked points.
+                    // IMPORTANT: use direct point writes, not meshSurfaceEngineModifier.
+                    // surfModR holds cached surface-engine state that becomes unsafe
+                    // across rollback/retry. Raw point writes + clearAddressingData()
+                    // are sufficient for checkCellVolumes/checkFacePyramids to recompute.
                     label nMoved = 0;
                     DynList<label> movedMeshPtI;
                     DynList<label> movedBpI;
                     DynList<label> movedPatchI;
                     DynList<point> movedOldPt;
                     DynList<point> movedNewPt;
+                    labelHashSet movedThisAttempt;
+
+                    polyMeshGenModifier reprojMeshModifier(mesh_);
+                    pointFieldPMG& reprojPts =
+                        reprojMeshModifier.pointsAccess();
 
                     forAll(reprojPoints, rpI)
                     {
@@ -1982,6 +2008,9 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                         if( meshPtI < 0 ||
                             meshPtI >= label(mesh_.points().size()) )
                             continue;
+                        if( movedThisAttempt.found(meshPtI) )
+                            continue;
+
                         const label patchI = pPatchesR(bpI, 0);
                         point snapPt;
                         scalar snapDsq;
@@ -2008,7 +2037,8 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                         const point limitedPt =
                             oldPt + reprojStepFraction * disp;
 
-                        surfModR.moveBoundaryVertexNoUpdate(bpI, limitedPt);
+                        reprojPts[meshPtI] = limitedPt;
+                        movedThisAttempt.insert(meshPtI);
 
                         movedMeshPtI.append(meshPtI);
                         movedBpI.append(bpI);
@@ -2018,7 +2048,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                         ++nMoved;
                     }
 
-                    surfModR.updateGeometry(reprojPoints);
                     mesh_.clearAddressingData();
 
                     labelHashSet negPassAfter, pyrPassAfter;
@@ -2103,17 +2132,53 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                         }
                     }
 
-                    // Rollback this attempt.
-                    // Restore raw points, clear polyMesh addressing cache,
-                    // then clear meshSurfaceEngine cache (mseReproj.clearOut())
-                    // so next moveBoundaryVertexNoUpdate rebuilds from restored
-                    // point coordinates, not stale post-move cached state.
+                    // Selective rollback: only restore points moved in this
+                    // attempt. Avoids pointFieldPMG::operator= and prevents
+                    // point storage resizing from invalidating cached
+                    // surface-engine structures (bPtsR, pPatchesR).
+                    // Full point-by-point restore from pre-attempt snapshot.
+                    // Selective rollback (only moved points) proved unreliable --
+                    // checkFacePyramids saw stale state after selective restore.
+                    // Point-by-point avoids pointFieldPMG::operator= resize risk.
                     {
-                        polyMeshGenModifier meshModifier(mesh_);
-                        pointFieldPMG& pts = meshModifier.pointsAccess();
-                        pts = passPtsBefore;
-                        mesh_.clearAddressingData();
-                        mseReproj.clearOut();
+                        polyMeshGenModifier rbModifier(mesh_);
+                        pointFieldPMG& rbPts = rbModifier.pointsAccess();
+
+                        if( rbPts.size() != passPtsBefore.size() )
+                        {
+                            FatalErrorInFunction
+                                << "Cannot rollback: point count changed. "
+                                << "rbPts.size()=" << rbPts.size()
+                                << " passPtsBefore.size()="
+                                << passPtsBefore.size()
+                                << abort(FatalError);
+                        }
+
+                        forAll(passPtsBefore, pI)
+                            rbPts[pI] = passPtsBefore[pI];
+
+                        // Verify coordinates were actually restored.
+                        // If this passes but pyramid counts differ, the issue
+                        // is addressing/cache/baseline state, not point rollback.
+                        label nRollbackCoordDiff = 0;
+                        scalar maxRollbackCoordDiff = 0.0;
+                        forAll(passPtsBefore, pI)
+                        {
+                            const scalar d = mag(rbPts[pI] - passPtsBefore[pI]);
+                            if( d > SMALL )
+                            {
+                                ++nRollbackCoordDiff;
+                                if( d > maxRollbackCoordDiff )
+                                    maxRollbackCoordDiff = d;
+                            }
+                        }
+
+                        Info << "Post-optimizer re-projection rollback "
+                             << "coordinate check: nDiff="
+                             << nRollbackCoordDiff
+                             << " maxDiff=" << maxRollbackCoordDiff
+                             << endl;
+
                         mesh_.clearAddressingData();
                     }
 
@@ -2124,15 +2189,32 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                             (mesh_, false, &negRB);
                         polyMeshGenChecks::checkFacePyramids
                             (mesh_, false, -SMALL, &pyrRB);
+                        const bool rollbackIncomplete =
+                            negRB.size() != negPassBefore.size()
+                         || pyrRB.size() != pyrPassBefore.size();
+
                         Info << "Post-optimizer re-projection rollback check"
                              << " pass=" << passI
                              << " attempt=" << nRetries
                              << ": negVol=" << negRB.size()
                              << " badPyramids=" << pyrRB.size()
-                             << (negRB.size() > negReprojBaseline.size() ||
-                                 pyrRB.size() > pyrReprojBaseline.size() ?
-                                 " WARNING: rollback incomplete" : " OK")
+                             << (rollbackIncomplete ?
+                                 " FATAL: rollback incomplete" : " OK")
                              << endl;
+
+                        if( rollbackIncomplete )
+                        {
+                            FatalErrorInFunction
+                                << "Post-optimizer re-projection rollback "
+                                << "did not restore pre-attempt state. "
+                                << "pre-attempt negVol="
+                                << negPassBefore.size()
+                                << " badPyramids="
+                                << pyrPassBefore.size()
+                                << " rollback negVol=" << negRB.size()
+                                << " badPyramids=" << pyrRB.size()
+                                << abort(FatalError);
+                        }
                     }
 
                     // Intersect moved points with bad face points
@@ -3115,11 +3197,12 @@ void cartesianMeshGenerator::generateMesh()
                      << meshOptNegBefore.size() << "->" << meshOptNegAfter.size()
                      << " badPyramids "
                      << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
-                     << " -- keeping improved points, marking mesh unsafe for BL"
+                     << " -- keeping improved points, marking re-projection unsafe"
                      << endl;
-                // Do not rollback -- mesh improved. Set finalUntangleRejected_
-                // so refBoundaryLayers is skipped on this dirty mesh.
-                finalUntangleRejected_ = true;
+                // Do not rollback -- mesh improved significantly.
+                // Do not set finalUntangleRejected_ -- that skips BL entirely.
+                // Only block snap/re-projection which are unsafe with residual negVol.
+                reprojUnsafe_ = true;
             }
 
             if( meshOptNegWorse || meshOptPyrTooMuchWorse )
@@ -3147,7 +3230,12 @@ void cartesianMeshGenerator::generateMesh()
         }
         if( finalUntangleRejected_ )
         {
-            Info << "Pre-BL snap: skipped -- mesh state unsafe (dirty optimizer output)" << endl;
+            Info << "Pre-BL snap: skipped -- mesh state unsafe" << endl;
+        }
+        else if( reprojUnsafe_ )
+        {
+            Info << "Pre-BL snap: skipped -- re-projection marked unsafe"
+                 << endl;
         }
         else
         {

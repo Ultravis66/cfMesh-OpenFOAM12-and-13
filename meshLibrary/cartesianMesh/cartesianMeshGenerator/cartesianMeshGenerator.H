@@ -111,6 +111,11 @@ class cartesianMeshGenerator
 
         //- true if optimiseFinalMesh() rejected and rolled back final untangle
         bool finalUntangleRejected_;
+
+        //- True when optimizer output is improved but still contains
+        //  residual negVol cells. Surface re-projection/snap is unsafe,
+        //  but BL/refBL may still proceed under its own validation guards.
+        bool reprojUnsafe_;
         //- bad pyramid faces from gate2 diagnostic in optimiseFinalMesh()
         //- fed forward to refBoundaryLayers() for pre-refBL seed retraction
         labelHashSet postOptBadFaces_;
