@@ -1940,7 +1940,19 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                  << " badPyramids=" << pyrReprojBaseline.size()
                  << endl;
 
-            for( label passI = 0; passI < reprojMaxPasses; ++passI )
+            bool reprojSkipped = false;
+            if( negReprojBaseline.size() > 0 )
+            {
+                reprojSkipped = true;
+                Info << "Post-optimizer re-projection skipped: baseline has "
+                     << negReprojBaseline.size()
+                     << " negVol cells -- re-projection unsafe on dirty mesh"
+                     << endl;
+            }
+
+            for( label passI = 0;
+                 !reprojSkipped && passI < reprojMaxPasses;
+                 ++passI )
             {
                 bool passAccepted = false;
                 label nRetries = 0;
@@ -2091,11 +2103,17 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                         }
                     }
 
-                    // Rollback this attempt
+                    // Rollback this attempt.
+                    // Restore raw points, clear polyMesh addressing cache,
+                    // then clear meshSurfaceEngine cache (mseReproj.clearOut())
+                    // so next moveBoundaryVertexNoUpdate rebuilds from restored
+                    // point coordinates, not stale post-move cached state.
                     {
                         polyMeshGenModifier meshModifier(mesh_);
                         pointFieldPMG& pts = meshModifier.pointsAccess();
                         pts = passPtsBefore;
+                        mesh_.clearAddressingData();
+                        mseReproj.clearOut();
                         mesh_.clearAddressingData();
                     }
 
@@ -2151,11 +2169,19 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                     break;
             }
 
-            Info << "Post-optimizer re-projection: "
-                 << totalAccepted << " passes accepted, "
-                 << totalRolledBack << " rolled back, "
-                 << blockedReprojMeshPts.size()
-                 << " points permanently blocked" << endl;
+            if( reprojSkipped )
+            {
+                Info << "Post-optimizer re-projection: skipped (dirty baseline)"
+                     << endl;
+            }
+            else
+            {
+                Info << "Post-optimizer re-projection: "
+                     << totalAccepted << " passes accepted, "
+                     << totalRolledBack << " rolled back, "
+                     << blockedReprojMeshPts.size()
+                     << " points permanently blocked" << endl;
+            }
 
             // Store blocked set for pre-BL snap to skip same bad actors
             postOptimizerReprojBlockedPts_ = blockedReprojMeshPts;
@@ -3056,18 +3082,47 @@ void cartesianMeshGenerator::generateMesh()
             {
                 postOptBadFaces_.clear();
             }
-            // Rollback only if negVol got worse, OR negVol didn't improve
-            // AND badPyramids got worse. Never discard a negVol improvement
-            // just because badPyramids ticked up by 1.
+            // Rollback if negVol got worse, or badPyramids got much worse
+            // without negVol improvement. If negVol improved but is nonzero,
+            // keep the improved points but flag mesh as dirty so re-projection
+            // and BL stages skip safely.
+            label meshOptAllowedPyrIncrease = 0;
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndLMO =
+                    meshDict_.subDict("boundaryLayers");
+                if( bndLMO.found("meshOptAllowedPyrIncrease") )
+                    meshOptAllowedPyrIncrease = readLabel
+                    (
+                        bndLMO.lookup("meshOptAllowedPyrIncrease")
+                    );
+            }
+
             const bool meshOptNegWorse =
                 meshOptNegAfter.size() > meshOptNegBefore.size();
-            const bool meshOptPyrWorse =
-                meshOptBadAfter.size() > meshOptBadBefore.size();
             const bool meshOptNegImproved =
                 meshOptNegAfter.size() < meshOptNegBefore.size();
+            const bool meshOptNegNonZero =
+                meshOptNegAfter.size() > 0;
+            const bool meshOptPyrTooMuchWorse =
+                label(meshOptBadAfter.size()) >
+                label(meshOptBadBefore.size()) + meshOptAllowedPyrIncrease
+             && !meshOptNegImproved;
 
-            if( meshOptNegWorse
-             || (meshOptPyrWorse && !meshOptNegImproved) )
+            if( meshOptNegNonZero && !meshOptNegWorse && !meshOptPyrTooMuchWorse )
+            {
+                Info << "MESHOPTDIAG improved-but-dirty: negVol "
+                     << meshOptNegBefore.size() << "->" << meshOptNegAfter.size()
+                     << " badPyramids "
+                     << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
+                     << " -- keeping improved points, marking mesh unsafe for BL"
+                     << endl;
+                // Do not rollback -- mesh improved. Set finalUntangleRejected_
+                // so refBoundaryLayers is skipped on this dirty mesh.
+                finalUntangleRejected_ = true;
+            }
+
+            if( meshOptNegWorse || meshOptPyrTooMuchWorse )
             {
                 Info << "MESHOPTDIAG rejected: badPyramids "
                      << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
@@ -3090,7 +3145,14 @@ void cartesianMeshGenerator::generateMesh()
             }
             writeLineageCSV("postOptimize");
         }
-        snapSurfaceBeforeBLRefinement();
+        if( finalUntangleRejected_ )
+        {
+            Info << "Pre-BL snap: skipped -- mesh state unsafe (dirty optimizer output)" << endl;
+        }
+        else
+        {
+            snapSurfaceBeforeBLRefinement();
+        }
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
             if( finalUntangleRejected_ )

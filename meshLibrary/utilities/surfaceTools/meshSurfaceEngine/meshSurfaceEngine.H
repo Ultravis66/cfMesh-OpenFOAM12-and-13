@@ -182,8 +182,6 @@ class meshSurfaceEngine
 
     // Private member functions
 
-        void clearOut();
-
         //- Disallow default bitwise copy construct
         meshSurfaceEngine(const meshSurfaceEngine&);
 
@@ -211,6 +209,10 @@ public:
         inline const pointFieldPMG& points() const;
         inline const faceListPMG& faces() const;
         inline const cellListPMG& cells() const;
+
+        //- Invalidate cached geometry (face centres, normals, point normals).
+        //- Call after external point restoration to ensure next access rebuilds.
+        void clearOut();
 
         inline const labelList& boundaryPoints() const;
 
