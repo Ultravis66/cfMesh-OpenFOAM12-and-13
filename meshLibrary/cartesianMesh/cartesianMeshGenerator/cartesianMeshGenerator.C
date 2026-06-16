@@ -1559,6 +1559,8 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             constrainOptimizerBoundary =
                 Switch(bndLC.lookup("constrainOptimizerBoundaryMotion"));
     }
+    // Preserve user intent before the negVol gate clears the flag.
+    const bool requestedConstrainOptimizerBoundary = constrainOptimizerBoundary;
 
     // Gate constrained optimizer on mesh validity.
     // Running surface-constrained optimization on a mesh with pre-existing
@@ -1697,6 +1699,193 @@ void cartesianMeshGenerator::optimiseFinalMesh()
     {
         optimizer.optimizeMeshFV();
         optimizer.optimizeLowQualityFaces();
+
+        // Second constrained pass: user requested surface-constrained
+        // optimization but it was skipped due to pre-existing negVol.
+        // Attempt it now after plain optimizer has cleared negVol.
+        // Point-motion only -- no optimizeLowQualityFaces() so
+        // point-only rollback is sufficient.
+        // Second constrained pass disabled -- optimizeMeshFV does more
+        // than pure point motion so point-only rollback is insufficient.
+        // Re-enable when topology-aware rollback is available.
+        if( false && requestedConstrainOptimizerBoundary && octreePtr_ )
+        {
+            mesh_.clearAddressingData();
+            labelHashSet negVolAfterPlain;
+            polyMeshGenChecks::checkCellVolumes
+                (mesh_, false, &negVolAfterPlain);
+
+            if( negVolAfterPlain.size() == 0 )
+            {
+                Info << "Surface-constrained optimizer: attempting second "
+                     << "pass after plain optimizer cleared negVol" << endl;
+
+                // Logical-size snapshot
+                const label nActivePts2 = mesh_.points().size();
+                pointField pointsBefore2(nActivePts2);
+                forAll(pointsBefore2, pI)
+                    pointsBefore2[pI] = mesh_.points()[pI];
+
+                mesh_.clearAddressingData();
+                labelHashSet negBefore2, pyrBefore2;
+                polyMeshGenChecks::checkCellVolumes
+                    (mesh_, false, &negBefore2);
+                polyMeshGenChecks::checkFacePyramids
+                    (mesh_, false, -SMALL, &pyrBefore2);
+
+                // Build surface constraint
+                meshSurfaceEngine mseConstraint2(mesh_);
+                meshSurfacePartitioner mPartConstraint2(mseConstraint2);
+                labelLongList globalToBp2(mesh_.points().size(), -1);
+                const labelList& bPtsC2 = mseConstraint2.boundaryPoints();
+                forAll(bPtsC2, bpI)
+                    globalToBp2[bPtsC2[bpI]] = bpI;
+
+                const label nBp2 = bPtsC2.size();
+                vectorField featureTangents2(nBp2, vector::zero);
+                {
+                    const edgeList& edges2 = mseConstraint2.edges();
+                    const VRWGraph& bpEdges2 =
+                        mseConstraint2.boundaryPointEdges();
+                    const labelHashSet& featEdges2 =
+                        mPartConstraint2.featureEdges();
+                    const labelHashSet& edgePts2 =
+                        mPartConstraint2.edgePoints();
+                    const pointFieldPMG& pts2 = mesh_.points();
+                    const labelList& bp2 = mseConstraint2.bp();
+
+                    forAllConstIter(labelHashSet, edgePts2, it)
+                    {
+                        const label bpI2 = it.key();
+                        if( bpI2 < 0 || bpI2 >= nBp2 ) continue;
+                        label nbr0 = -1, nbr1 = -1;
+                        forAllRow(bpEdges2, bpI2, eI)
+                        {
+                            const label beI = bpEdges2(bpI2, eI);
+                            if( !featEdges2.found(beI) ) continue;
+                            const edge& e = edges2[beI];
+                            const label ep0 = e.start();
+                            const label ep1 = e.end();
+                            if( ep0 < 0 || ep0 >= label(bp2.size()) ||
+                                ep1 < 0 || ep1 >= label(bp2.size()) )
+                                continue;
+                            const label ob0 = bp2[ep0];
+                            const label ob1 = bp2[ep1];
+                            if( ob0 < 0 || ob1 < 0 ) continue;
+                            label otherBp = -1;
+                            if( ob0 == bpI2 ) otherBp = ob1;
+                            else if( ob1 == bpI2 ) otherBp = ob0;
+                            if( otherBp < 0 || otherBp >= nBp2 ) continue;
+                            if( nbr0 == -1 ) nbr0 = otherBp;
+                            else if( nbr1 == -1 && otherBp != nbr0 )
+                                nbr1 = otherBp;
+                        }
+                        vector t = vector::zero;
+                        if( nbr0 != -1 && nbr1 != -1 )
+                            t = pts2[bPtsC2[nbr1]] - pts2[bPtsC2[nbr0]];
+                        else if( nbr0 != -1 )
+                            t = pts2[bPtsC2[nbr0]] - pts2[bPtsC2[bpI2]];
+                        if( magSqr(t) > VSMALL )
+                            featureTangents2[bpI2] = t / mag(t);
+                    }
+                }
+
+                // Lock acute corners
+                labelLongList acuteGlobalPts2;
+                if( lockAcuteCorners && !blblAcuteCornerPoints_.empty() )
+                {
+                    forAllConstIter(labelHashSet, blblAcuteCornerPoints_, it)
+                    {
+                        const label bpI2 = it.key();
+                        if( bpI2 >= 0 && bpI2 < label(bPtsC2.size()) )
+                            acuteGlobalPts2.append(bPtsC2[bpI2]);
+                    }
+                }
+
+                optimizer.setSurfaceConstraint
+                (
+                    octreePtr_,
+                    &mPartConstraint2.pointPatches(),
+                    &globalToBp2,
+                    &mPartConstraint2.corners(),
+                    &featureTangents2
+                );
+                if( acuteGlobalPts2.size() > 0 )
+                    optimizer.lockPoints(acuteGlobalPts2);
+
+                optimizer.optimizeMeshFV();
+                optimizer.setSurfaceConstraint(NULL, NULL, NULL, NULL, NULL);
+
+                // Validate
+                mesh_.clearAddressingData();
+                labelHashSet negAfter2, pyrAfter2;
+                polyMeshGenChecks::checkCellVolumes
+                    (mesh_, false, &negAfter2);
+                polyMeshGenChecks::checkFacePyramids
+                    (mesh_, false, -SMALL, &pyrAfter2);
+
+                label secondPassAllowedPyrIncrease = 0;
+                if( meshDict_.isDict("boundaryLayers") )
+                {
+                    const dictionary& bndSP =
+                        meshDict_.subDict("boundaryLayers");
+                    if( bndSP.found("meshOptAllowedPyrIncrease") )
+                        secondPassAllowedPyrIncrease = readLabel
+                        (
+                            bndSP.lookup("meshOptAllowedPyrIncrease")
+                        );
+                }
+
+                const bool secondPassBad =
+                    negAfter2.size() > 0
+                 || label(pyrAfter2.size()) >
+                    label(pyrBefore2.size()) + secondPassAllowedPyrIncrease;
+
+                if( secondPassBad )
+                {
+                    Info << "Surface-constrained optimizer: second pass "
+                         << "rejected: negVol "
+                         << negBefore2.size() << "->" << negAfter2.size()
+                         << " badPyramids "
+                         << pyrBefore2.size() << "->" << pyrAfter2.size()
+                         << " -- rolling back" << endl;
+
+                    polyMeshGenModifier rbMod2(mesh_);
+                    pointFieldPMG& rbPts2 = rbMod2.pointsAccess();
+
+                    if( rbPts2.size() != pointsBefore2.size() )
+                    {
+                        FatalErrorInFunction
+                            << "Cannot rollback constrained second pass: "
+                            << "point count changed. rbPts2.size()="
+                            << rbPts2.size()
+                            << " pointsBefore2.size()="
+                            << pointsBefore2.size()
+                            << abort(FatalError);
+                    }
+
+                    forAll(pointsBefore2, pI)
+                        rbPts2[pI] = pointsBefore2[pI];
+
+                    mesh_.clearAddressingData();
+                }
+                else
+                {
+                    Info << "Surface-constrained optimizer: second pass "
+                         << "accepted: negVol "
+                         << negBefore2.size() << "->" << negAfter2.size()
+                         << " badPyramids "
+                         << pyrBefore2.size() << "->" << pyrAfter2.size()
+                         << endl;
+                }
+            }
+            else
+            {
+                Info << "Surface-constrained optimizer: second pass skipped"
+                     << " -- " << negVolAfterPlain.size()
+                     << " negVol cells remain after plain optimizer" << endl;
+            }
+        }
     }
 
     // Post-optimizer surface re-projection: re-project drifted single-patch
