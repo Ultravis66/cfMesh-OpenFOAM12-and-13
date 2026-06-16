@@ -436,6 +436,216 @@ void meshOctreeCreator::setRootCubeSizeAndRefParameters()
             }
         }
     }
+
+    //- junctionRefinement: detect wall/flow patch-junction edges and inject
+    //- a graded refinement request along them (the "ribbon"). Diagnostics are
+    //- always printed. Set reportOnly true to classify without injecting.
+    if( meshDictPtr_->found("junctionRefinement") )
+    {
+        const dictionary& jrDict =
+            meshDictPtr_->subDict("junctionRefinement");
+
+        const wordList wallNames(jrDict.lookup("wallPatches"));
+        const wordList flowNames(jrDict.lookup("flowPatches"));
+
+        bool reportOnly(true);
+        if( jrDict.found("reportOnly") )
+            reportOnly = Switch(jrDict.lookup("reportOnly"));
+
+        bool injectRefinement(false);
+
+        //- resolve target level from cellSize (same idiom as localRefinement)
+        direction jLevel = globalRefLevel_;
+        scalar jThickness(0.0);
+        if( !reportOnly )
+        {
+            if( jrDict.found("additionalRefinementLevels") )
+            {
+                jLevel = globalRefLevel_ +
+                    readLabel(jrDict.lookup("additionalRefinementLevels"));
+
+                injectRefinement = true;
+            }
+            else if( jrDict.found("cellSize") )
+            {
+                const scalar cs = readScalar(jrDict.lookup("cellSize"));
+                label nLevel(0);
+                bool fin(false);
+                do
+                {
+                    const scalar lSize = maxSize / Foam::pow(2, nLevel);
+                    if( lSize <= cs ) { fin = true; }
+                    else { ++nLevel; }
+                } while( !fin );
+
+                jLevel = globalRefLevel_ + nLevel;
+                injectRefinement = true;
+            }
+            else
+            {
+                Warning << "junctionRefinement: reportOnly is false but no "
+                    << "cellSize/additionalRefinementLevels given; "
+                    << "no refinement will be injected." << endl;
+            }
+
+            if( jrDict.found("refinementThickness") )
+                jThickness = mag(readScalar(jrDict.lookup("refinementThickness")));
+        }
+
+        const label nPatches = surface.patches().size();
+
+        std::map<word, label> nameToRegion;
+        forAll(surface.patches(), patchI)
+            nameToRegion[surface.patches()[patchI].name()] = patchI;
+
+        boolList isWall(nPatches, false);
+        forAll(wallNames, i)
+        {
+            std::map<word, label>::const_iterator it =
+                nameToRegion.find(wallNames[i]);
+            if( it != nameToRegion.end() )
+                isWall[it->second] = true;
+            else
+                Warning << "junctionRefinement: wall patch "
+                    << wallNames[i] << " not found in surface" << endl;
+        }
+
+        boolList isFlow(nPatches, false);
+        forAll(flowNames, i)
+        {
+            std::map<word, label>::const_iterator it =
+                nameToRegion.find(flowNames[i]);
+            if( it != nameToRegion.end() )
+                isFlow[it->second] = true;
+            else
+                Warning << "junctionRefinement: flow patch "
+                    << flowNames[i] << " not found in surface" << endl;
+        }
+
+        const VRWGraph& edgeFaces = surface.edgeFacets();
+
+        label nJunctionEdges(0);
+        label nSkippedNonManifold(0);
+        label nMarkedFacets(0);
+        label nAppended(0);
+        boolList markedFacet(surface.size(), false);
+
+        point allMin(GREAT, GREAT, GREAT);
+        point allMax(-GREAT, -GREAT, -GREAT);
+
+        std::map<word, label> pairCounts;
+        std::map<word, point> pairMin;
+        std::map<word, point> pairMax;
+
+        const std::pair<direction, scalar> jp(jLevel, jThickness);
+
+        forAll(edgeFaces, eI)
+        {
+            if( edgeFaces.sizeOfRow(eI) != 2 )
+            {
+                ++nSkippedNonManifold;
+                continue;
+            }
+
+            const label f0 = edgeFaces(eI, 0);
+            const label f1 = edgeFaces(eI, 1);
+            const label r0 = surface[f0].region();
+            const label r1 = surface[f1].region();
+
+            if( r0 < 0 || r0 >= nPatches || r1 < 0 || r1 >= nPatches )
+                continue;
+
+            label wallRegion = -1, flowRegion = -1;
+            if( isWall[r0] && isFlow[r1] ) { wallRegion = r0; flowRegion = r1; }
+            else if( isWall[r1] && isFlow[r0] ) { wallRegion = r1; flowRegion = r0; }
+            else continue;
+
+            ++nJunctionEdges;
+
+            if( !markedFacet[f0] )
+            {
+                markedFacet[f0] = true;
+                ++nMarkedFacets;
+                if( injectRefinement )
+                {
+                    surfRefLevel_[f0].append(jp);
+                    ++nAppended;
+                }
+            }
+            if( !markedFacet[f1] )
+            {
+                markedFacet[f1] = true;
+                ++nMarkedFacets;
+                if( injectRefinement )
+                {
+                    surfRefLevel_[f1].append(jp);
+                    ++nAppended;
+                }
+            }
+
+            const point c0 = surface[f0].centre(surface.points());
+            const point c1 = surface[f1].centre(surface.points());
+
+            const word pairName =
+                surface.patches()[wallRegion].name() + "_"
+              + surface.patches()[flowRegion].name();
+
+            if( pairCounts.find(pairName) == pairCounts.end() )
+            {
+                pairCounts[pairName] = 0;
+                pairMin[pairName] = point(GREAT, GREAT, GREAT);
+                pairMax[pairName] = point(-GREAT, -GREAT, -GREAT);
+            }
+            ++pairCounts[pairName];
+
+            allMin.x() = Foam::min(allMin.x(), Foam::min(c0.x(), c1.x()));
+            allMin.y() = Foam::min(allMin.y(), Foam::min(c0.y(), c1.y()));
+            allMin.z() = Foam::min(allMin.z(), Foam::min(c0.z(), c1.z()));
+            allMax.x() = Foam::max(allMax.x(), Foam::max(c0.x(), c1.x()));
+            allMax.y() = Foam::max(allMax.y(), Foam::max(c0.y(), c1.y()));
+            allMax.z() = Foam::max(allMax.z(), Foam::max(c0.z(), c1.z()));
+
+            point& mn = pairMin[pairName];
+            point& mx = pairMax[pairName];
+            mn.x() = Foam::min(mn.x(), Foam::min(c0.x(), c1.x()));
+            mn.y() = Foam::min(mn.y(), Foam::min(c0.y(), c1.y()));
+            mn.z() = Foam::min(mn.z(), Foam::min(c0.z(), c1.z()));
+            mx.x() = Foam::max(mx.x(), Foam::max(c0.x(), c1.x()));
+            mx.y() = Foam::max(mx.y(), Foam::max(c0.y(), c1.y()));
+            mx.z() = Foam::max(mx.z(), Foam::max(c0.z(), c1.z()));
+        }
+
+        Info << nl << "junctionRefinement"
+            << (injectRefinement ? ":" : " (REPORT ONLY):") << nl
+            << "    wall/flow junction edges: " << nJunctionEdges << nl
+            << "    facets marked: " << nMarkedFacets << nl
+            << "    appended refinement requests: " << nAppended << nl
+            << "    non-manifold/open edges skipped: "
+            << nSkippedNonManifold << nl;
+
+        if( injectRefinement )
+            Info << "    target level: " << label(jLevel)
+                << "  refinementThickness: " << jThickness << nl;
+
+        if( nJunctionEdges > 0 )
+        {
+            Info << "    global junction centroid bbox: "
+                << boundBox(allMin, allMax) << nl;
+            for
+            (
+                std::map<word, label>::const_iterator it = pairCounts.begin();
+                it != pairCounts.end(); ++it
+            )
+            {
+                const word& pairName = it->first;
+                Info << "    pair " << pairName << ": edges=" << it->second
+                    << " bbox="
+                    << boundBox(pairMin[pairName], pairMax[pairName]) << nl;
+            }
+        }
+
+        Info << endl;
+    }
 }
 
 void meshOctreeCreator::refineInsideAndUnknownBoxes()
