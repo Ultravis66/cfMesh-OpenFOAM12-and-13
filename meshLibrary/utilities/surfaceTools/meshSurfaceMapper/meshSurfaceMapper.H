@@ -69,7 +69,7 @@ class meshSurfaceMapper
         const meshOctree& meshOctree_;
 
         //- relaxation factor for corner snapping (0=no move, 1=full)
-        scalar cornerSnapRelaxation_;
+        scalar cornerSnapRelaxation_ = 0.25;
 
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
@@ -79,7 +79,7 @@ class meshSurfaceMapper
         mutable triSurfacePartitioner* surfPartitionerPtr_;
 
         //- minimum pyramid height for validity check (default 1e-10)
-        scalar snapMinPyramidHeight_;
+        scalar snapMinPyramidHeight_ = 1e-10;
 
         //- boundary-point indices excluded from generic surface projection
         //- set via setProtectedPoints(); empty by default (no exclusion)

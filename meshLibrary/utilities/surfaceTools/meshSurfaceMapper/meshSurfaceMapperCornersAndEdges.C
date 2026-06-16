@@ -106,12 +106,22 @@ bool meshSurfaceMapper::proposedMoveIsValid
         {
             const face& cf = allFaces[cll[cfI]];
             point cfc = point::zero;
-            forAll(cf, cpI) cfc += pts[cf[cpI]];
+            forAll(cf, cpI) cfc += ptOf(cf[cpI]);
             cc += cfc / scalar(cf.size());
         }
         cc /= scalar(cll.size());
         const scalar h = fn & (fc - cc);
-        const scalar faceScale = Foam::sqrt(areaSq) * scalar(1e-6);
+
+        // L3 threshold: h = fn & (fc - cc) has area*length units.
+        // Use the local mapping distance as the length scale, matching
+        // the post-move validity guard used later in this file.
+        const scalar localLen = Foam::sqrt(mappingDistSq + VSMALL);
+        const scalar faceScale = Foam::max
+        (
+            Foam::sqrt(areaSq) * localLen * scalar(1e-6),
+            Foam::pow(localLen, 3) * scalar(1e-12)
+        );
+
         if( h <= -faceScale )
         { valid = false; break; }
     }

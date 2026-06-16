@@ -69,11 +69,11 @@ meshSurfaceMapper::meshSurfaceMapper
 :
     surfaceEngine_(mse),
     meshOctree_(octree),
+    cornerSnapRelaxation_(0.25),
     surfaceEnginePartitionerPtr_(NULL),
     deletePartitioner_(true),
     surfPartitionerPtr_(NULL),
-    snapMinPyramidHeight_(1e-10),
-    cornerSnapRelaxation_(0.25)
+    snapMinPyramidHeight_(1e-10)
 {
     if( Pstream::parRun() )
     {
