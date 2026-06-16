@@ -1135,59 +1135,15 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             else
                 remainingCorners.append(bpI);
         }
-        // Debug: check why strict pass fails
-        if( nSnapped == 0 && selectedCorners.size() > 0 )
-        if( debugCornerSnap )
-        {
-        {
-            const label bpI0 = selectedCorners[0];
-            label nStrictCandidates = 0;
-            label nRelaxedCandidates = 0;
-            forAll(featureSegs, sI)
-            {
-                const FeatureSeg& seg = featureSegs[sI];
-                bool hasA=false, hasB=false, hasAny=false;
-                forAllRow(pointPatches, bpI0, ppI)
-                {
-                    const label pI = pointPatches(bpI0, ppI);
-                    if( pI==seg.patchA ) hasA=true;
-                    if( pI==seg.patchB ) hasB=true;
-                    if( pI==seg.patchA || pI==seg.patchB ) hasAny=true;
-                }
-                if( hasA && hasB ) ++nStrictCandidates;
-                if( hasAny ) ++nRelaxedCandidates;
-            }
-            Info << "  Debug corner bpI=" << bpI0
-                 << " patches=(";
-            forAllRow(pointPatches, bpI0, ppI)
-                Info << pointPatches(bpI0, ppI) << " ";
-            Info << ") strictCandidates=" << nStrictCandidates
-                 << " relaxedCandidates=" << nRelaxedCandidates
-                 << " totalSegs=" << featureSegs.size() << endl;
-        }
         Info << "CornerSnap: snapped " << nSnapped
              << " of " << selectedCorners.size()
              << " corner points to feature endpoints" << endl;
 
-        if( debugCornerSnap )
-        {
-        // Diagnostic: show patch IDs for first corner and first few segs
-        if( selectedCorners.size() > 0 && featureSegs.size() > 0 )
-        {
-            const label bpI0 = selectedCorners[0];
-            Info << "  First corner bpI=" << bpI0 << " patches=(";
-            forAllRow(pointPatches, bpI0, ppI)
-                Info << pointPatches(bpI0, ppI) << " ";
-            Info << ")" << endl;
-        }
-            Info << "  First 3 featureSegs patchA/patchB: ";
-            for(label k=0; k<Foam::min(label(3),featureSegs.size()); ++k)
-                Info << featureSegs[k].patchA << "/" << featureSegs[k].patchB << " ";
-            Info << endl;
-        }
-
+        // Replace with remaining unsnapped corners for mapCorners().
+        // Previously this assignment was trapped inside a malformed
+        // debug-only if block, so snapped corners could be reprocessed
+        // by mapCorners() and the endpoint snap could be undone.
         selectedCorners = remainingCorners;
-        }
     }
 
     //- map corner vertices
