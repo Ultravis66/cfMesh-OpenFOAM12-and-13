@@ -91,7 +91,7 @@ void meshSurfaceMapper::selectNodesAtParallelBnd(const labelLongList& selNodes)
 
     forAll(receivedData, i)
     {
-            if( !globalToLocal.found(receivedData[i]) ) { ++i; continue; }
+            if( !globalToLocal.found(receivedData[i]) ) { continue; }
         if( !selectedNode[globalToLocal[receivedData[i]]] )
         {
             selectedNode[globalToLocal[receivedData[i]]] = true;
@@ -1127,7 +1127,13 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
                 const label globalPtI = bPoints[bpI];
                 const point oldPos = points[globalPtI];
 
-                surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
+                // Use the same damped corner motion as mapCorners().
+                // Full endpoint snaps can shear BL/prism stacks and create
+                // visible bulges at blade/periodic or wall/flow junctions.
+                const vector deltaV = bestEndPt - cp;
+                const point relaxedEndPt = cp + cornerSnapRelaxation_ * deltaV;
+
+                surfaceModifier.moveBoundaryVertexNoUpdate(bpI, relaxedEndPt);
 
                 bool validSnap = true;
                 const VRWGraph& pFacesV = surfaceEngine_.pointFaces();

@@ -306,6 +306,10 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
     forAll(nodesToMap, i)
         oldPositions[i] = points[bPoints[nodesToMap[i]]];
 
+    // Flag for non-corner point detected inside OMP loop.
+    // Cannot call FatalError inside parallel region (UB) -- check after.
+    label foundNonCorner = 0;
+
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)
     # endif
@@ -319,11 +323,14 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         if( !blNeutralPoints_.empty() && blNeutralPoints_.found(bpI) )
             continue;
         if( !corners.found(bpI) )
-            FatalErrorIn
-            (
-                "meshSurfaceMapper::mapCorners(const labelLongList&)"
-            ) << "Trying to map a point that is not a corner"
-                << abort(FatalError);
+        {
+            // FatalError inside OMP is UB -- set flag, report after loop.
+            # ifdef USE_OMP
+            # pragma omp atomic write
+            # endif
+            foundNonCorner = 1;
+            continue;
+        }
 
         const point& p = points[bPoints[bpI]];
         const scalar maxDist = mappingDistance[cornerI];
@@ -408,6 +415,15 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
         const vector delta = mapPoint - p;
         const point relaxedPoint = p + cornerSnapRelaxation_ * delta;
         sMod.moveBoundaryVertexNoUpdate(bpI, relaxedPoint);
+    }
+
+    if( foundNonCorner )
+    {
+        FatalErrorIn
+        (
+            "meshSurfaceMapper::mapCorners(const labelLongList&)"
+        ) << "Trying to map a point that is not a corner"
+            << abort(FatalError);
     }
 
     // Validity check: serial revert of invalid corner moves
