@@ -973,10 +973,6 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             // Cap at 2x local edge length -- dry-run showed snap distances
             // are 0.0002-0.0004m, well within typical cell size of 0.001-0.003m
             const scalar maxSnap = (localLen < GREAT/2.0) ? 2.0*localLen : GREAT;
-            Info << "  CornerSnapDebug bpI=" << bpI
-                 << " snapDist=" << snapDist
-                 << " maxSnap=" << maxSnap
-                 << " localLen=" << localLen << endl;
             if( snapDist <= maxSnap )
             {
                 surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
@@ -1071,6 +1067,7 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
         const bool debugCornerSnap = false;  // set true to diagnose corner snap
         labelLongList remainingCorners;
         label nSnapped = 0;
+        label nRejectedSnaps = 0;
         forAll(selectedCorners, cI)
         {
             const label bpI = selectedCorners[cI];
@@ -1125,19 +1122,92 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             }
             if( snapCondA && snapCondB )
             {
+                // Snapshot, move, validate pyramid heights, revert if invalid.
+                // Phase 3 is serial, so pts is stable during this check.
+                const label globalPtI = bPoints[bpI];
+                const point oldPos = points[globalPtI];
+
                 surfaceModifier.moveBoundaryVertexNoUpdate(bpI, bestEndPt);
-                ++nSnapped;
-            if( debugCornerSnap )
-            {
-                Info << "  SNAPPED bpI=" << bpI << endl;
-            }
+
+                bool validSnap = true;
+                const VRWGraph& pFacesV = surfaceEngine_.pointFaces();
+                const faceList::subList& bFacesV = surfaceEngine_.boundaryFaces();
+                const labelList& faceOwnersV = surfaceEngine_.faceOwners();
+                const pointFieldPMG& ptsV = surfaceEngine_.points();
+                const cellListPMG& cellsV = surfaceEngine_.mesh().cells();
+                const faceListPMG& allFacesV = surfaceEngine_.mesh().faces();
+
+                forAllRow(pFacesV, bpI, pfI)
+                {
+                    const label bfI = pFacesV(bpI, pfI);
+                    const face& fV = bFacesV[bfI];
+
+                    point fcV = point::zero;
+                    forAll(fV, fpI) fcV += ptsV[fV[fpI]];
+                    fcV /= scalar(fV.size());
+
+                    vector fnV = vector::zero;
+                    const point& p0V = ptsV[fV[0]];
+                    for(label fpI=1; fpI<fV.size()-1; ++fpI)
+                        fnV += (ptsV[fV[fpI]] - p0V)
+                              ^(ptsV[fV[fpI+1]] - p0V);
+
+                    const label cellIV = faceOwnersV[bfI];
+                    point ccV = point::zero;
+                    const cell& cllV = cellsV[cellIV];
+
+                    forAll(cllV, cfI)
+                    {
+                        const face& cfV = allFacesV[cllV[cfI]];
+                        point cfcV = point::zero;
+                        forAll(cfV, cpI) cfcV += ptsV[cfV[cpI]];
+                        ccV += cfcV / scalar(cfV.size());
+                    }
+
+                    ccV /= scalar(cllV.size());
+
+                    const scalar hV = fnV & (fcV - ccV);
+
+                    // L3 threshold. localLen is already a length.
+                    const scalar fsV = Foam::max
+                    (
+                        Foam::mag(fnV) * localLen * scalar(1e-6),
+                        Foam::pow(localLen, 3) * scalar(1e-12)
+                    );
+
+                    if( hV <= -fsV )
+                    {
+                        validSnap = false;
+                        break;
+                    }
+                }
+
+                if( validSnap )
+                {
+                    ++nSnapped;
+
+                    if( debugCornerSnap )
+                    {
+                        Info << "  SNAPPED bpI=" << bpI << endl;
+                    }
+                }
+                else
+                {
+                    surfaceModifier.moveBoundaryVertexNoUpdate(bpI, oldPos);
+                    remainingCorners.append(bpI);
+                    ++nRejectedSnaps;
+                }
             }
             else
+            {
                 remainingCorners.append(bpI);
+            }
         }
         Info << "CornerSnap: snapped " << nSnapped
              << " of " << selectedCorners.size()
-             << " corner points to feature endpoints" << endl;
+             << " corner points to feature endpoints"
+             << ", rejected " << nRejectedSnaps
+             << " invalid snaps" << endl;
 
         // Replace with remaining unsnapped corners for mapCorners().
         // Previously this assignment was trapped inside a malformed
