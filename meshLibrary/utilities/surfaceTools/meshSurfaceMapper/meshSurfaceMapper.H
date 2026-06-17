@@ -77,11 +77,6 @@ class meshSurfaceMapper
         //- feature recovery behavior.
         bool protectLayerTopology_ = false;
 
-        //- When true, skip Phase 3 corner endpoint snap to protect
-        //- extruded BL/prism stack topology. Set true for post-BL
-        //- re-projection passes; false by default preserves pre-BL
-        //- feature recovery behavior.
-        bool protectLayerTopology_ = false;
 
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
@@ -214,10 +209,6 @@ public:
         //- by generic nearest-surface projection.
         //- label space: boundary-point indices (into surfaceEngine_.boundaryPoints())
         //- defaults to empty -- no effect unless explicitly set
-        //- Enable post-BL protection mode: disables Phase 3 corner snap
-        void setProtectLayerTopology(const bool v)
-        { protectLayerTopology_ = v; }
-
         //- Enable post-BL protection mode: disables Phase 3 corner snap
         void setProtectLayerTopology(const bool v)
         { protectLayerTopology_ = v; }
