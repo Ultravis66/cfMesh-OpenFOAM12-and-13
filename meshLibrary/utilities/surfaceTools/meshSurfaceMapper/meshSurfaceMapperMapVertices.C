@@ -1124,84 +1124,69 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             }
             if( snapCondA && snapCondB )
             {
-                // Snapshot, move, validate pyramid heights, revert if invalid.
-                // Phase 3 is serial, so pts is stable during this check.
+                // Adaptive bisection snap: try decreasing relaxation factors
+                // until proposedMoveIsValid accepts the candidate.
+                // This preserves feature recovery when safe, but avoids
+                // committing a violent endpoint move at fragile junctions.
                 const label globalPtI = bPoints[bpI];
                 const point oldPos = points[globalPtI];
-
-                // Use the same damped corner motion as mapCorners().
-                // Full endpoint snaps can shear BL/prism stacks and create
-                // visible bulges at blade/periodic or wall/flow junctions.
                 const vector deltaV = bestEndPt - cp;
-                const point relaxedEndPt = cp + cornerSnapRelaxation_ * deltaV;
+                const scalar mappingDistSq = localLen * localLen;
 
-                surfaceModifier.moveBoundaryVertexNoUpdate(bpI, relaxedEndPt);
+                const scalar baseRelax = Foam::min
+                (
+                    scalar(1.0),
+                    Foam::max(scalar(0.0), cornerSnapRelaxation_)
+                );
 
-                bool validSnap = true;
-                const VRWGraph& pFacesV = surfaceEngine_.pointFaces();
-                const faceList::subList& bFacesV = surfaceEngine_.boundaryFaces();
-                const labelList& faceOwnersV = surfaceEngine_.faceOwners();
-                const pointFieldPMG& ptsV = surfaceEngine_.points();
-                const cellListPMG& cellsV = surfaceEngine_.mesh().cells();
-                const faceListPMG& allFacesV = surfaceEngine_.mesh().faces();
-
-                forAllRow(pFacesV, bpI, pfI)
+                const scalar relaxFactors[4] =
                 {
-                    const label bfI = pFacesV(bpI, pfI);
-                    const face& fV = bFacesV[bfI];
+                    baseRelax,
+                    baseRelax * scalar(0.5),
+                    baseRelax * scalar(0.25),
+                    baseRelax * scalar(0.125)
+                };
 
-                    point fcV = point::zero;
-                    forAll(fV, fpI) fcV += ptsV[fV[fpI]];
-                    fcV /= scalar(fV.size());
+                bool validSnap = false;
+                point acceptedPt = oldPos;
+                label acceptedAttempt = -1;
 
-                    vector fnV = vector::zero;
-                    const point& p0V = ptsV[fV[0]];
-                    for(label fpI=1; fpI<fV.size()-1; ++fpI)
-                        fnV += (ptsV[fV[fpI]] - p0V)
-                              ^(ptsV[fV[fpI+1]] - p0V);
+                for( label ri = 0; ri < 4; ++ri )
+                {
+                    if( relaxFactors[ri] <= VSMALL )
+                        continue;
 
-                    const label cellIV = faceOwnersV[bfI];
-                    point ccV = point::zero;
-                    const cell& cllV = cellsV[cellIV];
+                    const point candidatePt = cp + relaxFactors[ri] * deltaV;
 
-                    forAll(cllV, cfI)
+                    if( proposedMoveIsValid
+                        (
+                            bpI,
+                            candidatePt,
+                            oldPos,
+                            mappingDistSq
+                        )
+                    )
                     {
-                        const face& cfV = allFacesV[cllV[cfI]];
-                        point cfcV = point::zero;
-                        forAll(cfV, cpI) cfcV += ptsV[cfV[cpI]];
-                        ccV += cfcV / scalar(cfV.size());
-                    }
-
-                    ccV /= scalar(cllV.size());
-
-                    const scalar hV = fnV & (fcV - ccV);
-
-                    // L3 threshold. localLen is already a length.
-                    const scalar fsV = Foam::max
-                    (
-                        Foam::mag(fnV) * localLen * scalar(1e-6),
-                        Foam::pow(localLen, 3) * scalar(1e-12)
-                    );
-
-                    if( hV <= -fsV )
-                    {
-                        validSnap = false;
+                        acceptedPt = candidatePt;
+                        acceptedAttempt = ri;
+                        validSnap = true;
                         break;
                     }
                 }
 
                 if( validSnap )
                 {
+                    surfaceModifier.moveBoundaryVertexNoUpdate(bpI, acceptedPt);
                     ++nSnapped;
 
                     if( debugCornerSnap )
                     {
-                        Info << "  SNAPPED bpI=" << bpI << endl;
+                        Info << "  SNAPPED bpI=" << bpI
+                             << " attempt=" << acceptedAttempt << endl;
                     }
                 }
                 else
                 {
-                    surfaceModifier.moveBoundaryVertexNoUpdate(bpI, oldPos);
                     remainingCorners.append(bpI);
                     ++nRejectedSnaps;
                 }
