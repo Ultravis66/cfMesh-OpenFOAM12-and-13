@@ -1061,7 +1061,9 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     // Phase 3: corner snap -- project CLS_CORNER points to nearest
     // incident feature curve endpoint before mapCorners runs.
     // Points successfully snapped are removed from selectedCorners.
-    if( featureSegs.size() > 0 )
+    // Skipped in post-BL mode (protectLayerTopology_==true): snapping
+    // corners to STL endpoints after BL extrusion can shear prism stacks.
+    if( !protectLayerTopology_ && featureSegs.size() > 0 )
     {
         const VRWGraph& ppGraph2 = surfaceEngine_.pointPoints();
         const bool debugCornerSnap = false;  // set true to diagnose corner snap

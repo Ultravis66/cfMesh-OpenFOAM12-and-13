@@ -71,6 +71,18 @@ class meshSurfaceMapper
         //- relaxation factor for corner snapping (0=no move, 1=full)
         scalar cornerSnapRelaxation_ = 0.25;
 
+        //- When true, skip Phase 3 corner endpoint snap to protect
+        //- extruded BL/prism stack topology. Set true for post-BL
+        //- re-projection passes; false (default) preserves pre-BL
+        //- feature recovery behavior.
+        bool protectLayerTopology_ = false;
+
+        //- When true, skip Phase 3 corner endpoint snap to protect
+        //- extruded BL/prism stack topology. Set true for post-BL
+        //- re-projection passes; false by default preserves pre-BL
+        //- feature recovery behavior.
+        bool protectLayerTopology_ = false;
+
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
         const bool deletePartitioner_;
@@ -202,6 +214,14 @@ public:
         //- by generic nearest-surface projection.
         //- label space: boundary-point indices (into surfaceEngine_.boundaryPoints())
         //- defaults to empty -- no effect unless explicitly set
+        //- Enable post-BL protection mode: disables Phase 3 corner snap
+        void setProtectLayerTopology(const bool v)
+        { protectLayerTopology_ = v; }
+
+        //- Enable post-BL protection mode: disables Phase 3 corner snap
+        void setProtectLayerTopology(const bool v)
+        { protectLayerTopology_ = v; }
+
         void setProtectedPoints(const labelHashSet& pts)
         {
             protectedPoints_ = pts;
