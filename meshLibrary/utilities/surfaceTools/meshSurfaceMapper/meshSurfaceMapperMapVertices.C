@@ -695,6 +695,10 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             const label fB = edgeFaces(eI, 1);
             const label pA = facePatch[fA];
             const label pB = facePatch[fB];
+            // Bug #8: guard unassigned boundary faces (facePatch==-1).
+            // A -1 patch on either side creates a spurious feature segment
+            // that corrupts corner/edge snap targets at unpatched faces.
+            if( pA < 0 || pB < 0 ) continue;
             if( pA == pB ) continue;
             FeatureSeg seg;
             seg.p0 = allPoints[meshEdges[eI][0]];
