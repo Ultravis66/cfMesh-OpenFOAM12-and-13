@@ -52,7 +52,7 @@ boundaryLayerOptimisation::boundaryLayerOptimisation(polyMeshGen& mesh)
     thinnedHairEdge_(),
     maxNumIterations_(5),
     nSmoothNormals_(5),
-    relThicknessTol_(0.1),
+    relThicknessTol_(0.15),  // Bug 1.3: unified with 2-arg constructor
     featureSizeFactor_(0.3),
     reCalculateNormals_(true)
 {
@@ -232,6 +232,30 @@ void boundaryLayerOptimisation::readSettings
                     readLabel(optParams.lookup("maxNumIterations"));
 
                 blOptimisation.setMaxNumIterations(maxNumIterations);
+            }
+            if( optParams.found("minThicknessFraction") )
+            {
+                const scalar minThicknessFraction =
+                    readScalar(optParams.lookup("minThicknessFraction"));
+                if( minThicknessFraction <= 0.0 || minThicknessFraction >= 1.0 )
+                    FatalErrorIn
+                    (
+                        "void boundaryLayerOptimisation::readSettings"
+                    ) << "minThicknessFraction must be in (0,1)"
+                      << exit(FatalError);
+                blOptimisation.setMinThicknessFraction(minThicknessFraction);
+            }
+            if( optParams.found("maxThicknessIterations") )
+            {
+                const label maxThicknessIterations =
+                    readLabel(optParams.lookup("maxThicknessIterations"));
+                if( maxThicknessIterations <= 0 )
+                    FatalErrorIn
+                    (
+                        "void boundaryLayerOptimisation::readSettings"
+                    ) << "maxThicknessIterations must be positive"
+                      << exit(FatalError);
+                blOptimisation.setMaxThicknessIterations(maxThicknessIterations);
             }
         }
     }

@@ -226,7 +226,13 @@ scalar boundaryLayerOptimisation::calculateThickness
     {
         retHeight = suggestedNeiHeight + relThicknessTol_ * magDv;
 
-        retThickness = (retHeight / currHeight) * currThickness;
+        // Bug 3.1: currHeight can be zero/near-zero for degenerate
+        // hair edges.  Do not divide by it; keeping the already-computed
+        // retThickness is safer than manufacturing a huge thickness spike.
+        if( currHeight > VSMALL )
+        {
+            retThickness = (retHeight / currHeight) * currThickness;
+        }
     }
 
     return retThickness;
@@ -301,10 +307,10 @@ void boundaryLayerOptimisation::optimiseThicknessVariation
     scalarField hairLength(hairEdges_.size());
     scalarField initialHairLength(hairEdges_.size());
 
-    // Minimum thickness fraction -- prevents catastrophic collapse to
-    // near-zero layer thickness causing astronomical aspect ratio cells.
-    const scalar minThicknessFraction = 1e-4;
-    const label maxThicknessIterations = 100;
+    // Minimum thickness fraction and max iterations from meshDict knobs.
+    // Defaults preserve historical behavior: 1e-4 and 100.
+    const scalar minThicknessFraction = minThicknessFraction_;
+    const label maxThicknessIterations = maxThicknessIterations_;
 
     # ifdef USE_OMP
     # pragma omp parallel for schedule(dynamic, 50)

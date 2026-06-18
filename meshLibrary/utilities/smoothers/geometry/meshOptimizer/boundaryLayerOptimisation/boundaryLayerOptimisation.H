@@ -109,6 +109,14 @@ class boundaryLayerOptimisation
         //- activate calculation of normals
         bool reCalculateNormals_;
 
+        //- minimum thickness as fraction of initial hair length
+        //- default 1e-4; prevents catastrophic near-zero BL collapse
+        scalar minThicknessFraction_;
+
+        //- maximum thickness variation propagation iterations
+        //- default 100
+        label maxThicknessIterations_;
+
     // Private member functions
         //- access to mesh surface
         const meshSurfaceEngine& meshSurface() const;
@@ -251,6 +259,12 @@ public:
 
         //- set the feature size factor (default 0.3)
         void setFeatureSizeFactor(const scalar);
+
+        //- set minimum thickness fraction (default 1e-4)
+        void setMinThicknessFraction(const scalar);
+
+        //- set maximum thickness variation iterations (default 100)
+        void setMaxThicknessIterations(const label);
 
         //- return hair edges
         const edgeLongList& hairEdges() const;

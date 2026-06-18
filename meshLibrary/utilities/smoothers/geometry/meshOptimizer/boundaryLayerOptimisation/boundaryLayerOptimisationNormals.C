@@ -375,12 +375,17 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
                 }
 
                 if( beI < 0 )
-                    FatalErrorIn
+                {
+                    // Bug 2.1a: graceful degrade -- keep existing hair
+                    // vector rather than aborting on one anomalous edge.
+                    WarningIn
                     (
                         "boundaryLayerOptimisation::"
                         "calculateHairVectorsAtTheBoundary(vectorField&)"
                     ) << "Cannot find hair edge "
-                      << hairEdgeI << abort(FatalError);
+                      << hairEdgeI << ". Keeping existing vector." << endl;
+                    continue;
+                }
 
                 //- find the vector at the same angle from both feature edges
                 forAllRow(edgeFaces, beI, befI)
@@ -391,13 +396,18 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
                     const label pos = bf.which(he.start());
 
                     if( pos < 0 )
-                        FatalErrorIn
+                    {
+                        // Bug 2.1b: graceful degrade -- skip this face
+                        // contribution rather than aborting the run.
+                        WarningIn
                         (
                             "boundaryLayerOptimisation::"
                             "calculateHairVectorsAtTheBoundary(vectorField&)"
                         ) << "Cannot find hair edge "
                           << hairEdgeI << " in face " << bf
-                          << abort(FatalError);
+                          << ". Skipping face contribution." << endl;
+                        continue;
+                    }
 
                     if( he.end() == bf.prevLabel(pos) )
                     {
@@ -423,12 +433,14 @@ void boundaryLayerOptimisation::calculateHairVectorsAtTheBoundary
             }
             else
             {
-                FatalErrorIn
+                // Bug 2.1c: graceful degrade -- unknown hair type.
+                // Keep existing hair vector rather than aborting.
+                WarningIn
                 (
                     "boundaryLayerOptimisation::"
                     "calculateHairVectorsAtTheBoundary(vectorField&)"
                 ) << "Invalid hair type " << label(hairType)
-                  << abort(FatalError);
+                  << ". Keeping existing vector." << endl;
             }
         }
     }
@@ -661,12 +673,14 @@ void boundaryLayerOptimisation::optimiseHairNormalsAtTheBoundary()
                 }
                 else
                 {
-                    FatalErrorIn
+                    // Bug 2.2: graceful degrade -- unexpected hair type
+                    // during normal smoothing. Keep existing normal.
+                    WarningIn
                     (
                         "void boundaryLayerOptimisation::"
                         "optimiseHairNormalsAtTheBoundary(const label)"
                     ) << "Cannot smooth hair with type " << label(eType)
-                      << abort(FatalError);
+                      << ". Keeping existing normal." << endl;
                 }
             }
         }
@@ -871,12 +885,16 @@ void boundaryLayerOptimisation::optimiseHairNormalsInside()
 
                 if( counter == 0 )
                 {
-                    FatalErrorIn
+                    // Bug 2.3: graceful degrade -- no inside-patch
+                    // contribution for this point. Keep existing vector.
+                    WarningIn
                     (
                         "void boundaryLayerOptimisation::"
                         "optimiseHairNormalsInside()"
                     ) << "No valid patches for boundary point "
-                      << bp[hairEdges_[hairEdgeI].start()] << abort(FatalError);
+                      << bp[hairEdges_[hairEdgeI].start()]
+                      << ". Keeping existing vector." << endl;
+                    continue;
                 }
 
                 hv /= (mag(hv) + VSMALL);
