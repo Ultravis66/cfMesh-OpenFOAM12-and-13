@@ -1906,9 +1906,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         meshSurfaceEngine mseReproj(mesh_);
         meshSurfaceMapper mapperReproj(mseReproj, *octreePtr_);
-        // Post-BL re-projection: protect extruded layer topology.
-        // Disables Phase 3 corner endpoint snap which can shear prism stacks.
-        mapperReproj.setProtectLayerTopology(true);
         if( !blNoBlEdgePoints_.empty() )
         {
             mapperReproj.setProtectedPoints(blNoBlEdgePoints_);
