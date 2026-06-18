@@ -1091,6 +1091,113 @@ void cartesianMeshGenerator::refBoundaryLayers()
             Info << "  Gate 2 (bad pyramids):     " << badPyramidFaces.size() << endl;
             Info << "  Gate 3 (non-ortho >85deg): " << nonOrthoFaces.size() << endl;
 
+            // Post-refBL provenance audit.
+            // Runs while refLayers.cellToBaseBndFace() is still alive and
+            // before later renumbering can invalidate cell indices.
+            // Report-only: maps bad pyramid adjacent cells back to their
+            // original base boundary face / patch.
+            {
+                const labelList& provAudit = refLayers.cellToBaseBndFace();
+
+                if( badPyramidFaces.size() > 0 && provAudit.size() > 0 )
+                {
+                    const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+                    const labelList& owner = mesh_.owner();
+                    const labelList& neighbour = mesh_.neighbour();
+                    const label firstBoundaryFace = boundaries[0].patchStart();
+
+                    label nWithProv = 0;
+                    label nNoProv = 0;
+                    labelHashSet auditedCells;
+                    Map<label> patchBadCount;
+
+                    forAllConstIter(labelHashSet, badPyramidFaces, it)
+                    {
+                        const label faceI = it.key();
+
+                        for(label sideI = 0; sideI < 2; ++sideI)
+                        {
+                            label cellI = -1;
+
+                            if( sideI == 0 )
+                            {
+                                if( faceI >= 0 && faceI < label(owner.size()) )
+                                    cellI = owner[faceI];
+                            }
+                            else
+                            {
+                                if( faceI >= 0 && faceI < label(neighbour.size()) )
+                                    cellI = neighbour[faceI];
+                            }
+
+                            if( cellI < 0 || auditedCells.found(cellI) )
+                                continue;
+
+                            auditedCells.insert(cellI);
+
+                            if
+                            (
+                                cellI >= label(provAudit.size())
+                             || provAudit[cellI] < 0
+                            )
+                            {
+                                ++nNoProv;
+                                continue;
+                            }
+
+                            ++nWithProv;
+
+                            const label bfI = provAudit[cellI];
+
+                            label patchI = -1;
+                            forAll(boundaries, pI)
+                            {
+                                const label patchStartLocal =
+                                    boundaries[pI].patchStart() - firstBoundaryFace;
+                                const label patchEndLocal =
+                                    patchStartLocal + boundaries[pI].patchSize();
+
+                                if( bfI >= patchStartLocal && bfI < patchEndLocal )
+                                {
+                                    patchI = pI;
+                                    break;
+                                }
+                            }
+
+                            if( patchI >= 0 )
+                            {
+                                Map<label>::iterator mIt =
+                                    patchBadCount.find(patchI);
+
+                                if( mIt == patchBadCount.end() )
+                                    patchBadCount.insert(patchI, 1);
+                                else
+                                    ++mIt();
+                            }
+                        }
+                    }
+
+                    Info << "PostRefBLProvenance: badFaces="
+                         << badPyramidFaces.size()
+                         << " auditedCells=" << auditedCells.size()
+                         << " withProv=" << nWithProv
+                         << " noProv=" << nNoProv << endl;
+
+                    forAllConstIter(Map<label>, patchBadCount, it)
+                    {
+                        Info << "  patch "
+                             << boundaries[it.key()].patchName()
+                             << ": " << it() << " bad cells" << endl;
+                    }
+                }
+                else
+                {
+                    Info << "PostRefBLProvenance: skipped badFaces="
+                         << badPyramidFaces.size()
+                         << " provSize=" << provAudit.size() << endl;
+                }
+            }
+
             // Final bad-pyramid classifier. Non-mutating diagnostic only.
             // This classifies the remaining post-refinement bad faces by
             // nearby patch contact so we know whether the residual defect is
@@ -3353,6 +3460,7 @@ void cartesianMeshGenerator::generateMesh()
             {
                 postOptBadFaces_.clear();
             }
+
             // Rollback if negVol got worse, or badPyramids got much worse
             // without negVol improvement. If negVol improved but is nonzero,
             // keep the improved points but flag mesh as dirty so re-projection
