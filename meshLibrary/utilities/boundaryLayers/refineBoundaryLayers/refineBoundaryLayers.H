@@ -115,8 +115,10 @@ class refineBoundaryLayers
         //- the boundary-local bfI that produced it. -1 for non-BL cells.
         labelList cellToBaseBndFace_;
 
-        //- boundary faces forced to single layer treatment
-        labelHashSet forceSingleLayerFaces_;
+        //- boundary faces with forced max-layer caps (bfI -> maxLayers).
+        //- Applied in analyseLayers() after all global/patch layer-count
+        //- logic so it always wins. Multiple calls only lower caps.
+        Map<label> forcedMaxLayersAtFace_;
         //- gap conflict arbitration data for local split-edge layer capping.
         //- gapActionPoints_: mesh point labels of loser-side gap zone points.
         //- gapLoserPatchNames_: loser-side patch names.
@@ -447,6 +449,15 @@ public:
 
         //- force single layer on mixed-displacement boundary faces
         void forceSingleLayerAtFaces(const labelHashSet& faces);
+
+        //- force tapered maximum layer caps around seed boundary faces
+        void forceMaxLayersAtFaces
+        (
+            const labelHashSet& faces,
+            const label ring0MaxLayers,
+            const label ring1MaxLayers,
+            const label ring2MaxLayers
+        );
 
         //- set BL/BL junction points for wedge topology emission
         void setBlblJunctionPoints(const labelHashSet& pts);

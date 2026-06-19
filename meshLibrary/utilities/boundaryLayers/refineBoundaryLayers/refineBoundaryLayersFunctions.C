@@ -477,18 +477,21 @@ bool refineBoundaryLayers::analyseLayers()
              << " faces capped" << endl;
     }
 
-    // Post-optimizer BL retraction: cap forced faces to 1 layer.
-    // forceSingleLayerFaces_ contains boundary-local bfI indices.
+    // Provenance/junction BL retraction: cap selected boundary faces to
+    // a maximum layer count. Generalizes the old binary
+    // forceSingleLayerFaces_ logic into a tapered ring cap.
     // Applied after all global/patch layer-count logic so it always wins.
-    if( forceSingleLayerFaces_.size() )
+    if( forcedMaxLayersAtFace_.size() )
     {
-        label nForced = 0;
-        label nAlreadyOne = 0;
+        label nCapped = 0;
+        label nAlreadyAtOrBelow = 0;
         label nOutOfRange = 0;
+        label nInvalidCap = 0;
 
-        forAllConstIter(labelHashSet, forceSingleLayerFaces_, it)
+        forAllConstIter(Map<label>, forcedMaxLayersAtFace_, it)
         {
             const label bfI = it.key();
+            const label maxLayers = it();
 
             if( bfI < 0 || bfI >= label(nLayersAtBndFace_.size()) )
             {
@@ -496,22 +499,29 @@ bool refineBoundaryLayers::analyseLayers()
                 continue;
             }
 
-            if( nLayersAtBndFace_[bfI] > 1 )
+            if( maxLayers < 0 )
             {
-                nLayersAtBndFace_[bfI] = 1;
-                ++nForced;
+                ++nInvalidCap;
+                continue;
+            }
+
+            if( nLayersAtBndFace_[bfI] > maxLayers )
+            {
+                nLayersAtBndFace_[bfI] = maxLayers;
+                ++nCapped;
             }
             else
             {
-                ++nAlreadyOne;
+                ++nAlreadyAtOrBelow;
             }
         }
 
-        Info << "refineBoundaryLayers: forceSingleLayerAtFaces applied: "
-             << "forced=" << nForced
-             << " alreadyOneOrZero=" << nAlreadyOne
+        Info << "refineBoundaryLayers: forced max-layer caps applied: "
+             << "capped=" << nCapped
+             << " alreadyAtOrBelow=" << nAlreadyAtOrBelow
              << " outOfRange=" << nOutOfRange
-             << " requested=" << forceSingleLayerFaces_.size()
+             << " invalidCap=" << nInvalidCap
+             << " requested=" << forcedMaxLayersAtFace_.size()
              << endl;
     }
 

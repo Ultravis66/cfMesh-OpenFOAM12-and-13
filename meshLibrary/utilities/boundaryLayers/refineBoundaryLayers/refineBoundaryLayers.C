@@ -527,25 +527,133 @@ void refineBoundaryLayers::forceSingleLayerAtFaces
     const labelHashSet& faces
 )
 {
-    // Post-optimizer BL retraction: store boundary-local bfI indices.
-    // These are applied in analyseLayers() after nLayersAtBndFace_ is
-    // initialised from global/patch settings, capping local layer count to 1.
-    label nAdded = 0;
+    // Backwards-compatible wrapper: old behavior means seed faces capped
+    // to exactly one layer and no neighbour-ring expansion.
+    forceMaxLayersAtFaces(faces, 1, 0, 0);
+}
+
+void refineBoundaryLayers::forceMaxLayersAtFaces
+(
+    const labelHashSet& faces,
+    const label ring0MaxLayers,
+    const label ring1MaxLayers,
+    const label ring2MaxLayers
+)
+{
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const VRWGraph& faceFaces = mse.faceFaces();
+    const label nBndFaces = faceFaces.size();
+
+    labelHashSet ring0;
+    labelHashSet ring1;
+    labelHashSet ring2;
+
     forAllConstIter(labelHashSet, faces, it)
     {
         const label bfI = it.key();
-        if( !forceSingleLayerFaces_.found(bfI) )
+        if( bfI >= 0 && bfI < nBndFaces )
+            ring0.insert(bfI);
+    }
+
+    if( ring1MaxLayers > 0 )
+    {
+        forAllConstIter(labelHashSet, ring0, it)
         {
-            forceSingleLayerFaces_.insert(bfI);
+            const label bfI = it.key();
+            forAllRow(faceFaces, bfI, nI)
+            {
+                const label nbfI = faceFaces(bfI, nI);
+                if( nbfI < 0 || nbfI >= nBndFaces ) continue;
+                if( ring0.found(nbfI) ) continue;
+                ring1.insert(nbfI);
+            }
+        }
+    }
+
+    if( ring2MaxLayers > 0 )
+    {
+        forAllConstIter(labelHashSet, ring1, it)
+        {
+            const label bfI = it.key();
+            forAllRow(faceFaces, bfI, nI)
+            {
+                const label nbfI = faceFaces(bfI, nI);
+                if( nbfI < 0 || nbfI >= nBndFaces ) continue;
+                if( ring0.found(nbfI) || ring1.found(nbfI) ) continue;
+                ring2.insert(nbfI);
+            }
+        }
+    }
+
+    label nAdded = 0;
+    label nLowered = 0;
+
+    forAllConstIter(labelHashSet, ring0, it)
+    {
+        const label bfI = it.key();
+        if( ring0MaxLayers <= 0 ) continue;
+        if( forcedMaxLayersAtFace_.found(bfI) )
+        {
+            const label oldCap = forcedMaxLayersAtFace_[bfI];
+            const label newCap = Foam::min(oldCap, ring0MaxLayers);
+            if( newCap < oldCap ) ++nLowered;
+            forcedMaxLayersAtFace_[bfI] = newCap;
+        }
+        else
+        {
+            forcedMaxLayersAtFace_.insert(bfI, ring0MaxLayers);
             ++nAdded;
         }
     }
 
-    Info << "refineBoundaryLayers: forceSingleLayerAtFaces: "
-         << forceSingleLayerFaces_.size()
-         << " total boundary faces will be retracted to 1 layer"
-         << " (added=" << nAdded
-         << ", requested=" << faces.size() << ")" << endl;
+    forAllConstIter(labelHashSet, ring1, it)
+    {
+        const label bfI = it.key();
+        if( ring1MaxLayers <= 0 ) continue;
+        if( forcedMaxLayersAtFace_.found(bfI) )
+        {
+            const label oldCap = forcedMaxLayersAtFace_[bfI];
+            const label newCap = Foam::min(oldCap, ring1MaxLayers);
+            if( newCap < oldCap ) ++nLowered;
+            forcedMaxLayersAtFace_[bfI] = newCap;
+        }
+        else
+        {
+            forcedMaxLayersAtFace_.insert(bfI, ring1MaxLayers);
+            ++nAdded;
+        }
+    }
+
+    forAllConstIter(labelHashSet, ring2, it)
+    {
+        const label bfI = it.key();
+        if( ring2MaxLayers <= 0 ) continue;
+        if( forcedMaxLayersAtFace_.found(bfI) )
+        {
+            const label oldCap = forcedMaxLayersAtFace_[bfI];
+            const label newCap = Foam::min(oldCap, ring2MaxLayers);
+            if( newCap < oldCap ) ++nLowered;
+            forcedMaxLayersAtFace_[bfI] = newCap;
+        }
+        else
+        {
+            forcedMaxLayersAtFace_.insert(bfI, ring2MaxLayers);
+            ++nAdded;
+        }
+    }
+
+    Info << "refineBoundaryLayers: forceMaxLayersAtFaces: "
+         << "seedFaces=" << faces.size()
+         << " validRing0=" << ring0.size()
+         << " ring1=" << ring1.size()
+         << " ring2=" << ring2.size()
+         << " caps=(" << ring0MaxLayers << ','
+                     << ring1MaxLayers << ','
+                     << ring2MaxLayers << ')'
+         << " totalCappedFaces=" << forcedMaxLayersAtFace_.size()
+         << " added=" << nAdded
+         << " lowered=" << nLowered
+         << endl;
 }
 
 void refineBoundaryLayers::setBlblJunctionPoints

@@ -1048,11 +1048,43 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                     if( provenanceSeeds.size() > 0 )
                     {
-                        refLayers.forceSingleLayerAtFaces(provenanceSeeds);
-                        Info << "Provenance-direct retraction: loaded "
+                        label ring0MaxLayers = 2;
+                        label ring1MaxLayers = 3;
+                        label ring2MaxLayers = 4;
+
+                        if( meshDict_.isDict("boundaryLayers") )
+                        {
+                            const dictionary& bndL =
+                                meshDict_.subDict("boundaryLayers");
+
+                            if( bndL.found("postRefBLRing0MaxLayers") )
+                                ring0MaxLayers =
+                                    readLabel(bndL.lookup("postRefBLRing0MaxLayers"));
+
+                            if( bndL.found("postRefBLRing1MaxLayers") )
+                                ring1MaxLayers =
+                                    readLabel(bndL.lookup("postRefBLRing1MaxLayers"));
+
+                            if( bndL.found("postRefBLRing2MaxLayers") )
+                                ring2MaxLayers =
+                                    readLabel(bndL.lookup("postRefBLRing2MaxLayers"));
+                        }
+
+                        refLayers.forceMaxLayersAtFaces
+                        (
+                            provenanceSeeds,
+                            ring0MaxLayers,
+                            ring1MaxLayers,
+                            ring2MaxLayers
+                        );
+
+                        Info << "Provenance-direct tapered retraction: loaded "
                              << provenanceSeeds.size()
                              << " bfI seeds from " << seedFileName
-                             << " and capped to 1 layer" << endl;
+                             << " with ring caps=("
+                             << ring0MaxLayers << ','
+                             << ring1MaxLayers << ','
+                             << ring2MaxLayers << ')' << endl;
                     }
                     else
                     {
