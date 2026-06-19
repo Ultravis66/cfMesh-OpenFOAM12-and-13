@@ -530,10 +530,22 @@ void refineBoundaryLayers::forceSingleLayerAtFaces
     // Post-optimizer BL retraction: store boundary-local bfI indices.
     // These are applied in analyseLayers() after nLayersAtBndFace_ is
     // initialised from global/patch settings, capping local layer count to 1.
-    forceSingleLayerFaces_ = faces;
+    label nAdded = 0;
+    forAllConstIter(labelHashSet, faces, it)
+    {
+        const label bfI = it.key();
+        if( !forceSingleLayerFaces_.found(bfI) )
+        {
+            forceSingleLayerFaces_.insert(bfI);
+            ++nAdded;
+        }
+    }
+
     Info << "refineBoundaryLayers: forceSingleLayerAtFaces: "
          << forceSingleLayerFaces_.size()
-         << " boundary faces will be retracted to 1 layer" << endl;
+         << " total boundary faces will be retracted to 1 layer"
+         << " (added=" << nAdded
+         << ", requested=" << faces.size() << ")" << endl;
 }
 
 void refineBoundaryLayers::setBlblJunctionPoints

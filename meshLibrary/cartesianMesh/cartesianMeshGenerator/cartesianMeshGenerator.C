@@ -49,6 +49,7 @@ Description
 #include "checkIrregularSurfaceConnections.H"
 #include "checkNonMappableCellConnections.H"
 #include "OFstream.H"
+#include "IFstream.H"
 #include "checkBoundaryFacesSharingTwoEdges.H"
 #include "triSurfaceMetaData.H"
 #include "polyMeshGenChecks.H"
@@ -1004,6 +1005,71 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
         }
 
+        // Provenance-direct BL retraction.
+        // Separate from postOptBLRetraction (geometric traceToSeedFaces).
+        // Uses exact bfI seeds from a previous post-refBL diagnostic run.
+        // File format: one boundary-local bfI per line, no header.
+        // Generate from diagnostic run:
+        //   tail -n +2 postRefBL_provenanceSeedBfI.csv \
+        //       > postRefBL_provenanceSeedBfI.labels
+        {
+            bool doProvRetraction = false;
+            word seedFileName("postRefBL_provenanceSeedBfI.labels");
+
+            if( meshDict_.isDict("boundaryLayers") )
+            {
+                const dictionary& bndL =
+                    meshDict_.subDict("boundaryLayers");
+
+                if( bndL.found("postRefBLProvenanceRetraction") )
+                    doProvRetraction =
+                        bool(Switch(bndL.lookup("postRefBLProvenanceRetraction")));
+
+                if( bndL.found("postRefBLProvenanceSeedFile") )
+                    seedFileName =
+                        word(bndL.lookup("postRefBLProvenanceSeedFile"));
+            }
+
+            if( doProvRetraction )
+            {
+                IFstream seedFile(seedFileName);
+
+                if( seedFile.good() )
+                {
+                    labelHashSet provenanceSeeds;
+                    label bfI = -1;
+
+                    while( seedFile.good() )
+                    {
+                        seedFile >> bfI;
+                        if( seedFile.good() && bfI >= 0 )
+                            provenanceSeeds.insert(bfI);
+                    }
+
+                    if( provenanceSeeds.size() > 0 )
+                    {
+                        refLayers.forceSingleLayerAtFaces(provenanceSeeds);
+                        Info << "Provenance-direct retraction: loaded "
+                             << provenanceSeeds.size()
+                             << " bfI seeds from " << seedFileName
+                             << " and capped to 1 layer" << endl;
+                    }
+                    else
+                    {
+                        Info << "Provenance-direct retraction: seed file "
+                             << seedFileName
+                             << " contained no valid bfI entries" << endl;
+                    }
+                }
+                else
+                {
+                    Info << "Provenance-direct retraction: seed file "
+                         << seedFileName
+                         << " not found/readable -- skipped" << endl;
+                }
+            }
+        }
+
         nPointsBeforeBL_ = mesh_.points().size();
         refLayers.refineLayers();
 
@@ -1011,6 +1077,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
         // Dumps all BL-generated cells to CSV for direct query.
         // Does NOT depend on negVol -- bad pyramids have negVol=0 and are
         // invisible to checkCellVolumes(). Query: grep "534099," the CSV.
+        // Extended: cross-reference bad pyramid faces after refBL against
+        // cellToBaseBndFace_ so we know which original bfI generated them.
+        // NOTE: no mesh_.clearAddressingData() here -- downstream optimizer
+        // pipeline needs addressing intact. checkFacePyramids works without it.
         {
             const labelList& prov = refLayers.cellToBaseBndFace();
             if( prov.size() > 0 )
@@ -1029,6 +1099,88 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                 Info << "postRefBL provenance: mappedCells=" << nMapped
                      << " wrote postRefBL_cellProvenance.csv" << endl;
+
+                // Audit bad pyramid faces on grown refBL mesh.
+                // No clearAddressingData -- optimizer needs addressing intact.
+                labelHashSet postRefBLBadPyramids;
+                polyMeshGenChecks::checkFacePyramids
+                (
+                    mesh_,
+                    false,
+                    -SMALL,
+                    &postRefBLBadPyramids
+                );
+
+                labelHashSet provenanceSeedBfI;
+                label nAuditedCells = 0;
+                label nWithProv = 0;
+                label nNoProv = 0;
+
+                OFstream seedOs("postRefBL_badPyramidProvenance.csv");
+                seedOs << "badFaceI,side,cellI,primaryBfI" << nl;
+
+                const labelList& own = mesh_.owner();
+                const labelList& nei = mesh_.neighbour();
+
+                forAllConstIter(labelHashSet, postRefBLBadPyramids, it)
+                {
+                    const label faceI = it.key();
+
+                    // Owner side
+                    if( faceI >= 0 && faceI < label(own.size()) )
+                    {
+                        const label cellI = own[faceI];
+                        if( cellI >= 0 && cellI < label(prov.size()) )
+                        {
+                            ++nAuditedCells;
+                            const label bfI = prov[cellI];
+                            seedOs << faceI << ",owner,"
+                                   << cellI << ',' << bfI << nl;
+                            if( bfI >= 0 )
+                            {
+                                provenanceSeedBfI.insert(bfI);
+                                ++nWithProv;
+                            }
+                            else ++nNoProv;
+                        }
+                    }
+
+                    // Neighbour side, internal faces only
+                    if( faceI >= 0 && faceI < label(nei.size()) )
+                    {
+                        const label cellI = nei[faceI];
+                        if( cellI >= 0 && cellI < label(prov.size()) )
+                        {
+                            ++nAuditedCells;
+                            const label bfI = prov[cellI];
+                            seedOs << faceI << ",neighbour,"
+                                   << cellI << ',' << bfI << nl;
+                            if( bfI >= 0 )
+                            {
+                                provenanceSeedBfI.insert(bfI);
+                                ++nWithProv;
+                            }
+                            else ++nNoProv;
+                        }
+                    }
+                }
+
+                Info << "postRefBL bad pyramid audit: "
+                     << "badFaces=" << postRefBLBadPyramids.size()
+                     << " auditedCells=" << nAuditedCells
+                     << " withProv=" << nWithProv
+                     << " noProv=" << nNoProv
+                     << " uniqueSeedBfI=" << provenanceSeedBfI.size()
+                     << " wrote postRefBL_badPyramidProvenance.csv"
+                     << endl;
+
+                OFstream seedBfOs("postRefBL_provenanceSeedBfI.csv");
+                seedBfOs << "bfI" << nl;
+                forAllConstIter(labelHashSet, provenanceSeedBfI, sit)
+                    seedBfOs << sit.key() << nl;
+
+                Info << "postRefBL provenance seed bfI written to "
+                     << "postRefBL_provenanceSeedBfI.csv" << endl;
             }
         }
 
