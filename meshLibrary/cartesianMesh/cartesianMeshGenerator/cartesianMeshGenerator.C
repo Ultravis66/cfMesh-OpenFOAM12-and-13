@@ -1134,6 +1134,108 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
         }
 
+        // Pre-refBL mesh snapshot for two-pass repair loop.
+        struct PreRefBLMeshSnapshot
+        {
+            pointField points;
+            faceList   faces;
+            cellList   cells;
+            wordList   patchNames;
+            labelList  patchStart;
+            labelList  patchSize;
+            bool       valid;
+            PreRefBLMeshSnapshot() : valid(false) {}
+        };
+
+        auto takePreRefBLSnapshot =
+        [&](PreRefBLMeshSnapshot& snap)
+        {
+            Info << "Pre-refBL snapshot: saving mesh state" << endl;
+
+            const pointFieldPMG& mp = mesh_.points();
+            snap.points.setSize(mp.size());
+            forAll(mp, pI) snap.points[pI] = mp[pI];
+
+            const faceListPMG& mf = mesh_.faces();
+            snap.faces.setSize(mf.size());
+            forAll(mf, fI) snap.faces[fI] = mf[fI];
+
+            const cellListPMG& mc = mesh_.cells();
+            snap.cells.setSize(mc.size());
+            forAll(mc, cI) snap.cells[cI] = mc[cI];
+
+            const PtrList<boundaryPatch>& bnd = mesh_.boundaries();
+            snap.patchNames.setSize(bnd.size());
+            snap.patchStart.setSize(bnd.size());
+            snap.patchSize.setSize(bnd.size());
+            forAll(bnd, patchI)
+            {
+                snap.patchNames[patchI] = bnd[patchI].patchName();
+                snap.patchStart[patchI] = bnd[patchI].patchStart();
+                snap.patchSize[patchI]  = bnd[patchI].patchSize();
+            }
+            snap.valid = true;
+
+            Info << "Pre-refBL snapshot: saved "
+                 << snap.points.size() << " points, "
+                 << snap.faces.size() << " faces, "
+                 << snap.cells.size() << " cells, "
+                 << snap.patchNames.size() << " patches" << endl;
+        };
+
+        auto restorePreRefBLSnapshot =
+        [&](const PreRefBLMeshSnapshot& snap) -> bool
+        {
+            if( !snap.valid )
+            {
+                Info << "Pre-refBL snapshot: restore skipped -- "
+                     << "snapshot is not valid" << endl;
+                return false;
+            }
+
+            Info << "Pre-refBL snapshot: restoring mesh state" << endl;
+
+            polyMeshGenModifier meshModifier(mesh_);
+            meshModifier.pointsAccess() = snap.points;
+            meshModifier.facesAccess()  = snap.faces;
+            meshModifier.cellsAccess()  = snap.cells;
+
+            PtrList<boundaryPatch>& bnd = meshModifier.boundariesAccess();
+            if( bnd.size() != snap.patchNames.size() )
+            {
+                Info << "Pre-refBL snapshot: restore failed -- patch count "
+                     << "changed from " << snap.patchNames.size()
+                     << " to " << bnd.size() << endl;
+                return false;
+            }
+            forAll(bnd, patchI)
+            {
+                bnd[patchI].patchName()  = snap.patchNames[patchI];
+                bnd[patchI].patchStart() = snap.patchStart[patchI];
+                bnd[patchI].patchSize()  = snap.patchSize[patchI];
+            }
+            mesh_.clearAddressingData();
+
+            Info << "Pre-refBL snapshot: restored "
+                 << snap.points.size() << " points, "
+                 << snap.faces.size() << " faces, "
+                 << snap.cells.size() << " cells" << endl;
+            return true;
+        };
+
+        bool doPreRefBLSnapshot = false;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndL = meshDict_.subDict("boundaryLayers");
+            if( bndL.found("preRefBLSnapshot") )
+                doPreRefBLSnapshot =
+                    bool(Switch(bndL.lookup("preRefBLSnapshot")));
+        }
+
+        PreRefBLMeshSnapshot preRefBLSnap;
+        if( doPreRefBLSnapshot && !reprojUnsafe_ )
+            takePreRefBLSnapshot(preRefBLSnap);
+
         nPointsBeforeBL_ = mesh_.points().size();
         refLayers.refineLayers();
 
