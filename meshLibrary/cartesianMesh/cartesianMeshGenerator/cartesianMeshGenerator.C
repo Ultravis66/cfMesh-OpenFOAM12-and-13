@@ -1371,6 +1371,162 @@ void cartesianMeshGenerator::refBoundaryLayers()
                              << "patchRoles not configured in meshDict" << endl;
                     }
                 }
+
+                // Two-pass BL repair loop.
+                // Ordering: classify while pass-1 mesh alive, snapshot pass-1,
+                // restore pre-refBL, run pass-2, accept only if better,
+                // restore pass-1 if rejected.
+                bool twoPassAccepted = false;
+                bool twoPassAttempted = false;
+
+                {
+                    bool doAutoRepair = false;
+                    if( meshDict_.isDict("boundaryLayers") )
+                    {
+                        const dictionary& bndL =
+                            meshDict_.subDict("boundaryLayers");
+                        if( bndL.found("preRefBLAutoRepair") )
+                            doAutoRepair =
+                                bool(Switch(bndL.lookup("preRefBLAutoRepair")));
+                    }
+
+                    if( doAutoRepair
+                     && preRefBLSnap.valid
+                     && !reprojUnsafe_
+                     && postRefBLBadPyramids.size() > 0
+                     && provenanceSeedBfI.size() > 0 )
+                    {
+                        twoPassAttempted = true;
+
+                        labelHashSet pass1NegVol;
+                        polyMeshGenChecks::checkCellVolumes
+                            (mesh_, false, &pass1NegVol);
+                        const label pass1BadPyr =
+                            label(postRefBLBadPyramids.size());
+
+                        Info << "Two-pass BL repair: pass1 badPyramids="
+                             << pass1BadPyr
+                             << " negVol=" << pass1NegVol.size()
+                             << " seeds=" << provenanceSeedBfI.size()
+                             << endl;
+
+                        // Snapshot pass-1 BEFORE restore so rejection
+                        // can honestly recover pass-1 result.
+                        PreRefBLMeshSnapshot pass1BLSnap;
+                        takePreRefBLSnapshot(pass1BLSnap);
+
+                        // Classify while pass-1 mesh is still alive.
+                        // postRefBLBadPyramids face IDs belong to pass-1 mesh.
+                        Map<BLRepairPlan> plans;
+                        bool haveClassifierPlans = false;
+                        PatchRoleMap roles(meshDict_);
+
+                        if( roles.active() )
+                        {
+                            BLJunctionClassifier classifier2(mesh_, roles);
+                            plans = classifier2.classify
+                            (
+                                postRefBLBadPyramids,
+                                prov,
+                                false  // repair mode
+                            );
+                            haveClassifierPlans = plans.size() > 0;
+                        }
+
+                        // Now restore pre-refBL mesh for pass 2.
+                        if( restorePreRefBLSnapshot(preRefBLSnap) )
+                        {
+                            refineBoundaryLayers refLayers2(mesh_);
+                            refineBoundaryLayers::readSettings
+                                (meshDict_, refLayers2);
+                            refLayers2.setBlblJunctionPoints
+                                (blblJunctionPoints_);
+                            refLayers2.setBlblAcuteCornerPoints
+                                (blblAcuteCornerPoints_);
+                            refLayers2.setVtFaceRing(vtFaceRing_);
+
+                            if( haveClassifierPlans )
+                            {
+                                forAllIter(Map<BLRepairPlan>, plans, pit)
+                                {
+                                    const BLRepairPlan& plan = pit();
+                                    if( plan.active() )
+                                        refLayers2.forceMaxLayersAtFaces
+                                        (
+                                            plan.seedBfI_,
+                                            plan.ring0_.maxLayers,
+                                            plan.ring1_.maxLayers,
+                                            plan.ring2_.maxLayers,
+                                            plan.ring0_.thicknessScale,
+                                            plan.ring1_.thicknessScale,
+                                            plan.ring2_.thicknessScale
+                                        );
+                                }
+                            }
+                            else
+                            {
+                                Info << "Two-pass BL repair: using fallback "
+                                     << "provenance seed plan" << endl;
+                                refLayers2.forceMaxLayersAtFaces
+                                (
+                                    provenanceSeedBfI,
+                                    3, 4, 0,
+                                    0.60, 0.80, 1.00
+                                );
+                            }
+
+                            nPointsBeforeBL_ = mesh_.points().size();
+                            refLayers2.refineLayers();
+
+                            labelHashSet pass2NegVol;
+                            polyMeshGenChecks::checkCellVolumes
+                                (mesh_, false, &pass2NegVol);
+                            labelHashSet pass2BadPyr;
+                            polyMeshGenChecks::checkFacePyramids
+                                (mesh_, false, -SMALL, &pass2BadPyr);
+
+                            const bool pass2Better =
+                                pass2NegVol.size() <= pass1NegVol.size()
+                             && label(pass2BadPyr.size()) < pass1BadPyr;
+
+                            Info << "Two-pass BL repair: pass2 badPyramids="
+                                 << pass2BadPyr.size()
+                                 << " negVol=" << pass2NegVol.size()
+                                 << (pass2Better ? " -- ACCEPTED" : " -- REJECTED")
+                                 << endl;
+
+                            if( pass2Better )
+                            {
+                                refLayers2.pointsInBndLayer(blPoints_);
+                                twoPassAccepted = true;
+                            }
+                            else
+                            {
+                                Info << "Two-pass BL repair: restoring pass1 "
+                                     << "result after rejected pass2" << endl;
+                                restorePreRefBLSnapshot(pass1BLSnap);
+                            }
+                        }
+                        else
+                        {
+                            Info << "Two-pass BL repair: pre-refBL restore "
+                                 << "failed -- keeping pass1 result" << endl;
+                        }
+                    }
+                    else if( doAutoRepair )
+                    {
+                        Info << "Two-pass BL repair: skipped -- "
+                             << (reprojUnsafe_ ? "reprojUnsafe " : "")
+                             << (!preRefBLSnap.valid ? "noSnapshot " : "")
+                             << (postRefBLBadPyramids.size()==0 ? "noBadPyr " : "")
+                             << (provenanceSeedBfI.size()==0 ? "noSeeds" : "")
+                             << endl;
+                    }
+                }
+
+                if( twoPassAttempted && !twoPassAccepted )
+                    Info << "Two-pass BL repair: using pass1 BL point set" << endl;
+
             }
         }
 
