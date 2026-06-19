@@ -119,6 +119,12 @@ class refineBoundaryLayers
         //- Applied in analyseLayers() after all global/patch layer-count
         //- logic so it always wins. Multiple calls only lower caps.
         Map<label> forcedMaxLayersAtFace_;
+
+        //- boundary faces with forced BL thickness scales (bfI -> scale).
+        //- scale in [0,1]: 1.0 = full thickness, 0.5 = half thickness.
+        //- Applied to firstLayerThickness[seI] for all split edges at bfI.
+        //- Multiple calls keep the minimum (most aggressive) scale.
+        Map<scalar> forcedThicknessScaleAtFace_;
         //- gap conflict arbitration data for local split-edge layer capping.
         //- gapActionPoints_: mesh point labels of loser-side gap zone points.
         //- gapLoserPatchNames_: loser-side patch names.
@@ -456,7 +462,10 @@ public:
             const labelHashSet& faces,
             const label ring0MaxLayers,
             const label ring1MaxLayers,
-            const label ring2MaxLayers
+            const label ring2MaxLayers,
+            const scalar ring0ThicknessScale = 1.0,
+            const scalar ring1ThicknessScale = 1.0,
+            const scalar ring2ThicknessScale = 1.0
         );
 
         //- set BL/BL junction points for wedge topology emission

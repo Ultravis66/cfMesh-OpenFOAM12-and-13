@@ -537,7 +537,10 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
     const labelHashSet& faces,
     const label ring0MaxLayers,
     const label ring1MaxLayers,
-    const label ring2MaxLayers
+    const label ring2MaxLayers,
+    const scalar ring0ThicknessScale,
+    const scalar ring1ThicknessScale,
+    const scalar ring2ThicknessScale
 )
 {
     const meshSurfaceEngine& mse = surfaceEngine();
@@ -587,6 +590,39 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
 
     label nAdded = 0;
     label nLowered = 0;
+    label nThicknessAdded = 0;
+    label nThicknessLowered = 0;
+
+    auto applyThicknessScale =
+    [&](const labelHashSet& ringFaces, const scalar scale)
+    {
+        if( scale >= scalar(1.0) - SMALL )
+            return;
+
+        const scalar clippedScale =
+            Foam::max(scalar(0.0), Foam::min(scalar(1.0), scale));
+
+        forAllConstIter(labelHashSet, ringFaces, it)
+        {
+            const label bfI = it.key();
+
+            if( forcedThicknessScaleAtFace_.found(bfI) )
+            {
+                const scalar oldScale = forcedThicknessScaleAtFace_[bfI];
+                const scalar newScale = Foam::min(oldScale, clippedScale);
+
+                if( newScale < oldScale - SMALL )
+                    ++nThicknessLowered;
+
+                forcedThicknessScaleAtFace_[bfI] = newScale;
+            }
+            else
+            {
+                forcedThicknessScaleAtFace_.insert(bfI, clippedScale);
+                ++nThicknessAdded;
+            }
+        }
+    };
 
     forAllConstIter(labelHashSet, ring0, it)
     {
@@ -642,6 +678,10 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
         }
     }
 
+    applyThicknessScale(ring0, ring0ThicknessScale);
+    applyThicknessScale(ring1, ring1ThicknessScale);
+    applyThicknessScale(ring2, ring2ThicknessScale);
+
     Info << "refineBoundaryLayers: forceMaxLayersAtFaces: "
          << "seedFaces=" << faces.size()
          << " validRing0=" << ring0.size()
@@ -653,6 +693,12 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
          << " totalCappedFaces=" << forcedMaxLayersAtFace_.size()
          << " added=" << nAdded
          << " lowered=" << nLowered
+         << " thicknessScales=(" << ring0ThicknessScale << ','
+                                 << ring1ThicknessScale << ','
+                                 << ring2ThicknessScale << ')'
+         << " totalScaledFaces=" << forcedThicknessScaleAtFace_.size()
+         << " thicknessAdded=" << nThicknessAdded
+         << " thicknessLowered=" << nThicknessLowered
          << endl;
 }
 

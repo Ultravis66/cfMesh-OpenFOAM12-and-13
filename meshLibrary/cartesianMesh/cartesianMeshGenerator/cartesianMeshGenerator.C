@@ -1057,9 +1057,13 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                     if( provenanceSeeds.size() > 0 )
                     {
-                        label ring0MaxLayers = 2;
-                        label ring1MaxLayers = 3;
-                        label ring2MaxLayers = 4;
+                        label ring0MaxLayers = 3;
+                        label ring1MaxLayers = 4;
+                        label ring2MaxLayers = 0;
+
+                        scalar ring0ThicknessScale = 0.60;
+                        scalar ring1ThicknessScale = 0.80;
+                        scalar ring2ThicknessScale = 1.00;
 
                         if( meshDict_.isDict("boundaryLayers") )
                         {
@@ -1077,6 +1081,18 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             if( bndL.found("postRefBLRing2MaxLayers") )
                                 ring2MaxLayers =
                                     readLabel(bndL.lookup("postRefBLRing2MaxLayers"));
+
+                            if( bndL.found("postRefBLRing0ThicknessScale") )
+                                ring0ThicknessScale =
+                                    readScalar(bndL.lookup("postRefBLRing0ThicknessScale"));
+
+                            if( bndL.found("postRefBLRing1ThicknessScale") )
+                                ring1ThicknessScale =
+                                    readScalar(bndL.lookup("postRefBLRing1ThicknessScale"));
+
+                            if( bndL.found("postRefBLRing2ThicknessScale") )
+                                ring2ThicknessScale =
+                                    readScalar(bndL.lookup("postRefBLRing2ThicknessScale"));
                         }
 
                         refLayers.forceMaxLayersAtFaces
@@ -1084,7 +1100,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             provenanceSeeds,
                             ring0MaxLayers,
                             ring1MaxLayers,
-                            ring2MaxLayers
+                            ring2MaxLayers,
+                            ring0ThicknessScale,
+                            ring1ThicknessScale,
+                            ring2ThicknessScale
                         );
 
                         Info << "Provenance-direct tapered retraction: loaded "
@@ -1093,7 +1112,11 @@ void cartesianMeshGenerator::refBoundaryLayers()
                              << " with ring caps=("
                              << ring0MaxLayers << ','
                              << ring1MaxLayers << ','
-                             << ring2MaxLayers << ')' << endl;
+                             << ring2MaxLayers << ')'
+                             << " thickness scales=("
+                             << ring0ThicknessScale << ','
+                             << ring1ThicknessScale << ','
+                             << ring2ThicknessScale << ')' << endl;
                     }
                     else
                     {

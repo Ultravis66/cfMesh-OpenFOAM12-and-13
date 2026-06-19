@@ -552,6 +552,67 @@ void refineBoundaryLayers::generateNewVertices()
     labelLongList nNodesAtEdge(splitEdges_.size());
     labelLongList nLayersAtEdge(splitEdges_.size());
 
+    // Per-split-edge thickness scale from BLRepairPlan.
+    // Min scale wins if multiple capped faces touch the same edge.
+    LongList<scalar> forcedThicknessScaleAtEdge(splitEdges_.size(), scalar(1.0));
+
+    if( forcedThicknessScaleAtFace_.size() )
+    {
+        const faceList::subList& bFaces = mse.boundaryFaces();
+
+        label nScaledFaces = 0;
+        label nScaledEdges = 0;
+        label nOutOfRangeFaces = 0;
+
+        forAllConstIter(Map<scalar>, forcedThicknessScaleAtFace_, it)
+        {
+            const label bfI = it.key();
+            const scalar scale =
+                Foam::max(scalar(0.0), Foam::min(scalar(1.0), it()));
+
+            if( bfI < 0 || bfI >= label(bFaces.size()) )
+            {
+                ++nOutOfRangeFaces;
+                continue;
+            }
+
+            ++nScaledFaces;
+
+            const face& bf = bFaces[bfI];
+
+            forAll(bf, fpI)
+            {
+                const label bpI = bf[fpI];
+
+                if( bpI < 0 || bpI >= label(splitEdgesAtPoint_.size()) )
+                    continue;
+
+                forAllRow(splitEdgesAtPoint_, bpI, seRowI)
+                {
+                    const label seI = splitEdgesAtPoint_(bpI, seRowI);
+
+                    if( seI < 0 || seI >= label(forcedThicknessScaleAtEdge.size()) )
+                        continue;
+
+                    const scalar oldScale = forcedThicknessScaleAtEdge[seI];
+                    const scalar newScale = Foam::min(oldScale, scale);
+
+                    if( newScale < oldScale - SMALL )
+                        ++nScaledEdges;
+
+                    forcedThicknessScaleAtEdge[seI] = newScale;
+                }
+            }
+        }
+
+        Info << "refineBoundaryLayers: forced thickness scales prepared: "
+             << "scaledFaces=" << nScaledFaces
+             << " scaledEdgesUpdates=" << nScaledEdges
+             << " outOfRangeFaces=" << nOutOfRangeFaces
+             << " requestedFaces=" << forcedThicknessScaleAtFace_.size()
+             << endl;
+    }
+
     //- count the number of vertices for each split edge
     # ifdef USE_OMP
     const label nThreads = omp_get_max_threads();
@@ -681,6 +742,10 @@ void refineBoundaryLayers::generateNewVertices()
 
             //- store the information
             firstLayerThickness[seI] = thickness;
+
+            if( forcedThicknessScaleAtEdge[seI] < scalar(1.0) - SMALL )
+                firstLayerThickness[seI] *= forcedThicknessScaleAtEdge[seI];
+
             thicknessRatio[seI] = ratio;
             nLayersAtEdge[seI] = nLayers;
 
