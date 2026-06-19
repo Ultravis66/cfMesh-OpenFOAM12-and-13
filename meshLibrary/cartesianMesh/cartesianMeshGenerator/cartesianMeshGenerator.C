@@ -3735,6 +3735,12 @@ void cartesianMeshGenerator::generateMesh()
             {
                 Info << "refBoundaryLayers: skipped -- final untangle was rejected, mesh state unsafe" << endl;
             }
+            else if( reprojUnsafe_ )
+            {
+                Info << "refBoundaryLayers: skipped -- pre-refBL mesh is marked "
+                     << "re-projection unsafe due to residual negVol / dirty "
+                     << "optimizer state" << endl;
+            }
             else
             {
                 refBoundaryLayers();
