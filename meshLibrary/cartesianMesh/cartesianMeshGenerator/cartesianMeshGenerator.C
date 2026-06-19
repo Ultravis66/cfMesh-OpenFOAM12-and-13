@@ -43,6 +43,8 @@ Description
 #include "topologicalCleaner.H"
 #include "boundaryLayers.H"
 #include "refineBoundaryLayers.H"
+#include "BLJunctionClassifier.H"
+#include "PatchRoleMap.H"
 #include "renameBoundaryPatches.H"
 #include "checkMeshDict.H"
 #include "checkCellConnectionsOverFaces.H"
@@ -1220,6 +1222,30 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                 Info << "postRefBL provenance seed bfI written to "
                      << "postRefBL_provenanceSeedBfI.csv" << endl;
+
+                // Junction classification diagnostic.
+                // Local PatchRoleMap -- no persistent state, no mesh change.
+                // diagnosticOnly=true: logs junction type counts only.
+                {
+                    PatchRoleMap roles(meshDict_);
+
+                    if( postRefBLBadPyramids.size() > 0 && roles.active() )
+                    {
+                        roles.print();
+                        BLJunctionClassifier classifier(mesh_, roles);
+                        classifier.classify
+                        (
+                            postRefBLBadPyramids,
+                            prov,
+                            true  // diagnosticOnly -- log only, no repair
+                        );
+                    }
+                    else if( postRefBLBadPyramids.size() > 0 )
+                    {
+                        Info << "BLJunctionClassifier: skipped -- "
+                             << "patchRoles not configured in meshDict" << endl;
+                    }
+                }
             }
         }
 
@@ -1780,6 +1806,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
 void cartesianMeshGenerator::optimiseFinalMesh()
 {
     finalUntangleRejected_ = false;
+    reprojUnsafe_ = false;
 
     //- untangle the surface if needed
     bool enforceConstraints(false);

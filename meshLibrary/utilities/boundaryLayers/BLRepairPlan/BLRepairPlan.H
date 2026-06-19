@@ -13,7 +13,8 @@ Description
 #ifndef BLRepairPlan_H
 #define BLRepairPlan_H
 
-#include "labelHashSet.H"
+#include "HashSet.H"
+
 #include "scalar.H"
 #include "word.H"
 #include "Map.H"
@@ -51,7 +52,7 @@ public:
     };
 
     // Data
-    labelHashSet seedBfI_;
+    HashSet<label> seedBfI_;
     ringParams   ring0_;
     ringParams   ring1_;
     ringParams   ring2_;
@@ -71,7 +72,7 @@ public:
 
     BLRepairPlan
     (
-        const labelHashSet& seeds,
+        const HashSet<label>& seeds,
         const ringParams& r0,
         const ringParams& r1,
         const ringParams& r2,

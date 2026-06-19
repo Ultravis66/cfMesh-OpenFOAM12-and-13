@@ -24,10 +24,11 @@ Description
 #ifndef PatchRoleMap_H
 #define PatchRoleMap_H
 
+#include "HashSet.H"
+
 #include "dictionary.H"
 #include "wordList.H"
 #include "HashTable.H"
-#include "wordHashSet.H"
 
 namespace Foam
 {
@@ -35,10 +36,10 @@ namespace Foam
 class PatchRoleMap
 {
     //- role name -> set of patch names
-    HashTable<wordHashSet> roleToPatches_;
+    HashTable<HashSet<word>> roleToPatches_;
 
     //- patch name -> set of role names (multi-role support)
-    HashTable<wordHashSet> patchToRoles_;
+    HashTable<HashSet<word>> patchToRoles_;
 
 public:
 
@@ -65,7 +66,7 @@ public:
             const wordList patches(roles.lookup(role));
 
             if( !roleToPatches_.found(role) )
-                roleToPatches_.insert(role, wordHashSet());
+                roleToPatches_.insert(role, HashSet<word>());
 
             forAll(patches, pI)
             {
@@ -74,7 +75,7 @@ public:
                 roleToPatches_[role].insert(patchName);
 
                 if( !patchToRoles_.found(patchName) )
-                    patchToRoles_.insert(patchName, wordHashSet());
+                    patchToRoles_.insert(patchName, HashSet<word>());
 
                 patchToRoles_[patchName].insert(role);
             }
@@ -107,12 +108,12 @@ public:
     }
 
     //- Return all roles for a patch, empty if unknown
-    wordHashSet rolesOf(const word& patchName) const
+    HashSet<word> rolesOf(const word& patchName) const
     {
         if( patchToRoles_.found(patchName) )
             return patchToRoles_[patchName];
 
-        return wordHashSet();
+        return HashSet<word>();
     }
 
     //- Return true if two patches form the requested role pair,
@@ -135,11 +136,11 @@ public:
     {
         Info << "PatchRoleMap:" << endl;
 
-        forAllConstIter(HashTable<wordHashSet>, roleToPatches_, it)
+        forAllConstIter(HashTable<HashSet<word>>, roleToPatches_, it)
         {
             Info << "  role=" << it.key() << " patches=(";
 
-            forAllConstIter(wordHashSet, it(), pIt)
+            forAllConstIter(HashSet<word>, it(), pIt)
                 Info << " " << pIt.key();
 
             Info << " )" << endl;

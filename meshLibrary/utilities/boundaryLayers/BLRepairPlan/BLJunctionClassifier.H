@@ -22,12 +22,12 @@ Description
 #ifndef BLJunctionClassifier_H
 #define BLJunctionClassifier_H
 
+#include "HashSet.H"
+
 #include "BLRepairPlan.H"
 #include "PatchRoleMap.H"
 #include "polyMeshGen.H"
 #include "meshSurfaceEngine.H"
-#include "labelHashSet.H"
-#include "wordHashSet.H"
 #include "Map.H"
 #include "PtrList.H"
 #include "boundaryPatch.H"
@@ -37,7 +37,7 @@ namespace Foam
 
 class BLJunctionClassifier
 {
-    const polyMeshGen&  mesh_;
+    polyMeshGen&  mesh_;
     const PatchRoleMap& roles_;
 
     //- bfI -> patch index
@@ -46,27 +46,40 @@ class BLJunctionClassifier
     void buildBfIToPatch()
     {
         const PtrList<boundaryPatch>& boundaries = mesh_.boundaries();
+        const label nInternalFaces = mesh_.nInternalFaces();
+
         label nBndFaces = 0;
         forAll(boundaries, pI)
             nBndFaces += boundaries[pI].patchSize();
 
         bfIToPatch_.setSize(nBndFaces, -1);
-        label bfI = 0;
+
         forAll(boundaries, pI)
-            for(label f=0; f<boundaries[pI].patchSize(); ++f)
-                bfIToPatch_[bfI++] = pI;
+        {
+            const label start = boundaries[pI].patchStart();
+            const label size  = boundaries[pI].patchSize();
+
+            for(label pfI=0; pfI<size; ++pfI)
+            {
+                const label globalFaceI = start + pfI;
+                const label bfI = globalFaceI - nInternalFaces;
+
+                if( bfI >= 0 && bfI < label(bfIToPatch_.size()) )
+                    bfIToPatch_[bfI] = pI;
+            }
+        }
     }
 
     //- Collect all roles around a source bfI from source patch
     //- and immediate face neighbors via faceFaces()
-    wordHashSet neighborhoodRoles
+    HashSet<word> neighborhoodRoles
     (
         const label bfI,
         const VRWGraph& faceFaces,
         const PtrList<boundaryPatch>& boundaries
     ) const
     {
-        wordHashSet localRoles;
+        HashSet<word> localRoles;
 
         auto addPatchRoles = [&](const label bfJ)
         {
@@ -74,8 +87,8 @@ class BLJunctionClassifier
             const label pI = bfIToPatch_[bfJ];
             if( pI < 0 || pI >= label(boundaries.size()) ) return;
             const word& pName = boundaries[pI].patchName();
-            wordHashSet pRoles = roles_.rolesOf(pName);
-            forAllConstIter(wordHashSet, pRoles, rIt)
+            HashSet<word> pRoles = roles_.rolesOf(pName);
+            forAllConstIter(HashSet<word>, pRoles, rIt)
                 localRoles.insert(rIt.key());
         };
 
@@ -93,7 +106,7 @@ class BLJunctionClassifier
     //- Classify combined role set to junction type
     BLRepairPlan::junctionType classifyRoles
     (
-        const wordHashSet& localRoles
+        const HashSet<word>& localRoles
     ) const
     {
         if( localRoles.found("wall") && localRoles.found("periodic") )
@@ -157,7 +170,7 @@ public:
 
     BLJunctionClassifier
     (
-        const polyMeshGen& mesh,
+        polyMeshGen& mesh,
         const PatchRoleMap& roles
     )
     :
@@ -171,7 +184,7 @@ public:
     //- diagnosticOnly=true: log only, do not populate plan seed sets.
     Map<BLRepairPlan> classify
     (
-        const labelHashSet& badFaces,
+        const HashSet<label>& badFaces,
         const labelList& cellToBaseBndFace,
         const bool diagnosticOnly = true
     ) const
@@ -186,12 +199,12 @@ public:
 
         // Count by junction type
         Map<label> typeCounts;
-        Map<labelHashSet> typeToSeeds;
+        Map<HashSet<label>> typeToSeeds;
 
         label nWithProv = 0;
         label nNoProv = 0;
 
-        forAllConstIter(labelHashSet, badFaces, it)
+        forAllConstIter(HashSet<label>, badFaces, it)
         {
             const label faceI = it.key();
 
@@ -223,7 +236,7 @@ public:
                 ++nWithProv;
 
                 // Neighborhood-based classification
-                const wordHashSet localRoles =
+                const HashSet<word> localRoles =
                     neighborhoodRoles(bfI, faceFaces, boundaries);
 
                 const BLRepairPlan::junctionType jType =
@@ -238,7 +251,7 @@ public:
                 if( !diagnosticOnly )
                 {
                     if( !typeToSeeds.found(jKey) )
-                        typeToSeeds.insert(jKey, labelHashSet());
+                        typeToSeeds.insert(jKey, HashSet<label>());
                     typeToSeeds[jKey].insert(bfI);
                 }
             }
@@ -263,7 +276,7 @@ public:
 
         if( !diagnosticOnly )
         {
-            forAllIter(Map<labelHashSet>, typeToSeeds, it)
+            forAllIter(Map<HashSet<label>>, typeToSeeds, it)
             {
                 const BLRepairPlan::junctionType jType =
                     BLRepairPlan::junctionType(it.key());
