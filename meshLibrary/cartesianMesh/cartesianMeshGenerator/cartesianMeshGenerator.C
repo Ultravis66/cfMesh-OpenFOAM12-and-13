@@ -1030,7 +1030,14 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         word(bndL.lookup("postRefBLProvenanceSeedFile"));
             }
 
-            if( doProvRetraction )
+            if( doProvRetraction && reprojUnsafe_ )
+            {
+                Info << "Provenance-direct retraction: skipped -- "
+                     << "pre-refBL mesh has residual negVol (reprojUnsafe). "
+                     << "Retraction on dirty mesh gives unreliable results."
+                     << endl;
+            }
+            else if( doProvRetraction )
             {
                 IFstream seedFile(seedFileName);
 
