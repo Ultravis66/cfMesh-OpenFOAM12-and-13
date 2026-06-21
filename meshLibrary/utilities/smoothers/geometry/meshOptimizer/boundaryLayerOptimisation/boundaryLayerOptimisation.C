@@ -266,3 +266,19 @@ void boundaryLayerOptimisation::readSettings
 } // End namespace Foam
 
 // ************************************************************************* //
+
+void Foam::boundaryLayerOptimisation::setMinThicknessFraction
+(
+    const scalar f
+)
+{
+    minThicknessFraction_ = f;
+}
+
+void Foam::boundaryLayerOptimisation::setMaxThicknessIterations
+(
+    const label n
+)
+{
+    maxThicknessIterations_ = n;
+}
