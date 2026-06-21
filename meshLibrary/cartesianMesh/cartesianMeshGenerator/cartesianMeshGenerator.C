@@ -1137,13 +1137,20 @@ void cartesianMeshGenerator::refBoundaryLayers()
         // Pre-refBL mesh snapshot for two-pass repair loop.
         struct PreRefBLMeshSnapshot
         {
-            pointField points;
-            faceList   faces;
-            cellList   cells;
-            wordList   patchNames;
-            labelList  patchStart;
-            labelList  patchSize;
-            bool       valid;
+            pointField   points;
+            faceList     faces;
+            cellList     cells;
+            wordList     patchNames;
+            labelList    patchStart;
+            labelList    patchSize;
+
+            // BL detection metadata. These contain point/face indices
+            // and must match the mesh state restored by this snapshot.
+            labelHashSet blblJunctionPoints;
+            labelHashSet blblAcuteCornerPoints;
+            labelList    vtFaceRing;
+
+            bool         valid;
             PreRefBLMeshSnapshot() : valid(false) {}
         };
 
@@ -1174,6 +1181,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 snap.patchStart[patchI] = bnd[patchI].patchStart();
                 snap.patchSize[patchI]  = bnd[patchI].patchSize();
             }
+            snap.blblJunctionPoints = blblJunctionPoints_;
+            snap.blblAcuteCornerPoints = blblAcuteCornerPoints_;
+            snap.vtFaceRing = vtFaceRing_;
+
             snap.valid = true;
 
             Info << "Pre-refBL snapshot: saved "
@@ -1214,6 +1225,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 bnd[patchI].patchStart() = snap.patchStart[patchI];
                 bnd[patchI].patchSize()  = snap.patchSize[patchI];
             }
+            blblJunctionPoints_ = snap.blblJunctionPoints;
+            blblAcuteCornerPoints_ = snap.blblAcuteCornerPoints;
+            vtFaceRing_ = snap.vtFaceRing;
+
             mesh_.clearAddressingData();
 
             Info << "Pre-refBL snapshot: restored "
@@ -1440,10 +1455,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             refineBoundaryLayers::readSettings
                                 (meshDict_, refLayers2);
                             refLayers2.setBlblJunctionPoints
-                                (blblJunctionPoints_);
+                                (preRefBLSnap.blblJunctionPoints);
                             refLayers2.setBlblAcuteCornerPoints
-                                (blblAcuteCornerPoints_);
-                            refLayers2.setVtFaceRing(vtFaceRing_);
+                                (preRefBLSnap.blblAcuteCornerPoints);
+                            refLayers2.setVtFaceRing(preRefBLSnap.vtFaceRing);
 
                             if( haveClassifierPlans )
                             {
