@@ -61,6 +61,7 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     done_(false),
     is2DMesh_(false),
     specialMode_(false),
+    refinementValid_(true),
     nLayersAtBndFace_(),
     cellToBaseBndFace_(),
     splitEdges_(),
@@ -373,6 +374,19 @@ void refineBoundaryLayers::refineLayers()
     generateNewVertices();
 
     generateNewFaces();
+
+    //- Fail closed: if face refinement hit inconsistent split-edge
+    //- metadata, abort before generateNewCells() mutates more topology.
+    //- The caller (two-pass loop) checks refinementValid() and rejects
+    //- this pass, restoring the previous valid mesh.
+    if( !refinementValid_ )
+    {
+        WarningIn("void refineBoundaryLayers::refineLayers()")
+            << "Boundary-layer refinement metadata invalid -- "
+            << "aborting refinement attempt before cell generation"
+            << endl;
+        return;
+    }
 
     generateNewCells();
 

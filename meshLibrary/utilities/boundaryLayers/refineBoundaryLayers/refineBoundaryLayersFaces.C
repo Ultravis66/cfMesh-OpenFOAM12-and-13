@@ -100,7 +100,9 @@ void refineBoundaryLayers::refineFace
         if( ++nInvalidSplitMetaFaces <= 20 )
             WarningIn("void refineBoundaryLayers::refineFace")
                 << "Invalid split-edge metadata for face " << f
-                << " - leaving unrefined" << endl;
+                << " - leaving unrefined, marking refinement invalid"
+                << endl;
+        refinementValid_ = false;
         newFaces.setSize(1);
         newFaces[0] = f;
         return;
@@ -281,6 +283,47 @@ void refineBoundaryLayers::refineFace
     Pout << "nLayersDir0 " << nLayersDir0 << endl;
     Pout << "nLayersDir1 " << nLayersDir1 << endl;
     # endif
+
+    //- Guard the directional split-edge indices before the matrix fill.
+    //- dir0Edges/dir1Edges come from edge-matching above, not from the
+    //- splitEdgesAtPoint_ row iteration the entry guard validates, so
+    //- they can independently be out of range on a transition face.
+    //- The matrix fill below dereferences these into splitEdges_ and
+    //- newVerticesForSplitEdge_ without bounds checks -- guard here.
+    {
+        const label seSz = label(splitEdges_.size());
+        const label nvSz = label(newVerticesForSplitEdge_.size());
+        bool dirEdgesValid = true;
+        if( dir0 >= 0 )
+        {
+            const label a = dir0Edges.first();
+            const label b = dir0Edges.second();
+            if( a < 0 || a >= seSz || a >= nvSz
+             || b < 0 || b >= seSz || b >= nvSz )
+                dirEdgesValid = false;
+        }
+        if( dirEdgesValid && dir1 >= 0 )
+        {
+            const label a = dir1Edges.first();
+            const label b = dir1Edges.second();
+            if( a < 0 || a >= seSz || a >= nvSz
+             || b < 0 || b >= seSz || b >= nvSz )
+                dirEdgesValid = false;
+        }
+        if( !dirEdgesValid )
+        {
+            static label nInvalidDirEdgeFaces = 0;
+            if( ++nInvalidDirEdgeFaces <= 20 )
+                WarningIn("void refineBoundaryLayers::refineFace")
+                    << "Invalid directional split-edge indices for face "
+                    << f << " - leaving unrefined, marking refinement"
+                    << " invalid" << endl;
+            refinementValid_ = false;
+            newFaces.setSize(1);
+            newFaces[0] = f;
+            return;
+        }
+    }
 
     //- map the face onto a matrix for easier orientation
     DynList<DynList<label> > facePoints;

@@ -100,6 +100,13 @@ class refineBoundaryLayers
         //- matching the thickness of the n-1 ones
         bool specialMode_;
 
+        //- false if refineFace() encountered inconsistent split-edge
+        //- metadata during refinement (e.g. after two-pass restore on a
+        //- transition face). Refinement leaves such faces unrefined and
+        //- sets this flag so the caller can reject the result cleanly
+        //- rather than ship a partially-refined mesh.
+        mutable bool refinementValid_;
+
         //- information about existing boundary layers at patches
         //- only available layers
         List<DynList<label> > layerAtPatch_;
@@ -378,6 +385,13 @@ public:
         ~refineBoundaryLayers();
 
     // Public member functions
+        //- true if refinement completed without inconsistent split-edge
+        //- metadata. Caller should reject the refined mesh if false.
+        bool refinementValid() const
+        {
+            return refinementValid_;
+        }
+
 
         // Settings
         //- set no refinement flag

@@ -1493,6 +1493,16 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             nPointsBeforeBL_ = mesh_.points().size();
                             refLayers2.refineLayers();
 
+                            if( !refLayers2.refinementValid() )
+                            {
+                                Info << "Two-pass BL repair: pass2 invalid "
+                                     << "refinement metadata -- REJECTED, "
+                                     << "restoring pass1" << endl;
+                                restorePreRefBLSnapshot(pass1BLSnap);
+                                twoPassAccepted = false;
+                            }
+                            else
+                            {
                             labelHashSet pass2NegVol;
                             polyMeshGenChecks::checkCellVolumes
                                 (mesh_, false, &pass2NegVol);
@@ -1521,6 +1531,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                      << "result after rejected pass2" << endl;
                                 restorePreRefBLSnapshot(pass1BLSnap);
                             }
+                            } // end refinementValid else
                         }
                         else
                         {
