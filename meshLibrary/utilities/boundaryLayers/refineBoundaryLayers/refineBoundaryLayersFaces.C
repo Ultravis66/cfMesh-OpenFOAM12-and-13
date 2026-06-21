@@ -857,10 +857,22 @@ void refineBoundaryLayers::generateNewFaces()
 
                 if( edges[beI] == fe )
                 {
-                    //- this edge is attached to the boundary
-                    //- get the number of layers for neighbouring cells
-                    const label nSplits0 = nLayersAtBndFace_[beFaces(beI, 0)];
-                    const label nSplits1 = nLayersAtBndFace_[beFaces(beI, 1)];
+                    //- this edge is attached to the boundary.
+                    //- Guard: a boundary edge may have only one adjacent
+                    //- boundary face (patch seam). The boundary-face loop
+                    //- below already checks sizeOfRow(beI)!=2, but this
+                    //- internal-face loop did not -- unguarded beFaces
+                    //- reads segfault refineFace() when pass2 repair plans
+                    //- alter layer topology at such edges.
+                    if( beFaces.sizeOfRow(beI) != 2 )
+                        continue;
+                    const label bf0 = beFaces(beI, 0);
+                    const label bf1 = beFaces(beI, 1);
+                    if( bf0 < 0 || bf0 >= label(nLayersAtBndFace_.size())
+                     || bf1 < 0 || bf1 >= label(nLayersAtBndFace_.size()) )
+                        continue;
+                    const label nSplits0 = nLayersAtBndFace_[bf0];
+                    const label nSplits1 = nLayersAtBndFace_[bf1];
 
                     //- set the number of layers for the given direction
                     const label dir = eI % 2;
