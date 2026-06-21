@@ -3989,16 +3989,30 @@ void cartesianMeshGenerator::generateMesh()
 
             if( meshOptNegNonZero && !meshOptNegWorse && !meshOptPyrTooMuchWorse )
             {
-                Info << "MESHOPTDIAG improved-but-dirty: negVol "
-                     << meshOptNegBefore.size() << "->" << meshOptNegAfter.size()
-                     << " badPyramids "
-                     << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
-                     << " -- keeping improved points, marking re-projection unsafe"
-                     << endl;
-                // Do not rollback -- mesh improved significantly.
-                // Do not set finalUntangleRejected_ -- that skips BL entirely.
-                // Only block snap/re-projection which are unsafe with residual negVol.
-                reprojUnsafe_ = true;
+                {
+                    label dirtyRecoverableMaxNegVol = 5;
+                    if( meshDict_.found("dirtyRecoverableMaxNegVol") )
+                        dirtyRecoverableMaxNegVol =
+                            readLabel(meshDict_.lookup("dirtyRecoverableMaxNegVol"));
+
+                    const word candidateState =
+                        label(meshOptNegAfter.size()) <= dirtyRecoverableMaxNegVol
+                      ? word("DIRTY_RECOVERABLE_CANDIDATE")
+                      : word("DIRTY_UNSAFE_CANDIDATE");
+
+                    Info << "MESHOPTDIAG improved-but-dirty: negVol "
+                         << meshOptNegBefore.size() << "->" << meshOptNegAfter.size()
+                         << " badPyramids "
+                         << meshOptBadBefore.size() << "->" << meshOptBadAfter.size()
+                         << " candidateState=" << candidateState
+                         << " threshold=" << dirtyRecoverableMaxNegVol
+                         << " -- keeping improved points, marking re-projection unsafe"
+                         << endl;
+                    // No behavior change: reprojUnsafe_ still gates downstream
+                    // repair/snap logic exactly as before. This classification
+                    // is observability only.
+                    reprojUnsafe_ = true;
+                }
             }
 
             if( meshOptNegWorse || meshOptPyrTooMuchWorse )
