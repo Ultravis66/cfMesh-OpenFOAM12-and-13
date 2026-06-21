@@ -62,6 +62,50 @@ void refineBoundaryLayers::refineFace
         return;
     }
 
+    //- Defensive split-edge metadata guard.
+    //- refineFace() assumes splitEdgesAtPoint_, splitEdges_, and
+    //- newVerticesForSplitEdge_ are mutually consistent. Two-pass BL
+    //- repair can expose transition faces where this is not true.
+    //- Leave the face unrefined rather than segfaulting; the pass2
+    //- accept/reject gate will decide whether the mesh is usable.
+    bool splitMetaValid = true;
+    forAll(f, eI)
+    {
+        const label pntI = f[eI];
+        if( pntI < 0 || pntI >= label(splitEdgesAtPoint_.size()) )
+        {
+            splitMetaValid = false;
+            break;
+        }
+
+        forAllRow(splitEdgesAtPoint_, pntI, peI)
+        {
+            const label seI = splitEdgesAtPoint_(pntI, peI);
+            if( seI < 0
+             || seI >= label(splitEdges_.size())
+             || seI >= label(newVerticesForSplitEdge_.size()) )
+            {
+                splitMetaValid = false;
+                break;
+            }
+        }
+
+        if( !splitMetaValid )
+            break;
+    }
+
+    if( !splitMetaValid )
+    {
+        static label nInvalidSplitMetaFaces = 0;
+        if( ++nInvalidSplitMetaFaces <= 20 )
+            WarningIn("void refineBoundaryLayers::refineFace")
+                << "Invalid split-edge metadata for face " << f
+                << " - leaving unrefined" << endl;
+        newFaces.setSize(1);
+        newFaces[0] = f;
+        return;
+    }
+
     //- direction 0 represents edges 0 and 2
     //- direction 1 represents edges 1 and 3
     if( (nLayersInDirection[0] <= 1) && (nLayersInDirection[1] <= 1) )
