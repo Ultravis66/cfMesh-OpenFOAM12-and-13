@@ -629,6 +629,7 @@ boundaryLayers::boundaryLayers
     nPoints_(mesh.points().size()),
     geometryAnalysed_(false),
     blblFeatureAngleDeg_(40.0),
+    blSharpEdgeAngleDeg_(75.0),
     blblCornerAcuteThreshold_(0.3),
     layerScaleRing1_(0.25),
     layerScaleRing2_(0.50),
@@ -692,6 +693,9 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("blblFeatureAngleDeg") )
             blblFeatureAngleDeg_ =
                 readScalar(bndLayers.lookup("blblFeatureAngleDeg"));
+        if( bndLayers.found("blSharpEdgeAngleDeg") )
+            blSharpEdgeAngleDeg_ =
+                readScalar(bndLayers.lookup("blSharpEdgeAngleDeg"));
         if( bndLayers.found("blblCornerAcuteThreshold") )
             blblCornerAcuteThreshold_ =
                 readScalar(bndLayers.lookup("blblCornerAcuteThreshold"));
@@ -1274,7 +1278,10 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // overconstrained -- full suppress regardless of angle.
     // Two-patch edge points get full suppress only if patch angle is sharp.
     {
-        const scalar cosSharp = Foam::cos(scalar(75.0) * M_PI / 180.0);
+        const scalar cosSharp =
+            Foam::cos(blSharpEdgeAngleDeg_ * M_PI / 180.0);
+        Info << "BL sharp-edge suppression: angle=" << blSharpEdgeAngleDeg_
+             << " deg (cos=" << cosSharp << ")" << endl;
         label nCornerSuppressed = 0;
         label nEdgeSuppressed = 0;
         // Diagnostic histogram of patch normal dot products

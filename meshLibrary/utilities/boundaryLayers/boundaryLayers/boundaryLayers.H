@@ -80,6 +80,7 @@ class boundaryLayers
 
         //- meshDict-configurable BL transition parameters
         scalar blblFeatureAngleDeg_;   // degrees, default 40
+        scalar blSharpEdgeAngleDeg_;    // degrees, default 75 (Franjo original)
         scalar blblCornerAcuteThreshold_; // dot product threshold, default 0.3
         scalar layerScaleRing1_;       // default 0.25
         scalar layerScaleRing2_;       // default 0.50
