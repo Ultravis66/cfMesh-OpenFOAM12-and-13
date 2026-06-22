@@ -3430,14 +3430,89 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         const pointField pointsBefore(mesh_.points());
 
-        if( negBefore.size() > 0 )
+        label dirtyRecoverableMaxNegVol = 5;
+        if( meshDict_.found("dirtyRecoverableMaxNegVol") )
+            dirtyRecoverableMaxNegVol =
+                readLabel(meshDict_.lookup("dirtyRecoverableMaxNegVol"));
+
+        if( negBefore.size() > 0
+         && label(negBefore.size()) <= dirtyRecoverableMaxNegVol )
+        {
+            //- DIRTY_RECOVERABLE cleanup branch.
+            //- Residual cells are typically epsilon-scale and the
+            //- untangler CAN clear them. Measurement showed ~40% of runs
+            //- left 1 such cell that cascaded through BL to skew~500.
+            //- Attempt untangle; if it reaches negVol=0 the downstream
+            //- improved-but-dirty check sees a clean mesh and the run is
+            //- promoted to CLEAN automatically. If cleanup fails, roll
+            //- back to the prior DIRTY state -- crucially WITHOUT setting
+            //- finalUntangleRejected_ (the hard-unsafe flag that would
+            //- skip BL entirely). Failed cleanup must return to dirty,
+            //- not escalate to hard-rejected.
+            Info << "optimiseFinalMesh: DIRTY_RECOVERABLE -- attempting "
+                 << "untangle cleanup on " << negBefore.size()
+                 << " residual negVol cell(s) (<= threshold "
+                 << dirtyRecoverableMaxNegVol << ")" << endl;
+
+            optimizer.untangleMeshFV();
+
+            labelHashSet dcBadAfter;
+            polyMeshGenChecks::checkFacePyramids
+                (mesh_, false, -SMALL, &dcBadAfter);
+            labelHashSet dcNegAfter;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &dcNegAfter);
+            labelHashSet dcOpenAfter;
+            polyMeshGenChecks::checkClosedCells
+                (mesh_, false, 0.5, &dcOpenAfter);
+            scalarField dcSkewAfter;
+            polyMeshGenChecks::checkFaceSkewness(mesh_, dcSkewAfter);
+            const scalar dcMaxSkewAfter =
+                dcSkewAfter.size() > 0 ? max(dcSkewAfter) : scalar(0.0);
+            const bool dcSkewOK =
+                dcMaxSkewAfter <= scalar(20.0)
+             && dcMaxSkewAfter <= scalar(2.0) *
+                    Foam::max(maxSkewBefore, scalar(1.0));
+
+            //- Strict success: cleanup only counts if it reaches
+            //- negVol == 0 AND does not worsen pyramids/openCells/skew.
+            const bool dirtyCleanupOK =
+                dcNegAfter.size() == 0
+             && dcBadAfter.size() <= badBefore.size()
+             && dcOpenAfter.size() <= openBefore.size()
+             && dcSkewOK;
+
+            if( dirtyCleanupOK )
+            {
+                Info << "DIRTY_RECOVERABLE cleanup ACCEPTED: negVol "
+                     << negBefore.size() << "->" << dcNegAfter.size()
+                     << " badPyr " << badBefore.size() << "->"
+                     << dcBadAfter.size()
+                     << " -- promoted to CLEAN" << endl;
+                //- No flag changes needed: downstream sees negVol=0.
+            }
+            else
+            {
+                Info << "DIRTY_RECOVERABLE cleanup REJECTED: negVol "
+                     << negBefore.size() << "->" << dcNegAfter.size()
+                     << " -- rolling back to dirty state "
+                     << "(NOT marking finalUntangleRejected_)" << endl;
+                polyMeshGenModifier dcMod(mesh_);
+                pointFieldPMG& dcPts = dcMod.pointsAccess();
+                dcPts = pointsBefore;
+                mesh_.clearAddressingData();
+                //- Deliberately DO NOT set finalUntangleRejected_.
+                //- The mesh returns to its prior dirty-but-recoverable
+                //- state; downstream reprojUnsafe_ logic handles it.
+            }
+        }
+        else if( negBefore.size() > 0 )
         {
             Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
                  << negBefore.size()
-                 << " negVol cells present -- proceeding to BL" << endl;
-            // Untangle can stall on pre-existing constrained negVol cells.
-            // Keep the mesh unchanged here; use lineage diagnostics to
-            // identify bad-cell survivor neighborhoods for BL suppression.
+                 << " negVol cells present (> " << dirtyRecoverableMaxNegVol
+                 << " threshold) -- proceeding to BL" << endl;
+            // Large residual negVol: untangle is unlikely to help and may
+            // stall. Keep the mesh unchanged; downstream gates handle it.
             mesh_.clearAddressingData();
         }
         else
