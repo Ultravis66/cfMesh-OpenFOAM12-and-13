@@ -4447,6 +4447,123 @@ void cartesianMeshGenerator::generateMesh()
                 Info << "negVol cell centres written to negVolCellCentres.csv"
                      << endl;
             }
+            // Defect atlas: bad pyramid face centroids with full patch
+            // attribution (direct + nearest boundary for internal faces).
+            // Mirrors negVol dump strategy so both CSVs are joinable.
+            if( finalBadPyrFaces.size() > 0 )
+            {
+                const pointFieldPMG& ptsBP  = mesh_.points();
+                const faceListPMG&   facesBP = mesh_.faces();
+                // cellsBP not needed -- owner/nei accessed via mesh_ directly
+                const meshSurfaceEngine mseBP(mesh_);
+                const labelList& bPointsBP    = mseBP.boundaryPoints();
+                const VRWGraph&  pointFacesBP = mseBP.pointFaces();
+                const labelList& facePatchBP  = mseBP.boundaryFacePatches();
+                const PtrList<boundaryPatch>& boundsBP = mesh_.boundaries();
+                // mesh-point -> boundary-point reverse map
+                labelList meshToBpBP(ptsBP.size(), -1);
+                forAll(bPointsBP, bpI)
+                    meshToBpBP[bPointsBP[bpI]] = bpI;
+                const label nInternalBP = mesh_.nInternalFaces();
+                // owner/neighbour for internal face attribution
+                const labelList& own = mesh_.owner();
+                const labelList& nei = mesh_.neighbour();
+                OFstream badPyrFile("badPyrFaceCentres.csv");
+                badPyrFile << "faceI,cx,cy,cz,nPts,faceType,"
+                           << "directPatch,nearestBoundaryPatch,"
+                           << "distGapAction,distTripleJunction,"
+                           << "ownerCell,neighbourCell" << nl;
+                forAllConstIter(labelHashSet, finalBadPyrFaces, it)
+                {
+                    const label faceI = it.key();
+                    if( faceI < 0 || faceI >= label(facesBP.size()) ) continue;
+                    const face& f = facesBP[faceI];
+                    // Face centre
+                    point fc = point::zero;
+                    label nValid = 0;
+                    forAll(f, fpI)
+                    {
+                        const label pI = f[fpI];
+                        if( pI >= 0 && pI < label(ptsBP.size()) )
+                        { fc += ptsBP[pI]; ++nValid; }
+                    }
+                    if( nValid > 0 ) fc /= scalar(nValid);
+                    // Direct patch (boundary faces only)
+                    word faceType("internal");
+                    word directPatch("internal");
+                    if( faceI >= nInternalBP )
+                    {
+                        faceType = "boundary";
+                        const label bfI = faceI - nInternalBP;
+                        if( bfI < label(facePatchBP.size()) )
+                        {
+                            const label pI = facePatchBP[bfI];
+                            if( pI >= 0 && pI < label(boundsBP.size()) )
+                                directPatch = boundsBP[pI].patchName();
+                        }
+                    }
+                    // Nearest boundary patch via face points -> bpI -> facePatch
+                    word nearestBPatch("unknown");
+                    forAll(f, fpI)
+                    {
+                        const label mPt = f[fpI];
+                        if( mPt < 0 || mPt >= label(meshToBpBP.size()) ) continue;
+                        const label bpI = meshToBpBP[mPt];
+                        if( bpI < 0 ) continue;
+                        forAllRow(pointFacesBP, bpI, pfI)
+                        {
+                            const label bfI = pointFacesBP(bpI, pfI);
+                            if( bfI < 0 || bfI >= label(facePatchBP.size()) ) continue;
+                            const label pI = facePatchBP[bfI];
+                            if( pI >= 0 && pI < label(boundsBP.size()) )
+                            {
+                                nearestBPatch = boundsBP[pI].patchName();
+                                break;
+                            }
+                        }
+                        if( nearestBPatch != word("unknown") ) break;
+                    }
+                    // Distance to gap action and triple junction points
+                    // (rebuild point lists locally -- gapPtPos/tjPtPos
+                    //  are scoped inside the negVol block above)
+                    scalar distGapBP = GREAT;
+                    forAllConstIter(labelHashSet, blGapActionPoints_, git)
+                    {
+                        const label mpI = git.key();
+                        if( mpI < 0 || mpI >= label(ptsBP.size()) ) continue;
+                        const scalar d = mag(ptsBP[mpI] - fc);
+                        if( d < distGapBP ) distGapBP = d;
+                    }
+                    scalar distTJBP = GREAT;
+                    forAllConstIter(labelHashSet, blblJunctionPoints_, tjit)
+                    {
+                        const label mpI = tjit.key();
+                        if( mpI < 0 || mpI >= label(ptsBP.size()) ) continue;
+                        const scalar d = mag(ptsBP[mpI] - fc);
+                        if( d < distTJBP ) distTJBP = d;
+                    }
+                    // Owner/neighbour cells
+                    const label ownCell =
+                        faceI < label(own.size()) ? own[faceI] : -1;
+                    const label neiCell =
+                        faceI < label(nei.size()) ? nei[faceI] : -1;
+                    badPyrFile << faceI << ","
+                               << fc.x() << ","
+                               << fc.y() << ","
+                               << fc.z() << ","
+                               << f.size() << ","
+                               << faceType << ","
+                               << directPatch << ","
+                               << nearestBPatch << ","
+                               << distGapBP << ","
+                               << distTJBP << ","
+                               << ownCell << ","
+                               << neiCell << nl;
+                }
+                Info << "Bad pyramid face centres written to"
+                     << " badPyrFaceCentres.csv"
+                     << " (" << finalBadPyrFaces.size() << " faces)" << endl;
+            }
         }
 
         // BL effective coverage report
