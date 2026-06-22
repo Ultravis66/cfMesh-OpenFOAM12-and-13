@@ -3496,13 +3496,195 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             {
                 Info << "DIRTY_RECOVERABLE cleanup REJECTED: negVol "
                      << negBefore.size() << "->" << dcNegAfter.size()
-                     << " -- rolling back to dirty state "
-                     << "(NOT marking finalUntangleRejected_)" << endl;
-                polyMeshGenModifier dcMod(mesh_);
-                pointFieldPMG& dcPts = dcMod.pointsAccess();
-                dcPts = pointsBefore;
-                mesh_.clearAddressingData();
-                meshHistory_ = MeshHistory::DirtyRecoverable;
+                     << " -- Rung1 stalled, attempting Rung2 TJ smoother"
+                     << endl;
+                //- Trap 4 fix: do NOT roll back before Rung2.
+                //- Rung1 partially improved (e.g. 3->1 negVol).
+                //- Rung2 continues from that improved state.
+                //- Full rollback to pointsBefore only if Rung2 also fails.
+                {
+                    bool enableRung2 = false;
+                    if( meshDict_.found("enableRung2TJSmoother") )
+                        enableRung2 =
+                            readBool(meshDict_.lookup("enableRung2TJSmoother"));
+                    if( !enableRung2 )
+                    {
+                        Info << "Rung2 TJ smoother disabled (enableRung2TJSmoother"
+                             << " not set) -- rolling back to pointsBefore" << endl;
+                        polyMeshGenModifier r2Mod(mesh_);
+                        pointFieldPMG& r2ModPts = r2Mod.pointsAccess();
+                        forAll(pointsBefore, pI)
+                            r2ModPts[pI] = pointsBefore[pI];
+                        mesh_.clearAddressingData();
+                        meshHistory_ = MeshHistory::DirtyRecoverable;
+                    }
+                    else
+                    {
+                    //- Rung 2: defect-seeded neighborhood smoother.
+                    //- Seeds from residual negVol cells, expands by
+                    //- ring1+ring2 neighbors for movable interior points.
+                    //- Atlas data: distTJ<0.005 predicts 100% of bad
+                    //- pyramids -- repair zone targets this neighborhood.
+                    label rung2MaxRings = 2;
+                    if( meshDict_.found("rung2MaxRings") )
+                        rung2MaxRings =
+                            readLabel(meshDict_.lookup("rung2MaxRings"));
+                    label rung2AllowedPyrIncrease = 5;
+                    if( meshDict_.found("rung2AllowedPyrIncrease") )
+                        rung2AllowedPyrIncrease =
+                            readLabel(meshDict_.lookup("rung2AllowedPyrIncrease"));
+                    // r2Pts not needed directly -- accessed via mesh_ in zone builder
+                    const cellListPMG&   r2Cells = mesh_.cells();
+                    const faceListPMG&   r2Faces = mesh_.faces();
+                    const labelList&     r2Own   = mesh_.owner();
+                    const labelList&     r2Nei   = mesh_.neighbour();
+                    const label r2NInternal = mesh_.nInternalFaces();
+                    //- Step 1: seed from residual negVol cells
+                    labelHashSet repairZone;
+                    forAllConstIter(labelHashSet, dcNegAfter, it)
+                        repairZone.insert(it.key());
+                    const label nSeeds = repairZone.size();
+                    //- Step 2: expand by rung2MaxRings rings via
+                    //- owner/neighbour face adjacency
+                    for( label ring = 0; ring < rung2MaxRings; ++ring )
+                    {
+                        labelHashSet ringAdd;
+                        forAllConstIter(labelHashSet, repairZone, it)
+                        {
+                            const label cellI = it.key();
+                            if( cellI < 0 || cellI >= label(r2Cells.size()) ) continue;
+                            const cell& c = r2Cells[cellI];
+                            forAll(c, fI)
+                            {
+                                const label faceI = c[fI];
+                                if( faceI < 0 || faceI >= r2NInternal ) continue;
+                                const label ownC = r2Own[faceI];
+                                const label neiC = r2Nei[faceI];
+                                if( ownC >= 0 && !repairZone.found(ownC) )
+                                    ringAdd.insert(ownC);
+                                if( neiC >= 0 && !repairZone.found(neiC) )
+                                    ringAdd.insert(neiC);
+                            }
+                        }
+                        forAllConstIter(labelHashSet, ringAdd, it)
+                            repairZone.insert(it.key());
+                    }
+                    //- Step 3: count movable interior points
+                    //- (points belonging ONLY to repair zone cells)
+                    labelHashSet repairPts;
+                    labelHashSet outsidePts;
+                    forAll(r2Cells, cellI)
+                    {
+                        const cell& c = r2Cells[cellI];
+                        const bool inZone = repairZone.found(cellI);
+                        forAll(c, fI)
+                        {
+                            const label faceI = c[fI];
+                            if( faceI < 0 || faceI >= label(r2Faces.size()) ) continue;
+                            const face& f = r2Faces[faceI];
+                            forAll(f, pI)
+                            {
+                                const label ptI = f[pI];
+                                if( ptI < 0 ) continue;
+                                if( inZone ) repairPts.insert(ptI);
+                                else outsidePts.insert(ptI);
+                            }
+                        }
+                    }
+                    label movablePts = 0;
+                    forAllConstIter(labelHashSet, repairPts, it)
+                        if( !outsidePts.found(it.key()) ) ++movablePts;
+                    Info << "Rung2 zone: seeds=" << nSeeds
+                         << " rings=" << rung2MaxRings
+                         << " repairCells=" << repairZone.size()
+                         << " repairPts=" << repairPts.size()
+                         << " movableInteriorPts=" << movablePts
+                         << " cellsToLock="
+                         << label(r2Cells.size()) - label(repairZone.size())
+                         << endl;
+                    if( movablePts > 0 && repairZone.size() > 0 )
+                    {
+                        //- No local snapshot needed: rollback uses
+                        //- pointsBefore (combined Rung1+Rung2 transaction)
+                        labelHashSet r2BadBefore;
+                        polyMeshGenChecks::checkFacePyramids
+                            (mesh_, false, -SMALL, &r2BadBefore);
+                        labelHashSet r2OpenBefore;
+                        polyMeshGenChecks::checkClosedCells
+                            (mesh_, false, 0.5, &r2OpenBefore);
+                        //- Lock everything outside repair zone
+                        labelLongList cellsToLock;
+                        forAll(r2Cells, cellI)
+                            if( !repairZone.found(cellI) )
+                                cellsToLock.append(cellI);
+                        meshOptimizer rung2Opt(mesh_);
+                        rung2Opt.lockCells(cellsToLock);
+                        rung2Opt.optimizeMeshFV(3, 5, 20, 1);
+                        //- Measure: full MeshQuality gate
+                        labelHashSet r2NegAfter;
+                        polyMeshGenChecks::checkCellVolumes
+                            (mesh_, false, &r2NegAfter);
+                        labelHashSet r2BadAfter;
+                        polyMeshGenChecks::checkFacePyramids
+                            (mesh_, false, -SMALL, &r2BadAfter);
+                        labelHashSet r2OpenAfter;
+                        polyMeshGenChecks::checkClosedCells
+                            (mesh_, false, 0.5, &r2OpenAfter);
+                        scalarField r2SkewAfter;
+                        polyMeshGenChecks::checkFaceSkewness
+                            (mesh_, r2SkewAfter);
+                        const scalar r2MaxSkew =
+                            r2SkewAfter.size() > 0 ?
+                            max(r2SkewAfter) : scalar(0);
+                        const bool r2OK =
+                            r2NegAfter.size() == 0
+                         && label(r2BadAfter.size()) <=
+                            label(r2BadBefore.size()) + rung2AllowedPyrIncrease
+                         && r2OpenAfter.size() <= r2OpenBefore.size()
+                         && r2MaxSkew <= scalar(20.0);
+                        if( r2OK )
+                        {
+                            Info << "Rung2 TJ smoother ACCEPTED: negVol "
+                                 << dcNegAfter.size() << "->0"
+                                 << " badPyr " << r2BadBefore.size()
+                                 << "->" << r2BadAfter.size()
+                                 << " maxSkew=" << r2MaxSkew
+                                 << " -- promoted to CleanPromoted" << endl;
+                            meshHistory_ = MeshHistory::CleanPromoted;
+                        }
+                        else
+                        {
+                            Info << "Rung2 TJ smoother REJECTED: negVol "
+                                 << dcNegAfter.size() << "->"
+                                 << r2NegAfter.size()
+                                 << " badPyr " << r2BadBefore.size()
+                                 << "->" << r2BadAfter.size()
+                                 << " maxSkew=" << r2MaxSkew
+                                 << " -- rolling back combined Rung1+Rung2"
+                                 << " transaction to pointsBefore" << endl;
+                            polyMeshGenModifier r2Mod(mesh_);
+                            pointFieldPMG& r2ModPts = r2Mod.pointsAccess();
+                            forAll(pointsBefore, pI)
+                                r2ModPts[pI] = pointsBefore[pI];
+                            mesh_.clearAddressingData();
+                            meshHistory_ = MeshHistory::DirtyRecoverable;
+                        }
+                    }
+                    else
+                    {
+                        Info << "Rung2 TJ smoother: insufficient movable"
+                             << " points (" << movablePts << ")"
+                             << " -- rolling back Rung1 to pointsBefore"
+                             << endl;
+                        polyMeshGenModifier r2Mod(mesh_);
+                        pointFieldPMG& r2ModPts = r2Mod.pointsAccess();
+                        forAll(pointsBefore, pI)
+                            r2ModPts[pI] = pointsBefore[pI];
+                        mesh_.clearAddressingData();
+                        meshHistory_ = MeshHistory::DirtyRecoverable;
+                    }
+                    } // end if( enableRung2 )
+                } // end Rung2 block
                 //- Deliberately DO NOT set finalUntangleRejected_.
                 //- The mesh returns to its prior dirty-but-recoverable
                 //- state; downstream reprojUnsafe_ logic handles it.
