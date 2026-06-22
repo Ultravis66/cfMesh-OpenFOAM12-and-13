@@ -977,6 +977,9 @@ void refineBoundaryLayers::generateNewFaces()
         DynList<DynList<label, 4>, 128> newFacesForFace;
         refineFace(f, nRefinementInDirection, newFacesForFace);
 
+        if( !refinementValid_ )
+            return;
+
         //- store decomposed faces
         forAll(newFacesForFace, fI)
         {
@@ -1027,14 +1030,35 @@ void refineBoundaryLayers::generateNewFaces()
             if( neiFace == bfI )
                 neiFace = beFaces(beI, 1);
 
+            //- Guard neiFace and patch indices before dereferencing.
+            //- This access happens BEFORE refineFace(), so the entry
+            //- guard cannot protect it. Out-of-range neiFace/patches
+            //- crash generateNewFaces() directly. Fail closed: mark
+            //- refinement invalid and abort so the two-pass loop rejects.
+            if( neiFace < 0
+             || neiFace >= label(facePatches.size())
+             || neiFace >= label(nLayersAtBndFace_.size()) )
+            {
+                refinementValid_ = false;
+                return;
+            }
+            const label neiPatch = facePatches[neiFace];
+            const label currPatch = facePatches[bfI];
+            if( neiPatch < 0 || neiPatch >= label(layerAtPatch_.size())
+             || currPatch < 0 || currPatch >= label(layerAtPatch_.size()) )
+            {
+                refinementValid_ = false;
+                return;
+            }
+
             //- faces cannot be in the same layer
             const DynList<label>& neiLayers =
-                layerAtPatch_[facePatches[neiFace]];
+                layerAtPatch_[neiPatch];
 
             if( neiLayers.size() == 0 )
                 continue;
 
-            const DynList<label>& currLayers = layerAtPatch_[facePatches[bfI]];
+            const DynList<label>& currLayers = layerAtPatch_[currPatch];
 
             bool foundSame(false);
 
@@ -1057,6 +1081,9 @@ void refineBoundaryLayers::generateNewFaces()
         //- refine the face
         DynList<DynList<label, 4>, 128> newFacesForFace;
         refineFace(bf, nRefinementInDirection, newFacesForFace);
+
+        if( !refinementValid_ )
+            return;
 
         //- store the refined faces
         forAll(newFacesForFace, fI)
