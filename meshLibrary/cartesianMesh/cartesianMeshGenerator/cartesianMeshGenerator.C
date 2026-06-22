@@ -3619,7 +3619,97 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                                 cellsToLock.append(cellI);
                         meshOptimizer rung2Opt(mesh_);
                         rung2Opt.lockCells(cellsToLock);
-                        rung2Opt.optimizeMeshFV(3, 5, 20, 1);
+
+                        //- Rung2 is a boundary-junction local repair.
+                        //- Must be surface-constrained. Running unconstrained
+                        //- can move blade/hub, blade/shroud, periodic-edge
+                        //- points off their geometry.
+                        if( octreePtr_ )
+                        {
+                            meshSurfaceEngine mseR2(mesh_);
+                            meshSurfacePartitioner mPartR2(mseR2);
+                            labelLongList globalToBpR2
+                            (
+                                mesh_.points().size(),
+                                -1
+                            );
+                            const labelList& bPtsR2 = mseR2.boundaryPoints();
+                            forAll(bPtsR2, bpI)
+                                globalToBpR2[bPtsR2[bpI]] = bpI;
+                            const label nBpR2 = bPtsR2.size();
+                            vectorField featTanR2(nBpR2, vector::zero);
+                            {
+                                const edgeList& edgesR2 = mseR2.edges();
+                                const VRWGraph& bpEdgesR2 =
+                                    mseR2.boundaryPointEdges();
+                                const labelHashSet& featEdgesR2 =
+                                    mPartR2.featureEdges();
+                                const labelHashSet& edgePtsR2 =
+                                    mPartR2.edgePoints();
+                                const pointFieldPMG& ptsR2 = mesh_.points();
+                                const labelList& bpR2 = mseR2.bp();
+                                forAllConstIter(labelHashSet, edgePtsR2, it)
+                                {
+                                    const label bpI = it.key();
+                                    if( bpI < 0 || bpI >= nBpR2 ) continue;
+                                    label nbr0 = -1;
+                                    label nbr1 = -1;
+                                    forAllRow(bpEdgesR2, bpI, eI)
+                                    {
+                                        const label beI = bpEdgesR2(bpI, eI);
+                                        if( !featEdgesR2.found(beI) ) continue;
+                                        const edge& e = edgesR2[beI];
+                                        const label ep0 = e.start();
+                                        const label ep1 = e.end();
+                                        if( ep0 < 0 || ep0 >= bpR2.size() ) continue;
+                                        if( ep1 < 0 || ep1 >= bpR2.size() ) continue;
+                                        const label o0 = bpR2[ep0];
+                                        const label o1 = bpR2[ep1];
+                                        if( o0 < 0 || o1 < 0 ) continue;
+                                        label otherBp = -1;
+                                        if( o0 == bpI ) otherBp = o1;
+                                        else if( o1 == bpI ) otherBp = o0;
+                                        if( otherBp < 0 || otherBp >= nBpR2 ) continue;
+                                        if( nbr0 == -1 ) nbr0 = otherBp;
+                                        else if( nbr1 == -1 && otherBp != nbr0 )
+                                            nbr1 = otherBp;
+                                    }
+                                    vector t = vector::zero;
+                                    if( nbr0 != -1 && nbr1 != -1 )
+                                        t = ptsR2[bPtsR2[nbr1]]
+                                          - ptsR2[bPtsR2[nbr0]];
+                                    else if( nbr0 != -1 )
+                                        t = ptsR2[bPtsR2[nbr0]]
+                                          - ptsR2[bPtsR2[bpI]];
+                                    if( magSqr(t) > VSMALL )
+                                        featTanR2[bpI] = t / mag(t);
+                                }
+                            }
+                            rung2Opt.setSurfaceConstraint
+                            (
+                                octreePtr_,
+                                &mPartR2.pointPatches(),
+                                &globalToBpR2,
+                                &mPartR2.corners(),
+                                &featTanR2
+                            );
+                            rung2Opt.optimizeMeshFV(3, 5, 20, 1);
+                            rung2Opt.setSurfaceConstraint
+                            (NULL, NULL, NULL, NULL, NULL);
+                        }
+                        else
+                        {
+                            Info << "Rung2 TJ smoother skipped: no octreePtr_ "
+                                 << "for surface-constrained local repair "
+                                 << "-- rolling back Rung1+Rung2 to pointsBefore"
+                                 << endl;
+                            polyMeshGenModifier r2Mod(mesh_);
+                            pointFieldPMG& r2ModPts = r2Mod.pointsAccess();
+                            forAll(pointsBefore, pI)
+                                r2ModPts[pI] = pointsBefore[pI];
+                            mesh_.clearAddressingData();
+                            meshHistory_ = MeshHistory::DirtyRecoverable;
+                        }
                         //- Measure: full MeshQuality gate
                         labelHashSet r2NegAfter;
                         polyMeshGenChecks::checkCellVolumes
@@ -3751,8 +3841,6 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         }
     }
 
-    Info << "MESHHISTORY meshHistory=" << meshHistoryName(meshHistory_)
-         << endl;
     mesh_.clearAddressingData();
 
     if( modSurfacePtr_ )
@@ -4472,6 +4560,25 @@ void cartesianMeshGenerator::generateMesh()
             Info << "FINAL internal validation after replaceBoundaries: "
                  << "negVol=" << finalNegCells.size()
                  << " badPyramids=" << finalBadPyrFaces.size()
+                 << endl;
+            //- MESHHISTORY logged here -- after BL and replaceBoundaries
+            //- so it reflects true final mesh state.
+            if( finalNegCells.size() > 0
+             && (
+                    meshHistory_ == MeshHistory::CleanNatural
+                 || meshHistory_ == MeshHistory::CleanPromoted
+                )
+            )
+            {
+                Info << "MESHHISTORY: final validation found "
+                     << finalNegCells.size()
+                     << " negVol cells after BL/replaceBoundaries -- demoting "
+                     << meshHistoryName(meshHistory_)
+                     << " to DirtyRecoverable" << endl;
+                meshHistory_ = MeshHistory::DirtyRecoverable;
+            }
+            Info << "MESHHISTORY meshHistory="
+                 << meshHistoryName(meshHistory_)
                  << endl;
             writeLineageCSV("final");
 
