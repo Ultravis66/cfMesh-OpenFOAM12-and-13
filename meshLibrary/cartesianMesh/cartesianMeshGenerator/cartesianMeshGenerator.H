@@ -40,6 +40,7 @@ SourceFiles
 #include "HashSet.H"
 #include "IOdictionary.H"
 #include "workflowControls.H"
+#include "meshQualityTypes.H"
 //#include "volFields.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -116,6 +117,9 @@ class cartesianMeshGenerator
         //  residual negVol cells. Surface re-projection/snap is unsafe,
         //  but BL/refBL may still proceed under its own validation guards.
         bool reprojUnsafe_;
+        //- Coarse history label for this mesh at pipeline exit.
+        //- Set during optimiseFinalMesh(); read by harness log.
+        MeshHistory meshHistory_;
         //- bad pyramid faces from gate2 diagnostic in optimiseFinalMesh()
         //- fed forward to refBoundaryLayers() for pre-refBL seed retraction
         labelHashSet postOptBadFaces_;

@@ -2114,6 +2114,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 {
     finalUntangleRejected_ = false;
     reprojUnsafe_ = false;
+    meshHistory_ = MeshHistory::CleanNatural;
 
     //- untangle the surface if needed
     bool enforceConstraints(false);
@@ -3488,6 +3489,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                      << " badPyr " << badBefore.size() << "->"
                      << dcBadAfter.size()
                      << " -- promoted to CLEAN" << endl;
+                meshHistory_ = MeshHistory::CleanPromoted;
                 //- No flag changes needed: downstream sees negVol=0.
             }
             else
@@ -3500,6 +3502,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 pointFieldPMG& dcPts = dcMod.pointsAccess();
                 dcPts = pointsBefore;
                 mesh_.clearAddressingData();
+                meshHistory_ = MeshHistory::DirtyRecoverable;
                 //- Deliberately DO NOT set finalUntangleRejected_.
                 //- The mesh returns to its prior dirty-but-recoverable
                 //- state; downstream reprojUnsafe_ logic handles it.
@@ -3507,6 +3510,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         }
         else if( negBefore.size() > 0 )
         {
+            meshHistory_ = MeshHistory::DirtyUnsafe;
             Info << "optimiseFinalMesh: skipping untangleMeshFV -- "
                  << negBefore.size()
                  << " negVol cells present (> " << dirtyRecoverableMaxNegVol
@@ -3551,6 +3555,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
                 pts = pointsBefore;
                 mesh_.clearAddressingData();
                 finalUntangleRejected_ = true;
+                meshHistory_ = MeshHistory::HardRejected;
             }
             else
             {
@@ -3564,6 +3569,8 @@ void cartesianMeshGenerator::optimiseFinalMesh()
         }
     }
 
+    Info << "MESHHISTORY meshHistory=" << meshHistoryName(meshHistory_)
+         << endl;
     mesh_.clearAddressingData();
 
     if( modSurfacePtr_ )
