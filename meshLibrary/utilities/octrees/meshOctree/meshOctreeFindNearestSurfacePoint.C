@@ -38,6 +38,14 @@ Description
 namespace Foam
 {
 
+namespace
+{
+    //- Limit noisy nearest-surface boundary-region warnings.
+    //- These can fire thousands of times during BL/contact projection.
+    static label nBoundaryRegionWarnings = 0;
+    static const label maxBoundaryRegionWarnings = 5;
+}
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 void meshOctree::findNearestSurfacePoint
@@ -122,8 +130,17 @@ void meshOctree::findNearestSurfacePoint
 
     if( (!found || (region < 0)) && !Pstream::parRun() )
     {
-        Warning << "Could not find a boundary region for vertex " << p << endl;
-        Warning << "Found " << found << " and region " << region << endl;
+        if( nBoundaryRegionWarnings < maxBoundaryRegionWarnings )
+        {
+            Warning << "Could not find a boundary region for vertex "
+                    << p << endl;
+            Warning << "Found " << found << " and region "
+                    << region << endl;
+            ++nBoundaryRegionWarnings;
+            if( nBoundaryRegionWarnings == maxBoundaryRegionWarnings )
+                Warning << "(further boundary-region warnings suppressed)"
+                        << endl;
+        }
     }
 }
 
@@ -208,7 +225,17 @@ void meshOctree::findNearestSurfacePointInRegion
     } while( !found && (iterationI++ < 5) );
 
     if( (!found || (region < 0)) && !Pstream::parRun() )
-        Warning << "Could not find a boundary region for vertex " << p << endl;
+    {
+        if( nBoundaryRegionWarnings < maxBoundaryRegionWarnings )
+        {
+            Warning << "Could not find a boundary region for vertex "
+                    << p << endl;
+            ++nBoundaryRegionWarnings;
+            if( nBoundaryRegionWarnings == maxBoundaryRegionWarnings )
+                Warning << "(further boundary-region warnings suppressed)"
+                        << endl;
+        }
+    }
 }
 
 bool meshOctree::findNearestEdgePoint
