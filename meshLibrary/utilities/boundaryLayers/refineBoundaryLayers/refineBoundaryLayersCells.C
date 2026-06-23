@@ -178,7 +178,29 @@ void refineBoundaryLayers::generateNewCellsPrism
             if( cf[pI] != cf[0] )
             { degenerateFace = false; break; }
         if( degenerateFace )
+        {
+            //- DEGFACE_AUDIT: diagnostic only, no behavior change
+            static label nDegFaceSkips = 0;
+            if( nDegFaceSkips < 10 )
+            {
+                const label baseGlobalFaceI = c[baseFace];
+                const label startBnd = mesh_.boundaries()[0].patchStart();
+                const label bfI_audit = baseGlobalFaceI - startBnd;
+                Info << "DEGFACE_AUDIT:"
+                     << " cellI=" << cellI
+                     << " layerI=" << layerI
+                     << " nLayers=" << nLayers
+                     << " baseFace=" << baseFace
+                     << " bfI=" << bfI_audit
+                     << " cf0=" << cf[0]
+                     << " cfSize=" << cf.size()
+                     << endl;
+            }
+            ++nDegFaceSkips;
+            if( nDegFaceSkips == 10 )
+                Info << "DEGFACE_AUDIT: (further suppressed)" << endl;
             continue;
+        }
 
         //- add faces to cells
         cellsFromCell[nLayers-layerI].append(cf);
