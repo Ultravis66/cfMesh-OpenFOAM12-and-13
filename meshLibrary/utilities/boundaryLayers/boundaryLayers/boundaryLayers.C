@@ -1732,6 +1732,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
              << endl;
     }
 
+    label nGapRampBlocked = 0;
+    label nHardRampBlocked = 0;
     // Ring 1: neighbors of zero points on BL patches -> 0.25
     boolList ring1(bPoints.size(), false);
     forAll(bPoints, bpI)
@@ -1746,14 +1748,30 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring1[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing1_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring1:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 1;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 1 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 1 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring1[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing1_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 1;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
@@ -1772,14 +1790,30 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring2[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing2_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring2:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 2;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 2 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 2 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring2[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing2_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 2;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
@@ -1798,14 +1832,30 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring3[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing3_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring3:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 3;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 3 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 3 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring3[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing3_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 3;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
@@ -1824,14 +1874,30 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring4[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing4_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring4:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 4;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 4 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 4 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring4[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing4_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 4;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
@@ -1849,14 +1915,30 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring5[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing5_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring5:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 5;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 5 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 5 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring5[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing5_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 5;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
@@ -1873,17 +1955,37 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Cross-patch: allow propagation but cap scale at 5% to prevent
             // bleed while avoiding abrupt BL termination / high skew.
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
-            ring6[nbpI] = true;
-            layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing6_);
-            if( blRampRing_[nbpI] == 0 )
+            //- Seed-aware ring containment ring6:
+            //- Gap seeds: max 2 rings (local geometry)
+            //- Hard blblSharp seeds: max 3 rings
             {
-                blRampRing_[nbpI] = 6;
-                blRampSeedReason_[nbpI] =
-                    (blSuppressReason_[bpI] > 0) ?
-                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+                //- GPT fix: preserve inherited seed reason through ramp chain.
+                //- If bpI is already a ramp point, use its inherited seed.
+                //- Otherwise use bpI direct suppression reason.
+                const label seedRsn =
+                    (blRampRing_[bpI] > 0 && blRampSeedReason_[bpI] > 0) ?
+                    blRampSeedReason_[bpI] : blSuppressReason_[bpI];
+                const bool isGapSeed = (seedRsn == 1);
+                const bool isHardSeed = (seedRsn == 6);
+                if( isGapSeed && 6 > 2 ) { ++nGapRampBlocked; }
+                else if( isHardSeed && 6 > 3 ) { ++nHardRampBlocked; }
+                else
+                {
+                    ring6[nbpI] = true;
+                    layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing6_);
+                    if( blRampRing_[nbpI] == 0 )
+                    {
+                        blRampRing_[nbpI] = 6;
+                        blRampSeedReason_[nbpI] = seedRsn;
+                    }
+                }
             }
         }
     }
+    Info << "BL seed-aware ramp containment:"
+         << " gapBlocked=" << nGapRampBlocked
+         << " hardBLBLBlocked=" << nHardRampBlocked
+         << endl;
     label nZero = 0, nRing1 = 0, nRing2 = 0, nRing3 = 0, nRing4 = 0, nRing5 = 0, nRing6 = 0;
     forAll(bPoints, bpI)
     {
