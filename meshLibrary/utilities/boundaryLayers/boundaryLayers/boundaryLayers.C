@@ -658,6 +658,7 @@ boundaryLayers::boundaryLayers
     gapLoserPatches_(),
     gapLoserPatchNames_(),
     gapLoserRing1Suppress_(true),
+    useContactLinePolicy_(false),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
 {
@@ -693,6 +694,9 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("blblFeatureAngleDeg") )
             blblFeatureAngleDeg_ =
                 readScalar(bndLayers.lookup("blblFeatureAngleDeg"));
+        if( bndLayers.found("useContactLinePolicy") )
+            useContactLinePolicy_ =
+                Switch(bndLayers.lookup("useContactLinePolicy"));
         if( bndLayers.found("blSharpEdgeAngleDeg") )
             blSharpEdgeAngleDeg_ =
                 readScalar(bndLayers.lookup("blSharpEdgeAngleDeg"));
@@ -1391,6 +1395,14 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
              << " >0.707: " << nDot07plus << endl;
     }
 
+    // Build edge-based contact-line policy map before blblSharp block.
+    // Gated by useContactLinePolicy meshDict knob (default false).
+    const bool useContactLinePolicy = useContactLinePolicy_;
+    if( useContactLinePolicy )
+        buildBLContactPointPolicy();
+    else
+        blContactPointClass_.clear();
+
     // BL/BL sharp-junction suppression:
     // Points touching 2+ BL patches where normals diverge sharply
     // (blade+hub, blade+shroud) create degenerate layer cells.
@@ -1457,37 +1469,64 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
             if( sharpJunction )
             {
-                //- Commercial-grade blblSharp policy v1:
-                //- Graduated taper instead of hard zero for all junctions.
-                //- Atlas: blblSharp=2599 dominant dropout + 1640 ramp victims.
-                scalar minDot = scalar(1.0);
-                for(label i=0; i<avgNormals.size()-1; ++i)
-                    for(label j=i+1; j<avgNormals.size(); ++j)
-                    {
-                        const scalar d = avgNormals[i] & avgNormals[j];
-                        if( d < minDot ) minDot = d;
-                    }
-                const scalar cosHard = Foam::cos(scalar(75.0)*M_PI/180.0);
-                const scalar cosMild = Foam::cos(scalar(60.0)*M_PI/180.0);
+                //- Contact-line policy v2: atlas-driven when available,
+                //- fallback to per-point avg-normal blblSharp v1.
                 scalar taperFloor = scalar(0.0);
-                label junctionClass = 0; // 0=hard 1=moderate 2=mild
-                if( minDot < cosHard )
+                label junctionClass = 0;
+
+                Map<label>::const_iterator clsIt =
+                    blContactPointClass_.find(bpI);
+                const bool hasAtlasClass =
+                    useContactLinePolicy &&
+                    (clsIt != blContactPointClass_.end());
+
+                bool appliedAtlasPolicy = false;
+                if( hasAtlasClass )
                 {
-                    taperFloor = scalar(0.0);   // hard corner -- full suppress
-                    junctionClass = 0;
-                    ++nBLBLHard;
+                    const label cls = clsIt();
+                    if( cls == 1 || cls == 2 ) // TripleJunction or HardBLBL
+                    {
+                        taperFloor = scalar(0.0);
+                        junctionClass = 0;
+                        ++nBLBLHard;
+                        appliedAtlasPolicy = true;
+                    }
+                    else if( cls == 3 ) // ModerateBLBL
+                    {
+                        taperFloor = scalar(0.25);
+                        junctionClass = 1;
+                        ++nBLBLModerate;
+                        appliedAtlasPolicy = true;
+                    }
+                    else if( cls == 4 ) // MildBLBL
+                    {
+                        taperFloor = scalar(0.50);
+                        junctionClass = 2;
+                        ++nBLBLMild;
+                        appliedAtlasPolicy = true;
+                    }
+                    // cls==5 SmoothBLBL: fallback -- do not force taper
+                    // cls==6 FlowBoundaryTermination: handled by blNoBLEdge
+                    // cls==7 PeriodicSeam: do not treat as blblSharp
                 }
-                else if( minDot < cosMild )
+                if( !appliedAtlasPolicy )
                 {
-                    taperFloor = scalar(0.25);  // moderate -- quarter layer
-                    junctionClass = 1;
-                    ++nBLBLModerate;
-                }
-                else
-                {
-                    taperFloor = scalar(0.50);  // mild -- half layer
-                    junctionClass = 2;
-                    ++nBLBLMild;
+                    //- Fallback: per-point avg-normal blblSharp v1
+                    scalar minDot = scalar(1.0);
+                    for(label i=0; i<avgNormals.size()-1; ++i)
+                        for(label j=i+1; j<avgNormals.size(); ++j)
+                        {
+                            const scalar d = avgNormals[i] & avgNormals[j];
+                            if( d < minDot ) minDot = d;
+                        }
+                    const scalar cosHard = Foam::cos(scalar(75.0)*M_PI/180.0);
+                    const scalar cosMild = Foam::cos(scalar(60.0)*M_PI/180.0);
+                    if( minDot < cosHard )
+                    { taperFloor = scalar(0.0); junctionClass = 0; ++nBLBLHard; }
+                    else if( minDot < cosMild )
+                    { taperFloor = scalar(0.25); junctionClass = 1; ++nBLBLModerate; }
+                    else
+                    { taperFloor = scalar(0.50); junctionClass = 2; ++nBLBLMild; }
                 }
                 layerScale_[bpI] = taperFloor;
                 blSuppressReason_[bpI] = 6;

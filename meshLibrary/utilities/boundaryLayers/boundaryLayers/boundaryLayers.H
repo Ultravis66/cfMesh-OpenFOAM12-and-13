@@ -181,6 +181,15 @@ class boundaryLayers
         //- Per-junction-point class: 0=hard 1=moderate 2=mild
         //- Set in markConcaveEdgePoints, consumed in createNewVertex.
         mutable Map<label> blblJunctionClass_;
+
+        //- Per-boundary-point contact class from edge-based atlas.
+        //- 0=unclassified 1=HardBLBL 2=ModerateBLBL 3=MildBLBL
+        //- 4=SmoothBLBL 5=PeriodicSeam 6=FlowBoundaryTerm 7=TripleJunction
+        //- Built by buildBLContactPointPolicy(), consumed by blblSharp block.
+        //- Min-class wins when point sits on multiple edges.
+        mutable Map<label> blContactPointClass_;
+        //- Gate for contact-line policy (meshDict: useContactLinePolicy)
+        bool useContactLinePolicy_;
         mutable labelHashSet blblCornerPoints_;
         mutable labelHashSet blblAcuteCornerPoints_;
 
@@ -497,6 +506,9 @@ public:
         //- terminate boundary layers at concave edges (used as a flag)
         void terminateLayersAtConcaveEdges();
         void markConcaveEdgePoints(boolList& skipPoint) const;
+        //- Build per-point contact class from edge-based atlas
+        //- Call before blblSharp suppression block
+        void buildBLContactPointPolicy() const;
         //- Write edge-based BL contact line atlas (diagnostic only)
         void writeBLContactLineAtlas() const;
         //- Apply virtual topology BL exclusion zones around acute
