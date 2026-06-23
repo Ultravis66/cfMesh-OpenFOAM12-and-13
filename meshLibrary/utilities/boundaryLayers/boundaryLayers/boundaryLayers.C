@@ -1610,7 +1610,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         meshSurfacePartitioner mPartAtlas(mseAtlas);
         const VRWGraph& pPatchesAtlas = mPartAtlas.pointPatches();
         const PtrList<boundaryPatch>& bndAtlas = mesh_.boundaries();
-        OFstream atlasOs("blDropoutReasonAtlas.csv");
+        OFstream atlasOs("blDropoutReasonAtlas_pre_ramp.csv");
         atlasOs << "bpI,meshPointI,x,y,z,layerScale,"
                 << "reasonCode,reasonName,"
                 << "rampRing,rampSeedReason,rampSeedName,"
@@ -1668,8 +1668,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     << patchStr << nl;
             ++nDumped;
         }
-        Info << "BL dropout reason atlas: wrote " << nDumped
-             << " suppressed/thin points to blDropoutReasonAtlas.csv" << endl;
+        Info << "BL dropout reason atlas (pre-ramp): wrote " << nDumped
+             << " points to blDropoutReasonAtlas_pre_ramp.csv" << endl;
     }
 
 
@@ -2536,6 +2536,75 @@ void boundaryLayers::applyGapFaceRingExclusion() const
              << " faces=" << nProtectedTripleR0
              << " scale=" << tripleJunctionProtectedRing0Scale_
              << endl;
+    // FINAL BL dropout reason atlas -- after ALL layerScale changes.
+    // Includes ramp provenance (blRampRing_, blRampSeedReason_).
+    {
+        const meshSurfaceEngine& mseF = surfaceEngine();
+        const labelList& bPtsF = mseF.boundaryPoints();
+        const pointField& ptsF = mseF.mesh().points();
+        meshSurfacePartitioner mPartF(mseF);
+        const VRWGraph& pPatchesF = mPartF.pointPatches();
+        const PtrList<boundaryPatch>& bndF = mesh_.boundaries();
+        OFstream atlasOsF("blDropoutReasonAtlas.csv");
+        atlasOsF << "bpI,meshPointI,x,y,z,layerScale,"
+                 << "reasonCode,reasonName,"
+                 << "rampRing,rampSeedReason,rampSeedName,"
+                 << "patches" << nl;
+        const char* rnF[] = {
+            "none","gap","transEdge","tripleJunction",
+            "corner","sharpEdge","blblSharp","blNoBLEdge"
+        };
+        label nDumpedF = 0;
+        forAll(bPtsF, bpI)
+        {
+            const scalar ls =
+                (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+            const label rc =
+                (blSuppressReason_.size() > bpI) ? blSuppressReason_[bpI] : 0;
+            const label rr =
+                (blRampRing_.size() > bpI) ? blRampRing_[bpI] : 0;
+            if( rc == 0 && ls >= 0.99 && rr == 0 ) continue;
+            const label mpI = bPtsF[bpI];
+            const point& pt =
+                (mpI >= 0 && mpI < label(ptsF.size())) ?
+                ptsF[mpI] : point(Zero);
+            word pStr("unknown");
+            if( pPatchesF.sizeOfRow(bpI) > 0 )
+            {
+                pStr = "";
+                labelHashSet seenPF;
+                forAllRow(pPatchesF, bpI, pI)
+                {
+                    const label patchI = pPatchesF(bpI, pI);
+                    if( patchI < 0 || patchI >= label(bndF.size()) ) continue;
+                    if( seenPF.found(patchI) ) continue;
+                    seenPF.insert(patchI);
+                    if( pStr.size() > 0 ) pStr += "+";
+                    pStr += bndF[patchI].patchName();
+                }
+                if( pStr.size() == 0 ) pStr = "unknown";
+            }
+            const label rcC = (rc >= 0 && rc <= 7) ? rc : 0;
+            const label rsc =
+                (blRampSeedReason_.size() > bpI) ? blRampSeedReason_[bpI] : 0;
+            const label rscC = (rsc >= 0 && rsc <= 7) ? rsc : 0;
+            atlasOsF << bpI << ","
+                     << mpI << ","
+                     << pt.x() << ","
+                     << pt.y() << ","
+                     << pt.z() << ","
+                     << ls << ","
+                     << rcC << ","
+                     << rnF[rcC] << ","
+                     << rr << ","
+                     << rscC << ","
+                     << rnF[rscC] << ","
+                     << pStr << nl;
+            ++nDumpedF;
+        }
+        Info << "BL dropout reason atlas (final): wrote " << nDumpedF
+             << " points to blDropoutReasonAtlas.csv" << endl;
+    }
 }
 
 void boundaryLayers::reportBLTransitionSeeds() const
