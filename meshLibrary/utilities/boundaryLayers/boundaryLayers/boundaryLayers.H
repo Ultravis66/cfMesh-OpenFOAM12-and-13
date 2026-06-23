@@ -81,6 +81,10 @@ class boundaryLayers
         //- meshDict-configurable BL transition parameters
         scalar blblFeatureAngleDeg_;   // degrees, default 40
         scalar blSharpEdgeAngleDeg_;    // degrees, default 75 (Franjo original)
+        //- Per-boundary-point suppression reason code for dropout atlas.
+        //- 0=none 1=gap 2=transEdge 3=tripleJunction 4=corner
+        //- 5=sharpEdge 6=blblSharp 7=blNoBLEdge
+        mutable labelList blSuppressReason_;
         scalar blblCornerAcuteThreshold_; // dot product threshold, default 0.3
         scalar layerScaleRing1_;       // default 0.25
         scalar layerScaleRing2_;       // default 0.50

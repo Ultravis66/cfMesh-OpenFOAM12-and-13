@@ -3127,7 +3127,9 @@ void cartesianMeshGenerator::optimiseFinalMesh()
             }
         }
     }
-    deleteDemandDrivenData(octreePtr_);
+    //- octreePtr_ kept alive until post-BL rescue completes.
+    //- Previously deleted here; deferred to destructor so that
+    //- surface-constrained post-BL rescue can use it.
 
     optimizer.optimizeBoundaryLayer(modSurfacePtr_==NULL);
 

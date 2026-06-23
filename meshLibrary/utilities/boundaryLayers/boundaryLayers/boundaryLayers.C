@@ -1039,6 +1039,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
     // Initialize scale fields
     layerScale_.setSize(bPoints.size(), 1.0);
+    blSuppressReason_.setSize(bPoints.size(), 0);
     zeroDistPoints_.setSize(bPoints.size(), false);
     boolList zeroPts(bPoints.size(), false);
 
@@ -1059,6 +1060,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 zeroDistPoints_[bpI] = true;
                 zeroPts[bpI] = true;
                 layerScale_[bpI] = 0.0;
+                blSuppressReason_[bpI] = 1;
                 ++nGapSuppressed;
             }
         }
@@ -1153,12 +1155,16 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             {
                 zeroDistPoints_[bp0] = true;
                 layerScale_[bp0] = 0.02;
+                if( bp0 >= 0 && bp0 < blSuppressReason_.size() )
+                    blSuppressReason_[bp0] = 2;
                 zeroPts[bp0] = true;
             }
             if( bp1 >= 0 )
             {
                 zeroDistPoints_[bp1] = true;
                 layerScale_[bp1] = 0.02;
+                if( bp1 >= 0 && bp1 < blSuppressReason_.size() )
+                    blSuppressReason_[bp1] = 2;
                 zeroPts[bp1] = true;
             }
             ++nTransitionEdges;
@@ -1199,6 +1205,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         {
             zeroDistPoints_[bpI] = true;
             layerScale_[bpI] = 0.02;
+            blSuppressReason_[bpI] = 3;
             zeroPts[bpI] = true;
             ++nTriple;
         }
@@ -1310,6 +1317,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( nPt >= 3 && nBLPt >= 1 && nTermPt >= 1 )
             {
                 layerScale_[bpI] = 0.0;
+                blSuppressReason_[bpI] = 4;
                 ++nCornerSuppressed;
 
                 if( nCornerSuppressed <= 200 )
@@ -1365,6 +1373,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     if( dotProd < cosSharp )
                     {
                         layerScale_[bpI] = 0.0;
+                        blSuppressReason_[bpI] = 5;
                         ++nEdgeSuppressed;
                     }
                 }
@@ -1443,6 +1452,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             {
                 zeroDistPoints_[bpI] = true;
                 layerScale_[bpI] = 0.0;
+                blSuppressReason_[bpI] = 6;
                 zeroPts[bpI] = true;
                 ++nBLBL;
                 // C1: persist junction point for topology fix in C2/C3
@@ -1510,6 +1520,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 {
                     zeroDistPoints_[bpI] = true;
                     layerScale_[bpI] = 0.0;
+                    blSuppressReason_[bpI] = 7;
                     zeroPts[bpI] = true;
                 }
                 // Store BL-side patch for patch-constrained projection
@@ -1521,6 +1532,68 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         Info << "BL/no-BL transition edge detection: "
              << blNoBlEdges_.size() << " transition edges, "
              << blNoBlEdgePoints_.size() << " interface points locked" << endl;
+    }
+
+    // BL dropout reason atlas CSV dump.
+    // Emits one row per suppressed/thin boundary point.
+    // reasonCode: 0=none 1=gap 2=transEdge 3=tripleJunction 4=corner
+    //             5=sharpEdge 6=blblSharp 7=blNoBLEdge
+    {
+        const meshSurfaceEngine& mseAtlas = surfaceEngine();
+        const labelList& bPtsAtlas = mseAtlas.boundaryPoints();
+        const pointField& ptsAtlas = mseAtlas.mesh().points();
+        meshSurfacePartitioner mPartAtlas(mseAtlas);
+        const VRWGraph& pPatchesAtlas = mPartAtlas.pointPatches();
+        const PtrList<boundaryPatch>& bndAtlas = mesh_.boundaries();
+        OFstream atlasOs("blDropoutReasonAtlas.csv");
+        atlasOs << "bpI,meshPointI,x,y,z,layerScale,"
+                << "reasonCode,reasonName,patches" << nl;
+        const char* reasonNames[] = {
+            "none","gap","transEdge","tripleJunction",
+            "corner","sharpEdge","blblSharp","blNoBLEdge"
+        };
+        label nDumped = 0;
+        forAll(bPtsAtlas, bpI)
+        {
+            const scalar ls =
+                (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+            const label rc =
+                (blSuppressReason_.size() > bpI) ? blSuppressReason_[bpI] : 0;
+            if( rc == 0 && ls >= 0.99 ) continue;
+            const label meshPtI = bPtsAtlas[bpI];
+            const point& pt =
+                (meshPtI >= 0 && meshPtI < label(ptsAtlas.size())) ?
+                ptsAtlas[meshPtI] : point(Zero);
+            word patchStr("unknown");
+            if( pPatchesAtlas.sizeOfRow(bpI) > 0 )
+            {
+                patchStr = "";
+                labelHashSet seenP;
+                forAllRow(pPatchesAtlas, bpI, pI)
+                {
+                    const label patchI = pPatchesAtlas(bpI, pI);
+                    if( patchI < 0 || patchI >= label(bndAtlas.size()) ) continue;
+                    if( seenP.found(patchI) ) continue;
+                    seenP.insert(patchI);
+                    if( patchStr.size() > 0 ) patchStr += "+";
+                    patchStr += bndAtlas[patchI].patchName();
+                }
+                if( patchStr.size() == 0 ) patchStr = "unknown";
+            }
+            const label rcClamped = (rc >= 0 && rc <= 7) ? rc : 0;
+            atlasOs << bpI << ","
+                    << meshPtI << ","
+                    << pt.x() << ","
+                    << pt.y() << ","
+                    << pt.z() << ","
+                    << ls << ","
+                    << rcClamped << ","
+                    << reasonNames[rcClamped] << ","
+                    << patchStr << nl;
+            ++nDumped;
+        }
+        Info << "BL dropout reason atlas: wrote " << nDumped
+             << " suppressed/thin points to blDropoutReasonAtlas.csv" << endl;
     }
 
 
