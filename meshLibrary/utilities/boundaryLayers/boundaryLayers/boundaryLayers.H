@@ -188,6 +188,16 @@ class boundaryLayers
         //- Built by buildBLContactPointPolicy(), consumed by blblSharp block.
         //- Min-class wins when point sits on multiple edges.
         mutable Map<label> blContactPointClass_;
+
+        //- Cap cell policy for HardBLBL blade/endwall contacts.
+        //- Gated by useHardBLBLCapCells_ (meshDict: useHardBLBLCapCells).
+        //- Per-bpI maps store the patchI/pKey for endwall and blade sides.
+        //- Used after pKey routing is proven by diagnostic atlas.
+        bool useHardBLBLCapCells_;
+        mutable Map<label> blCapCellEndwallPatch_;
+        mutable Map<label> blCapCellBladePatch_;
+        mutable Map<label> blCapCellEndwallPKey_;
+        mutable Map<label> blCapCellBladePKey_;
         //- Gate for contact-line policy (meshDict: useContactLinePolicy)
         bool useContactLinePolicy_;
         mutable labelHashSet blblCornerPoints_;
@@ -509,6 +519,10 @@ public:
         //- Build per-point contact class from edge-based atlas
         //- Call before blblSharp suppression block
         void buildBLContactPointPolicy() const;
+        //- Build HardBLBL cap cell candidate map (no geometry change)
+        void buildBLCapCellCandidates() const;
+        //- Write cap cell pKey routing diagnostic CSV
+        void writeCapCellRoutingAtlas() const;
         //- Write edge-based BL contact line atlas (diagnostic only)
         void writeBLContactLineAtlas() const;
         //- Apply virtual topology BL exclusion zones around acute

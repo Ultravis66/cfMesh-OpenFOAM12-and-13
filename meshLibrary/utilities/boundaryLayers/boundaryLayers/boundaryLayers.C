@@ -659,6 +659,7 @@ boundaryLayers::boundaryLayers
     gapLoserPatchNames_(),
     gapLoserRing1Suppress_(true),
     useContactLinePolicy_(false),
+    useHardBLBLCapCells_(false),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
 {
@@ -697,6 +698,9 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("useContactLinePolicy") )
             useContactLinePolicy_ =
                 Switch(bndLayers.lookup("useContactLinePolicy"));
+        if( bndLayers.found("useHardBLBLCapCells") )
+            useHardBLBLCapCells_ =
+                Switch(bndLayers.lookup("useHardBLBLCapCells"));
         if( bndLayers.found("blSharpEdgeAngleDeg") )
             blSharpEdgeAngleDeg_ =
                 readScalar(bndLayers.lookup("blSharpEdgeAngleDeg"));
@@ -1402,6 +1406,10 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         buildBLContactPointPolicy();
     else
         blContactPointClass_.clear();
+
+    // Build HardBLBL cap cell candidate map (no geometry change yet).
+    // Gated by useHardBLBLCapCells_ (default false).
+    buildBLCapCellCandidates();
 
     // BL/BL sharp-junction suppression:
     // Points touching 2+ BL patches where normals diverge sharply

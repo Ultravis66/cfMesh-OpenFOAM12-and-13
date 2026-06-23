@@ -5,10 +5,11 @@
     buildBLContactPointPolicy(): builds per-point contact class map,
     consumed by blblSharp suppression block when useContactLinePolicy=true.
 
-    Contact class enum:
-    0=Unclassified  1=TripleJunction  2=HardBLBL  3=ModerateBLBL
-    4=MildBLBL  5=SmoothBLBL  6=FlowBoundaryTermination  7=PeriodicSeam
-    Min-class wins (lower=more restrictive). Ignore class 0 in min logic.
+    buildBLCapCellCandidates(): identifies HardBLBL blade/endwall contacts
+    for cap cell topology (diagnostic only, gated by useHardBLBLCapCells).
+
+    writeCapCellRoutingAtlas(): proves pKey/otherVrts_ routing before
+    any asymmetric vertex assignment.
 \*---------------------------------------------------------------------------*/
 
 #include "boundaryLayers.H"
@@ -34,9 +35,6 @@ namespace
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: classify a boundary edge given role counts and angle
-// ---------------------------------------------------------------------------
 static word classifyContactEdge
 (
     const label nBL,
@@ -65,9 +63,6 @@ static word classifyContactEdge
     return "Unknown";
 }
 
-// ---------------------------------------------------------------------------
-// Core edge iteration -- shared by both atlas writer and policy builder
-// ---------------------------------------------------------------------------
 struct ContactEdgeResult
 {
     label  bp0, bp1;
@@ -164,7 +159,7 @@ static bool classifyEdge
 }
 
 // ---------------------------------------------------------------------------
-// Build per-point policy map (consumed by blblSharp suppression)
+// Build per-point policy map
 // ---------------------------------------------------------------------------
 void boundaryLayers::buildBLContactPointPolicy() const
 {
@@ -307,6 +302,232 @@ void boundaryLayers::writeBLContactLineAtlas() const
 
     Info << "BL contact line atlas: wrote " << nWritten
          << " contact edges to blContactLineAtlas.csv" << endl;
+}
+
+// ---------------------------------------------------------------------------
+// Build HardBLBL cap cell candidate map (no geometry change)
+// ---------------------------------------------------------------------------
+void boundaryLayers::buildBLCapCellCandidates() const
+{
+    blCapCellEndwallPatch_.clear();
+    blCapCellBladePatch_.clear();
+    blCapCellEndwallPKey_.clear();
+    blCapCellBladePKey_.clear();
+
+    if( !useHardBLBLCapCells_ ) return;
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const edgeList& edges = mse.edges();
+    const VRWGraph& edgeFaces = mse.edgeFaces();
+    const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+    const vectorField& faceNormals = mse.faceNormals();
+    const labelList& bPoints = mse.boundaryPoints();
+    Map<label> globalToBP;
+    forAll(bPoints, bpI)
+        globalToBP.insert(bPoints[bpI], bpI);
+
+    const label nPatches = patchNames_.size();
+    boolList isBL(nPatches, false);
+    boolList isEndwall(nPatches, false);
+    boolList isBlade(nPatches, false);
+
+    forAll(patchNames_, pI)
+    {
+        if( pI >= label(patchRole_.size()) ) continue;
+        if( patchRole_[pI] == 0 )
+        {
+            isBL[pI] = true;
+            const word& pn = patchNames_[pI];
+            if( pn == "hub" || pn == "shroud" )
+                isEndwall[pI] = true;
+            else if( pn.size() >= 5 && pn(0,5) == "blade" )
+                isBlade[pI] = true;
+        }
+    }
+
+    label nCandidates = 0;
+    label nDuplicateSame = 0;
+    label nConflicts = 0;
+
+    forAll(edges, eI)
+    {
+        if( edgeFaces.sizeOfRow(eI) != 2 ) continue;
+
+        const label fA = edgeFaces(eI, 0);
+        const label fB = edgeFaces(eI, 1);
+        if( fA < 0 || fB < 0 ) continue;
+        if( fA >= label(boundaryFacePatches.size()) ) continue;
+        if( fB >= label(boundaryFacePatches.size()) ) continue;
+
+        const label pA = boundaryFacePatches[fA];
+        const label pB = boundaryFacePatches[fB];
+        if( pA < 0 || pB < 0 || pA >= nPatches || pB >= nPatches ) continue;
+        if( pA == pB || !isBL[pA] || !isBL[pB] ) continue;
+
+        // HardBLBL only (angle > 75deg)
+        vector nA = faceNormals[fA]; nA /= mag(nA) + VSMALL;
+        vector nB = faceNormals[fB]; nB /= mag(nB) + VSMALL;
+        const scalar minDot = nA & nB;
+        const scalar angleDeg =
+            Foam::acos(Foam::max(scalar(-1), Foam::min(scalar(1), minDot)))
+            * 180.0 / M_PI;
+        if( angleDeg < 75.0 ) continue;
+
+        // Must be blade/endwall pair
+        if( !((isEndwall[pA] && isBlade[pB]) || (isEndwall[pB] && isBlade[pA])) )
+            continue;
+
+        const label endwallPatch = isEndwall[pA] ? pA : pB;
+        const label bladePatch   = isBlade[pA]   ? pA : pB;
+
+        const edge& e = edges[eI];
+        for( label ei = 0; ei < 2; ++ei )
+        {
+            const label gp = (ei == 0) ? e[0] : e[1];
+            Map<label>::const_iterator it = globalToBP.find(gp);
+            if( it == globalToBP.end() ) continue;
+            const label bpI = it();
+
+            if( !blCapCellEndwallPatch_.found(bpI) )
+            {
+                blCapCellEndwallPatch_.insert(bpI, endwallPatch);
+                blCapCellBladePatch_.insert(bpI, bladePatch);
+                blCapCellEndwallPKey_.insert(bpI, -1);
+                blCapCellBladePKey_.insert(bpI, -1);
+                ++nCandidates;
+            }
+            else
+            {
+                //- Point already assigned -- check for conflicts
+                const bool sameEndwall =
+                    (blCapCellEndwallPatch_[bpI] == endwallPatch);
+                const bool sameBlade =
+                    (blCapCellBladePatch_[bpI] == bladePatch);
+                if( sameEndwall && sameBlade )
+                    ++nDuplicateSame;
+                else
+                {
+                    ++nConflicts;
+                    if( nConflicts <= 3 )
+                        Info << "CAP_CONFLICT: bpI=" << bpI
+                             << " existing=(" << patchNames_[blCapCellEndwallPatch_[bpI]]
+                             << "+" << patchNames_[blCapCellBladePatch_[bpI]] << ")"
+                             << " new=(" << patchNames_[endwallPatch]
+                             << "+" << patchNames_[bladePatch] << ")" << endl;
+                }
+            }
+        }
+    }
+
+    Info << "BL cap cell candidates: " << nCandidates
+         << " new, " << nDuplicateSame << " duplicate-same,"
+         << " " << nConflicts << " conflicts" << endl;
+}
+
+// ---------------------------------------------------------------------------
+// Write cap cell pKey routing diagnostic CSV
+// Called after patchKey_ is populated inside createNewVertices
+// ---------------------------------------------------------------------------
+void boundaryLayers::writeCapCellRoutingAtlas() const
+{
+    if( blCapCellEndwallPatch_.empty() ) return;
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const labelList& bPoints = mse.boundaryPoints();
+    const pointFieldPMG& points = mesh_.points();
+
+    OFstream os("blCapCellRoutingAtlas.csv");
+    os << "bpI,meshPointI,x,y,z,"
+       << "endwallPatch,bladePatch,"
+       << "endwallPKey,bladePKey,"
+       << "otherVrtsSize,"
+       << "findForEndwallPKey,findForBladePKey,"
+       << "endwallVertLabel,bladeVertLabel,"
+       << "distEndwall,distBlade,distFindEndwall,distFindBlade,"
+       << "findEWisEWentry,findEWisBLentry,findBLisEWentry,findBLisBLentry"
+       << nl;
+
+    forAllConstIter(Map<label>, blCapCellEndwallPatch_, it)
+    {
+        const label bpI = it.key();
+        const label endwallPatch = it();
+        const label bladePatch =
+            blCapCellBladePatch_.found(bpI) ? blCapCellBladePatch_[bpI] : -1;
+        const label endwallPKey =
+            blCapCellEndwallPKey_.found(bpI) ? blCapCellEndwallPKey_[bpI] : -1;
+        const label bladePKey =
+            blCapCellBladePKey_.found(bpI) ? blCapCellBladePKey_[bpI] : -1;
+
+        if( bpI < 0 || bpI >= label(bPoints.size()) ) continue;
+        const label meshPtI = bPoints[bpI];
+        const point& pt = (meshPtI >= 0 && meshPtI < label(points.size())) ?
+            points[meshPtI] : point(Zero);
+
+        label otherVrtsSize = 0;
+        label findForEndwall = -1;
+        label findForBlade = -1;
+        label endwallVertLabel = -1;
+        label bladeVertLabel = -1;
+
+        const std::map<label,std::map<std::pair<label,label>,label>>::const_iterator
+            oit = otherVrts_.find(meshPtI);
+        if( oit != otherVrts_.end() )
+        {
+            otherVrtsSize = label(oit->second.size());
+            if( endwallPKey >= 0 )
+                findForEndwall = findNewNodeLabel(meshPtI, endwallPKey);
+            if( bladePKey >= 0 )
+                findForBlade = findNewNodeLabel(meshPtI, bladePKey);
+            if( endwallPKey >= 0 )
+            {
+                const std::pair<label,label> pr(endwallPKey, endwallPKey);
+                auto eit2 = oit->second.find(pr);
+                if( eit2 != oit->second.end() )
+                    endwallVertLabel = eit2->second;
+            }
+            if( bladePKey >= 0 )
+            {
+                const std::pair<label,label> pr(bladePKey, bladePKey);
+                auto bit2 = oit->second.find(pr);
+                if( bit2 != oit->second.end() )
+                    bladeVertLabel = bit2->second;
+            }
+        }
+
+        const word ewName = (endwallPatch >= 0 && endwallPatch < label(patchNames_.size())) ?
+            patchNames_[endwallPatch] : word("?");
+        const word blName = (bladePatch >= 0 && bladePatch < label(patchNames_.size())) ?
+            patchNames_[bladePatch] : word("?");
+
+        // Compute distances from original point
+        const scalar distEW = (endwallVertLabel >= 0 && endwallVertLabel < label(points.size())) ?
+            mag(points[endwallVertLabel] - pt) : scalar(-1);
+        const scalar distBL = (bladeVertLabel >= 0 && bladeVertLabel < label(points.size())) ?
+            mag(points[bladeVertLabel] - pt) : scalar(-1);
+        const scalar distFindEW = (findForEndwall >= 0 && findForEndwall < label(points.size())) ?
+            mag(points[findForEndwall] - pt) : scalar(-1);
+        const scalar distFindBL = (findForBlade >= 0 && findForBlade < label(points.size())) ?
+            mag(points[findForBlade] - pt) : scalar(-1);
+        // Routing equality: does findNewNodeLabel return EW or BL entry?
+        const label findEWisEW = (findForEndwall >= 0 && findForEndwall == endwallVertLabel) ? 1:0;
+        const label findEWisBL = (findForEndwall >= 0 && findForEndwall == bladeVertLabel) ? 1:0;
+        const label findBLisEW = (findForBlade >= 0 && findForBlade == endwallVertLabel) ? 1:0;
+        const label findBLisBL = (findForBlade >= 0 && findForBlade == bladeVertLabel) ? 1:0;
+        os << bpI << "," << meshPtI << ","
+           << pt.x() << "," << pt.y() << "," << pt.z() << ","
+           << ewName << "," << blName << ","
+           << endwallPKey << "," << bladePKey << ","
+           << otherVrtsSize << ","
+           << findForEndwall << "," << findForBlade << ","
+           << endwallVertLabel << "," << bladeVertLabel << ","
+           << distEW << "," << distBL << ","
+           << distFindEW << "," << distFindBL << ","
+           << findEWisEW << "," << findEWisBL << ","
+           << findBLisEW << "," << findBLisBL << nl;
+    }
+
+    Info << "BL cap cell routing atlas written to blCapCellRoutingAtlas.csv"
+         << endl;
 }
 
 } // End namespace Foam

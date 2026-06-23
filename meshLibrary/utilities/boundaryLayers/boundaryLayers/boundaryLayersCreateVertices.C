@@ -1677,6 +1677,24 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             Info << "Layer rollback (pass2): " << nRolledBack
                  << " topology-sensitive vertices relaxed (floored)" << endl;
     }
+
+    // Resolve patchKey_ for cap cell candidates now that patchKey_ is populated.
+    if( useHardBLBLCapCells_ && !blCapCellEndwallPatch_.empty() )
+    {
+        forAllConstIter(Map<label>, blCapCellEndwallPatch_, it)
+        {
+            const label bpI = it.key();
+            const label ewPatch = it();
+            const label blPatch =
+                blCapCellBladePatch_.found(bpI) ?
+                blCapCellBladePatch_[bpI] : -1;
+            if( ewPatch >= 0 && ewPatch < label(patchKey_.size()) )
+                blCapCellEndwallPKey_[bpI] = patchKey_[ewPatch];
+            if( blPatch >= 0 && blPatch < label(patchKey_.size()) )
+                blCapCellBladePKey_[bpI] = patchKey_[blPatch];
+        }
+        writeCapCellRoutingAtlas();
+    }
 }
 
 void boundaryLayers::createNewPartitionVerticesParallel
