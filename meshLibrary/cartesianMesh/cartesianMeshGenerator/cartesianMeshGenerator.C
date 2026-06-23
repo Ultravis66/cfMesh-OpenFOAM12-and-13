@@ -4745,7 +4745,14 @@ void cartesianMeshGenerator::generateMesh()
                             &mPartPBR.corners(),
                             &featTanPBR
                         );
-                        pbrOpt.optimizeMeshFV(3, 5, 20, 1);
+                        //- Use untangleMeshFV: BL-introduced negVol cells
+                        //- are topologically stressed. Full optimizeMeshFV
+                        //- cascaded 1->124 negVol. Untangler is targeted
+                        //- at inverted cells, less likely to cascade damage.
+                        //- Rollback/acceptance gate unchanged.
+                        Info << "POSTBLRESCUE method=constrainedUntangleMeshFV"
+                             << endl;
+                        pbrOpt.untangleMeshFV(5, 20, 2, false);
                         pbrOpt.setSurfaceConstraint(NULL,NULL,NULL,NULL,NULL);
                         labelHashSet pbrNegAfter;
                         polyMeshGenChecks::checkCellVolumes
