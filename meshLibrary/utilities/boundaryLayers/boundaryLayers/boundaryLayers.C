@@ -1396,6 +1396,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     {
         const scalar cosThresh = Foam::cos(blblFeatureAngleDeg_ * M_PI / 180.0);
         label nBLBL = 0;
+        label nBLBLHard = 0;
+        label nBLBLModerate = 0;
+        label nBLBLMild = 0;
         const VRWGraph& ptFaces = mse.pointFaces();
         forAll(bPoints, bpI)
         {
@@ -1450,18 +1453,57 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
 
             if( sharpJunction )
             {
-                zeroDistPoints_[bpI] = true;
-                layerScale_[bpI] = 0.0;
+                //- Commercial-grade blblSharp policy v1:
+                //- Graduated taper instead of hard zero for all junctions.
+                //- Atlas: blblSharp=2599 dominant dropout + 1640 ramp victims.
+                scalar minDot = scalar(1.0);
+                for(label i=0; i<avgNormals.size()-1; ++i)
+                    for(label j=i+1; j<avgNormals.size(); ++j)
+                    {
+                        const scalar d = avgNormals[i] & avgNormals[j];
+                        if( d < minDot ) minDot = d;
+                    }
+                const scalar cosHard = Foam::cos(scalar(75.0)*M_PI/180.0);
+                const scalar cosMild = Foam::cos(scalar(60.0)*M_PI/180.0);
+                scalar taperFloor = scalar(0.0);
+                if( minDot < cosHard )
+                {
+                    taperFloor = scalar(0.0);   // hard corner -- full suppress
+                    ++nBLBLHard;
+                }
+                else if( minDot < cosMild )
+                {
+                    taperFloor = scalar(0.25);  // moderate -- quarter layer
+                    ++nBLBLModerate;
+                }
+                else
+                {
+                    taperFloor = scalar(0.50);  // mild -- half layer
+                    ++nBLBLMild;
+                }
+                layerScale_[bpI] = taperFloor;
                 blSuppressReason_[bpI] = 6;
-                zeroPts[bpI] = true;
+                if( taperFloor < 0.01 )
+                {
+                    zeroDistPoints_[bpI] = true;
+                    zeroPts[bpI] = true;
+                }
+                else
+                {
+                    zeroDistPoints_[bpI] = false;
+                    zeroPts[bpI] = false;
+                }
                 ++nBLBL;
-                // C1: persist junction point for topology fix in C2/C3
                 blblJunctionPoints_.insert(bpI);
             }
         }
         Info << "BL/BL sharp-junction suppression: "
-             << nBLBL << " points suppressed, "
-             << blblJunctionPoints_.size() << " junction points captured" << endl;
+             << nBLBL << " points total"
+             << " (hard=" << nBLBLHard
+             << " moderate=" << nBLBLModerate
+             << " mild=" << nBLBLMild << ")"
+             << " " << blblJunctionPoints_.size() << " junction pts captured"
+             << endl;
     }
 
     // Detect generic layer-termination edges where at least one adjacent
