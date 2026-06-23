@@ -497,6 +497,8 @@ public:
         //- terminate boundary layers at concave edges (used as a flag)
         void terminateLayersAtConcaveEdges();
         void markConcaveEdgePoints(boolList& skipPoint) const;
+        //- Write edge-based BL contact line atlas (diagnostic only)
+        void writeBLContactLineAtlas() const;
         //- Apply virtual topology BL exclusion zones around acute
         //- BL triple-junctions before any layer graph is constructed.
         void applyVirtualTopologyExclusion() const;

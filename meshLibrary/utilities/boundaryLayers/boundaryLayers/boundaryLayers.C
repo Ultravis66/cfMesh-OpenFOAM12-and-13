@@ -2638,6 +2638,9 @@ void boundaryLayers::applyGapFaceRingExclusion() const
              << " faces=" << nProtectedTripleR0
              << " scale=" << tripleJunctionProtectedRing0Scale_
              << endl;
+    // Write edge-based contact line atlas (diagnostic only)
+    writeBLContactLineAtlas();
+
     // FINAL BL dropout reason atlas -- after ALL layerScale changes.
     // Includes ramp provenance (blRampRing_, blRampSeedReason_).
     {
