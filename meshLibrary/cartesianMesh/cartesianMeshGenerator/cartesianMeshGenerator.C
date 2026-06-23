@@ -4561,6 +4561,260 @@ void cartesianMeshGenerator::generateMesh()
                  << "negVol=" << finalNegCells.size()
                  << " badPyramids=" << finalBadPyrFaces.size()
                  << endl;
+            //- Post-BL Rescue Rung: surface-constrained local repair
+            //- for negVol introduced by BL/replaceBoundaries.
+            //- Runs BEFORE MESHHISTORY/writeLineageCSV so final state
+            //- is honest. Recomputes finalNegCells/finalBadPyrFaces
+            //- after rescue so downstream diagnostics see true state.
+            {
+                bool enablePostBLRescue = false;
+                if( meshDict_.found("enablePostBLRescue") )
+                    enablePostBLRescue =
+                        readBool(meshDict_.lookup("enablePostBLRescue"));
+                label postBLRescueMaxNegVol = 20;
+                if( meshDict_.found("postBLRescueMaxNegVol") )
+                    postBLRescueMaxNegVol =
+                        readLabel(meshDict_.lookup("postBLRescueMaxNegVol"));
+                label postBLRescueMaxRings = 3;
+                if( meshDict_.found("postBLRescueMaxRings") )
+                    postBLRescueMaxRings =
+                        readLabel(meshDict_.lookup("postBLRescueMaxRings"));
+                label postBLRescueAllowedPyrIncrease = 10;
+                if( meshDict_.found("postBLRescueAllowedPyrIncrease") )
+                    postBLRescueAllowedPyrIncrease =
+                        readLabel(meshDict_.lookup("postBLRescueAllowedPyrIncrease"));
+                scalar postBLRescueMaxSkew = 100.0;
+                if( meshDict_.found("postBLRescueMaxSkew") )
+                    postBLRescueMaxSkew =
+                        readScalar(meshDict_.lookup("postBLRescueMaxSkew"));
+                if( enablePostBLRescue
+                 && finalNegCells.size() > 0
+                 && label(finalNegCells.size()) <= postBLRescueMaxNegVol
+                 && octreePtr_ )
+                {
+                    Info << "POSTBLRESCUE before: negVol="
+                         << finalNegCells.size()
+                         << " badPyr=" << finalBadPyrFaces.size()
+                         << endl;
+                    const cellListPMG& pbrCells = mesh_.cells();
+                    const faceListPMG& pbrFaces = mesh_.faces();
+                    const labelList&   pbrOwn   = mesh_.owner();
+                    const labelList&   pbrNei   = mesh_.neighbour();
+                    const label pbrNInternal = mesh_.nInternalFaces();
+                    //- Step 1: seed from finalNegCells + badPyr owners
+                    labelHashSet pbrZone;
+                    forAllConstIter(labelHashSet, finalNegCells, it)
+                        pbrZone.insert(it.key());
+                    forAllConstIter(labelHashSet, finalBadPyrFaces, it)
+                    {
+                        const label faceI = it.key();
+                        if( faceI >= 0 && faceI < label(pbrOwn.size()) )
+                            pbrZone.insert(pbrOwn[faceI]);
+                        if( faceI >= 0 && faceI < label(pbrNei.size())
+                         && pbrNei[faceI] >= 0 )
+                            pbrZone.insert(pbrNei[faceI]);
+                    }
+                    const label pbrNSeeds = pbrZone.size();
+                    //- Step 2: ring expansion
+                    for( label ring = 0; ring < postBLRescueMaxRings; ++ring )
+                    {
+                        labelHashSet ringAdd;
+                        forAllConstIter(labelHashSet, pbrZone, it)
+                        {
+                            const label cellI = it.key();
+                            if( cellI < 0 || cellI >= label(pbrCells.size()) ) continue;
+                            const cell& c = pbrCells[cellI];
+                            forAll(c, fI)
+                            {
+                                const label faceI = c[fI];
+                                if( faceI < 0 || faceI >= pbrNInternal ) continue;
+                                const label ownC = pbrOwn[faceI];
+                                const label neiC = pbrNei[faceI];
+                                if( ownC >= 0 && !pbrZone.found(ownC) )
+                                    ringAdd.insert(ownC);
+                                if( neiC >= 0 && !pbrZone.found(neiC) )
+                                    ringAdd.insert(neiC);
+                            }
+                        }
+                        forAllConstIter(labelHashSet, ringAdd, it)
+                            pbrZone.insert(it.key());
+                    }
+                    //- Step 3: count movable interior points
+                    labelHashSet pbrRepairPts;
+                    labelHashSet pbrOutsidePts;
+                    forAll(pbrCells, cellI)
+                    {
+                        const cell& c = pbrCells[cellI];
+                        const bool inZone = pbrZone.found(cellI);
+                        forAll(c, fI)
+                        {
+                            const label faceI = c[fI];
+                            if( faceI < 0 || faceI >= label(pbrFaces.size()) ) continue;
+                            const face& f = pbrFaces[faceI];
+                            forAll(f, pI)
+                            {
+                                const label ptI = f[pI];
+                                if( ptI < 0 ) continue;
+                                if( inZone ) pbrRepairPts.insert(ptI);
+                                else pbrOutsidePts.insert(ptI);
+                            }
+                        }
+                    }
+                    label pbrMovable = 0;
+                    forAllConstIter(labelHashSet, pbrRepairPts, it)
+                        if( !pbrOutsidePts.found(it.key()) ) ++pbrMovable;
+                    Info << "POSTBLRESCUE zone: seeds=" << pbrNSeeds
+                         << " repairCells=" << pbrZone.size()
+                         << " repairPts=" << pbrRepairPts.size()
+                         << " movablePts=" << pbrMovable
+                         << " rings=" << postBLRescueMaxRings
+                         << endl;
+                    if( pbrMovable > 0 )
+                    {
+                        const pointField pbrSnapBefore(mesh_.points());
+                        labelHashSet pbrBadBefore;
+                        polyMeshGenChecks::checkFacePyramids
+                            (mesh_, false, -SMALL, &pbrBadBefore);
+                        labelHashSet pbrOpenBefore;
+                        polyMeshGenChecks::checkClosedCells
+                            (mesh_, false, 0.5, &pbrOpenBefore);
+                        meshSurfaceEngine msePBR(mesh_);
+                        meshSurfacePartitioner mPartPBR(msePBR);
+                        labelLongList globalToBpPBR(mesh_.points().size(), -1);
+                        const labelList& bPtsPBR = msePBR.boundaryPoints();
+                        forAll(bPtsPBR, bpI)
+                            globalToBpPBR[bPtsPBR[bpI]] = bpI;
+                        const label nBpPBR = bPtsPBR.size();
+                        vectorField featTanPBR(nBpPBR, vector::zero);
+                        {
+                            const edgeList& edgesPBR = msePBR.edges();
+                            const VRWGraph& bpEdgesPBR = msePBR.boundaryPointEdges();
+                            const labelHashSet& featEdgesPBR = mPartPBR.featureEdges();
+                            const labelHashSet& edgePtsPBR = mPartPBR.edgePoints();
+                            const pointFieldPMG& ptsPBR = mesh_.points();
+                            const labelList& bpPBR = msePBR.bp();
+                            forAllConstIter(labelHashSet, edgePtsPBR, it)
+                            {
+                                const label bpI = it.key();
+                                if( bpI < 0 || bpI >= nBpPBR ) continue;
+                                label nbr0 = -1, nbr1 = -1;
+                                forAllRow(bpEdgesPBR, bpI, eI)
+                                {
+                                    const label beI = bpEdgesPBR(bpI, eI);
+                                    if( !featEdgesPBR.found(beI) ) continue;
+                                    const edge& e = edgesPBR[beI];
+                                    const label ep0 = e.start();
+                                    const label ep1 = e.end();
+                                    if( ep0 < 0 || ep0 >= bpPBR.size() ) continue;
+                                    if( ep1 < 0 || ep1 >= bpPBR.size() ) continue;
+                                    const label o0 = bpPBR[ep0];
+                                    const label o1 = bpPBR[ep1];
+                                    if( o0 < 0 || o1 < 0 ) continue;
+                                    label otherBp = -1;
+                                    if( o0 == bpI ) otherBp = o1;
+                                    else if( o1 == bpI ) otherBp = o0;
+                                    if( otherBp < 0 || otherBp >= nBpPBR ) continue;
+                                    if( nbr0 == -1 ) nbr0 = otherBp;
+                                    else if( nbr1 == -1 && otherBp != nbr0 )
+                                        nbr1 = otherBp;
+                                }
+                                vector t = vector::zero;
+                                if( nbr0 != -1 && nbr1 != -1 )
+                                    t = ptsPBR[bPtsPBR[nbr1]]
+                                      - ptsPBR[bPtsPBR[nbr0]];
+                                else if( nbr0 != -1 )
+                                    t = ptsPBR[bPtsPBR[nbr0]]
+                                      - ptsPBR[bPtsPBR[bpI]];
+                                if( magSqr(t) > VSMALL )
+                                    featTanPBR[bpI] = t / mag(t);
+                            }
+                        }
+                        labelLongList pbrCellsToLock;
+                        forAll(pbrCells, cellI)
+                            if( !pbrZone.found(cellI) )
+                                pbrCellsToLock.append(cellI);
+                        meshOptimizer pbrOpt(mesh_);
+                        pbrOpt.lockCells(pbrCellsToLock);
+                        pbrOpt.setSurfaceConstraint
+                        (
+                            octreePtr_,
+                            &mPartPBR.pointPatches(),
+                            &globalToBpPBR,
+                            &mPartPBR.corners(),
+                            &featTanPBR
+                        );
+                        pbrOpt.optimizeMeshFV(3, 5, 20, 1);
+                        pbrOpt.setSurfaceConstraint(NULL,NULL,NULL,NULL,NULL);
+                        labelHashSet pbrNegAfter;
+                        polyMeshGenChecks::checkCellVolumes
+                            (mesh_, false, &pbrNegAfter);
+                        labelHashSet pbrBadAfter;
+                        polyMeshGenChecks::checkFacePyramids
+                            (mesh_, false, -SMALL, &pbrBadAfter);
+                        labelHashSet pbrOpenAfter;
+                        polyMeshGenChecks::checkClosedCells
+                            (mesh_, false, 0.5, &pbrOpenAfter);
+                        scalarField pbrSkewAfter;
+                        polyMeshGenChecks::checkFaceSkewness
+                            (mesh_, pbrSkewAfter);
+                        const scalar pbrMaxSkew =
+                            pbrSkewAfter.size() > 0 ?
+                            max(pbrSkewAfter) : scalar(0);
+                        const bool pbrOK =
+                            pbrNegAfter.size() == 0
+                         && label(pbrBadAfter.size()) <=
+                            label(pbrBadBefore.size()) + postBLRescueAllowedPyrIncrease
+                         && pbrOpenAfter.size() <= pbrOpenBefore.size()
+                         && pbrMaxSkew <= postBLRescueMaxSkew;
+                        Info << "POSTBLRESCUE after: negVol="
+                             << pbrNegAfter.size()
+                             << " badPyr=" << pbrBadAfter.size()
+                             << " maxSkew=" << pbrMaxSkew
+                             << endl;
+                        if( pbrOK )
+                        {
+                            Info << "POSTBLRESCUE ACCEPTED: negVol "
+                                 << finalNegCells.size() << "->0"
+                                 << " badPyr " << pbrBadBefore.size()
+                                 << "->" << pbrBadAfter.size()
+                                 << " maxSkew=" << pbrMaxSkew
+                                 << endl;
+                            //- Recompute final sets so downstream
+                            //- MESHHISTORY/CSV reflects rescued state
+                            finalNegCells.clear();
+                            finalBadPyrFaces = pbrBadAfter;
+                            meshHistory_ = MeshHistory::CleanPromoted;
+                        }
+                        else
+                        {
+                            Info << "POSTBLRESCUE REJECTED: negVol "
+                                 << finalNegCells.size() << "->"
+                                 << pbrNegAfter.size()
+                                 << " badPyr " << pbrBadBefore.size()
+                                 << "->" << pbrBadAfter.size()
+                                 << " maxSkew=" << pbrMaxSkew
+                                 << " -- rolling back point motion" << endl;
+                            polyMeshGenModifier pbrMod(mesh_);
+                            pointFieldPMG& pbrModPts = pbrMod.pointsAccess();
+                            forAll(pbrSnapBefore, pI)
+                                pbrModPts[pI] = pbrSnapBefore[pI];
+                            mesh_.clearAddressingData();
+                        }
+                    }
+                    else
+                    {
+                        Info << "POSTBLRESCUE: no movable points in repair zone"
+                             << " -- skipping (increase postBLRescueMaxRings)"
+                             << endl;
+                    }
+                }
+                else if( enablePostBLRescue && finalNegCells.size() > 0
+                      && !octreePtr_ )
+                {
+                    Info << "POSTBLRESCUE skipped: no octreePtr_ for"
+                         << " surface-constrained repair" << endl;
+                }
+            }
             //- MESHHISTORY logged here -- after BL and replaceBoundaries
             //- so it reflects true final mesh state.
             if( finalNegCells.size() > 0
