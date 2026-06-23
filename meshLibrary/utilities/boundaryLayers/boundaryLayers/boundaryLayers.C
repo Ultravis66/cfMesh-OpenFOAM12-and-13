@@ -1540,6 +1540,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             bool hasBL   = false;
             bool hasNoBL = false;
             label blPatchI = -1;
+            label noBLPatchI = -1;
 
             forAllRow(edgeFaces, eI, efI)
             {
@@ -1555,6 +1556,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 else if( patchRole_[patchI] == 1 )
                 {
                     hasNoBL = true;
+                    noBLPatchI = patchI;
                 }
             }
             if( !hasBL || !hasNoBL ) continue;
@@ -1570,10 +1572,19 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 const label bpI = it();
                 if( blNoBlEdgePoints_.insert(bpI) )
                 {
-                    zeroDistPoints_[bpI] = true;
-                    layerScale_[bpI] = 0.0;
+                    bool flowTermination = false;
+                    if( noBLPatchI >= 0 && noBLPatchI < label(patchNames_.size()) )
+                    {
+                        const word& noBLName = patchNames_[noBLPatchI];
+                        flowTermination =
+                            (noBLName == "inlet" || noBLName == "outlet");
+                    }
+                    const scalar blNoBLTaper =
+                        flowTermination ? scalar(0.25) : scalar(0.0);
+                    zeroDistPoints_[bpI] = (blNoBLTaper < 0.01);
+                    layerScale_[bpI] = blNoBLTaper;
                     blSuppressReason_[bpI] = 7;
-                    zeroPts[bpI] = true;
+                    zeroPts[bpI] = (blNoBLTaper < 0.01);
                 }
                 // Store BL-side patch for patch-constrained projection
                 if( !blNoBlPointPatch_.found(bpI) )
