@@ -512,35 +512,88 @@ point boundaryLayers::createNewVertex
             }
             if( patchNormals.size() >= 2 )
             {
-                scalar bestDist = GREAT;
-                vector bestNormal = vector::zero;
-                forAllConstIter(Map<vector>, patchNormals, it)
+                label junctionClass = 0; // 0=hard 1=moderate 2=mild
+                Map<label>::const_iterator classIt =
+                    blblJunctionClass_.find(bpI);
+                if( classIt != blblJunctionClass_.end() )
+                    junctionClass = classIt();
+
+                bool usedBlendNormal = false;
+
+                //- Moderate/mild BL/BL seams: use blended/bisector normal.
+                //- This preserves boundary-to-boundary contact better than
+                //- selecting one patch normal by min-distance.
+                if( junctionClass > 0 )
                 {
-                    vector n = it();
-                    const scalar magN = mag(n);
-                    if( magN < VSMALL ) continue;
-                    n /= magN;
-                    scalar localDist = VGREAT;
-                    forAllRow(pointPoints, bpI, ppI)
+                    vector blendNormal = vector::zero;
+                    label nBlend = 0;
+
+                    forAllConstIter(Map<vector>, patchNormals, it)
                     {
-                        const label bpJ = pointPoints(bpI, ppI);
-                        const vector vec = points[bPoints[bpJ]] - p;
-                        const scalar d = 0.5 * mag(vec & n);
-                        if( d < localDist ) localDist = d;
+                        vector n = it();
+                        const scalar magN = mag(n);
+                        if( magN < VSMALL ) continue;
+                        blendNormal += n / magN;
+                        ++nBlend;
                     }
-                    if( localDist < bestDist )
+
+                    if( nBlend >= 2 && mag(blendNormal) > VSMALL )
                     {
-                        bestDist = localDist;
-                        bestNormal = n;
+                        blendNormal /= mag(blendNormal);
+
+                        scalar blendDist = VGREAT;
+                        forAllRow(pointPoints, bpI, ppI)
+                        {
+                            const label bpJ = pointPoints(bpI, ppI);
+                            if( bpJ < 0 || bpJ >= label(bPoints.size()) )
+                                continue;
+                            const vector vec = points[bPoints[bpJ]] - p;
+                            const scalar d = 0.5 * mag(vec & blendNormal);
+                            if( d < blendDist ) blendDist = d;
+                        }
+
+                        normal = blendNormal;
+                        dist = Foam::min(dist, blendDist);
+                        usedBlendNormal = true;
                     }
                 }
-                if( mag(bestNormal) > VSMALL )
+
+                //- Hard corners, or failed blend: keep original conservative
+                //- min-distance patch-normal selection.
+                if( !usedBlendNormal )
                 {
-                    normal = bestNormal;
-                    dist = Foam::min(dist, bestDist);
+                    scalar bestDist = GREAT;
+                    vector bestNormal = vector::zero;
+                    forAllConstIter(Map<vector>, patchNormals, it)
+                    {
+                        vector n = it();
+                        const scalar magN = mag(n);
+                        if( magN < VSMALL ) continue;
+                        n /= magN;
+                        scalar localDist = VGREAT;
+                        forAllRow(pointPoints, bpI, ppI)
+                        {
+                            const label bpJ = pointPoints(bpI, ppI);
+                            if( bpJ < 0 || bpJ >= label(bPoints.size()) )
+                                continue;
+                            const vector vec = points[bPoints[bpJ]] - p;
+                            const scalar d = 0.5 * mag(vec & n);
+                            if( d < localDist ) localDist = d;
+                        }
+                        if( localDist < bestDist )
+                        {
+                            bestDist = localDist;
+                            bestNormal = n;
+                        }
+                    }
+                    if( mag(bestNormal) > VSMALL )
+                    {
+                        normal = bestNormal;
+                        dist = Foam::min(dist, bestDist);
+                    }
+                    else
+                        normal = pNormals[bpI];
                 }
-                else
-                    normal = pNormals[bpI];
             }
             else
                 normal = pNormals[bpI];

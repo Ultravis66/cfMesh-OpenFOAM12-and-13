@@ -1394,6 +1394,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // (blade+hub, blade+shroud) create degenerate layer cells.
     // Threshold: 40 degrees between patch normals.
     {
+        blblJunctionPoints_.clear();
+        blblJunctionClass_.clear();
         const scalar cosThresh = Foam::cos(blblFeatureAngleDeg_ * M_PI / 180.0);
         label nBLBL = 0;
         label nBLBLHard = 0;
@@ -1466,19 +1468,23 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 const scalar cosHard = Foam::cos(scalar(75.0)*M_PI/180.0);
                 const scalar cosMild = Foam::cos(scalar(60.0)*M_PI/180.0);
                 scalar taperFloor = scalar(0.0);
+                label junctionClass = 0; // 0=hard 1=moderate 2=mild
                 if( minDot < cosHard )
                 {
                     taperFloor = scalar(0.0);   // hard corner -- full suppress
+                    junctionClass = 0;
                     ++nBLBLHard;
                 }
                 else if( minDot < cosMild )
                 {
                     taperFloor = scalar(0.25);  // moderate -- quarter layer
+                    junctionClass = 1;
                     ++nBLBLModerate;
                 }
                 else
                 {
                     taperFloor = scalar(0.50);  // mild -- half layer
+                    junctionClass = 2;
                     ++nBLBLMild;
                 }
                 layerScale_[bpI] = taperFloor;
@@ -1495,6 +1501,10 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 }
                 ++nBLBL;
                 blblJunctionPoints_.insert(bpI);
+                if( blblJunctionClass_.found(bpI) )
+                    blblJunctionClass_[bpI] = junctionClass;
+                else
+                    blblJunctionClass_.insert(bpI, junctionClass);
             }
         }
         Info << "BL/BL sharp-junction suppression: "

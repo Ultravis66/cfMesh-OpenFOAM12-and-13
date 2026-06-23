@@ -176,6 +176,9 @@ class boundaryLayers
         //- boundary points on sharp BL/BL junction feature curves
         //- populated by markConcaveEdgePoints, consumed by C2/C3
         mutable labelHashSet blblJunctionPoints_;
+        //- Per-junction-point class: 0=hard 1=moderate 2=mild
+        //- Set in markConcaveEdgePoints, consumed in createNewVertex.
+        mutable Map<label> blblJunctionClass_;
         mutable labelHashSet blblCornerPoints_;
         mutable labelHashSet blblAcuteCornerPoints_;
 
