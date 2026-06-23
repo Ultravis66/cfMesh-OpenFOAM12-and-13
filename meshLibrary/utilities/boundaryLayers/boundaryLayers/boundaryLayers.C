@@ -1040,6 +1040,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     // Initialize scale fields
     layerScale_.setSize(bPoints.size(), 1.0);
     blSuppressReason_.setSize(bPoints.size(), 0);
+    blRampRing_.setSize(bPoints.size(), 0);
+    blRampSeedReason_.setSize(bPoints.size(), 0);
     zeroDistPoints_.setSize(bPoints.size(), false);
     boolList zeroPts(bPoints.size(), false);
 
@@ -1610,7 +1612,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         const PtrList<boundaryPatch>& bndAtlas = mesh_.boundaries();
         OFstream atlasOs("blDropoutReasonAtlas.csv");
         atlasOs << "bpI,meshPointI,x,y,z,layerScale,"
-                << "reasonCode,reasonName,patches" << nl;
+                << "reasonCode,reasonName,"
+                << "rampRing,rampSeedReason,rampSeedName,"
+                << "patches" << nl;
         const char* reasonNames[] = {
             "none","gap","transEdge","tripleJunction",
             "corner","sharpEdge","blblSharp","blNoBLEdge"
@@ -1644,6 +1648,12 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 if( patchStr.size() == 0 ) patchStr = "unknown";
             }
             const label rcClamped = (rc >= 0 && rc <= 7) ? rc : 0;
+            const label rampRing =
+                (blRampRing_.size() > bpI) ? blRampRing_[bpI] : 0;
+            const label rampSeedRc =
+                (blRampSeedReason_.size() > bpI) ? blRampSeedReason_[bpI] : 0;
+            const label rampSeedClamped =
+                (rampSeedRc >= 0 && rampSeedRc <= 7) ? rampSeedRc : 0;
             atlasOs << bpI << ","
                     << meshPtI << ","
                     << pt.x() << ","
@@ -1652,6 +1662,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     << ls << ","
                     << rcClamped << ","
                     << reasonNames[rcClamped] << ","
+                    << rampRing << ","
+                    << rampSeedClamped << ","
+                    << reasonNames[rampSeedClamped] << ","
                     << patchStr << nl;
             ++nDumped;
         }
@@ -1735,6 +1748,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring1[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing1_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 1;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
 
@@ -1754,6 +1774,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring2[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing2_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 2;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
 
@@ -1773,6 +1800,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring3[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing3_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 3;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
 
@@ -1792,6 +1826,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring4[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing4_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 4;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
 
@@ -1810,6 +1851,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring5[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing5_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 5;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
     boolList ring6(bPoints.size(), false);
@@ -1827,6 +1875,13 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             if( !boundaryPointsCanShareBLRamp(pPatches, isBLPatch, bpI, nbpI) ) continue;
             ring6[nbpI] = true;
             layerScale_[nbpI] = Foam::min(layerScale_[nbpI], layerScaleRing6_);
+            if( blRampRing_[nbpI] == 0 )
+            {
+                blRampRing_[nbpI] = 6;
+                blRampSeedReason_[nbpI] =
+                    (blSuppressReason_[bpI] > 0) ?
+                    blSuppressReason_[bpI] : blRampSeedReason_[bpI];
+            }
         }
     }
     label nZero = 0, nRing1 = 0, nRing2 = 0, nRing3 = 0, nRing4 = 0, nRing5 = 0, nRing6 = 0;

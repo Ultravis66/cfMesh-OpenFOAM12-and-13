@@ -85,6 +85,8 @@ class boundaryLayers
         //- 0=none 1=gap 2=transEdge 3=tripleJunction 4=corner
         //- 5=sharpEdge 6=blblSharp 7=blNoBLEdge
         mutable labelList blSuppressReason_;
+        mutable labelList blRampRing_;        // ring level (0=not ramp, 1-6)
+        mutable labelList blRampSeedReason_;  // seed point reason code
         scalar blblCornerAcuteThreshold_; // dot product threshold, default 0.3
         scalar layerScaleRing1_;       // default 0.25
         scalar layerScaleRing2_;       // default 0.50
