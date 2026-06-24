@@ -26,6 +26,7 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "boundaryLayers.H"
+#include "OFstream.H"
 #include "meshSurfaceEngine.H"
 #include "helperFunctions.H"
 #include "helperFunctionsPar.H"
@@ -99,6 +100,15 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
     //- create layer cells and store boundary faces
     const label nOldCells = mesh_.cells().size();
+
+    //- CAP_FACE_USAGE_AUDIT: CSV for all cap-touched faces (local OFstream)
+    const bool writeCapFaceAtlas =
+        useHardBLBLCapCells_ && !capSideVrtMap_.empty();
+    OFstream capFaceAuditOs("blCapCellFaceUsageAtlas.csv");
+    if( writeCapFaceAtlas )
+        capFaceAuditOs << "bfI,patchName,pKey,nPoints,nCapSide,nCollapsed,"
+                       << "fullyCollapsed" << nl;
+
     forAll(bFaces, bfI)
     {
         if( treatPatches[boundaryFacePatches[bfI]] )
@@ -137,8 +147,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             // will implement proper wedge/pyramid cells at
             // sharp BL/BL feature curves instead of collapsed prisms.
 
-            // CAP_FACE_USAGE_AUDIT: detect cap-touched faces
-            if( useHardBLBLCapCells_ && !capSideVrtMap_.empty() )
+            // CAP_FACE_USAGE_AUDIT: write to local CSV OFstream
+            if( writeCapFaceAtlas )
             {
                 label nCapSide = 0;
                 label nCollapsed = 0;
@@ -163,24 +173,14 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
                 if( nCapSide > 0 )
                 {
-                    static label nAudit = 0;
-                    ++nAudit;
-                    if( nAudit <= 20 )
-                    {
-                        const label patchI = boundaryFacePatches[bfI];
-                        const word pName =
-                            (patchI>=0 && patchI<label(patchNames_.size())) ?
-                            patchNames_[patchI] : word("?");
-                        Info << "CAP_FACE_USAGE: bfI=" << bfI
-                             << " patch=" << pName
-                             << " pKey=" << pKey
-                             << " nPoints=" << f.size()
-                             << " nCapSide=" << nCapSide
-                             << " nCollapsed=" << nCollapsed
-                             << endl;
-                    }
-                    if( nAudit == 20 )
-                        Info << "CAP_FACE_USAGE: (further suppressed)" << endl;
+                    const label patchI = boundaryFacePatches[bfI];
+                    const word pName =
+                        (patchI>=0 && patchI<label(patchNames_.size())) ?
+                        patchNames_[patchI] : word("?");
+                    capFaceAuditOs
+                        << bfI << "," << pName << "," << pKey << ","
+                        << f.size() << "," << nCapSide << "," << nCollapsed << ","
+                        << (nCollapsed==label(f.size()) ? "1" : "0") << nl;
                 }
             }
 
