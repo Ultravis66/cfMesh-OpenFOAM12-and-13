@@ -1485,6 +1485,39 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
         if( newNodeLabel.size() == 1 )
         {
             //- only one patch is treated
+            //- PRE-CLEANUP AUDIT: cap candidate erased from otherVrts_
+            //- because only one patch survived edge/corner vertex cleanup.
+            if
+            (
+                useHardBLBLCapCells_
+             && !blCapCellEndwallPatch_.empty()
+             && blCapCellEndwallPatch_.found(bpI)
+            )
+            {
+                static label nCapErased = 0;
+                ++nCapErased;
+                if( nCapErased <= 20 )
+                {
+                    const label ewPatch = blCapCellEndwallPatch_[bpI];
+                    const label blPatch =
+                        blCapCellBladePatch_.found(bpI) ?
+                        blCapCellBladePatch_[bpI] : -1;
+                    Info << "CAP_PRECLEANUP_ERASE:"
+                         << " bpI=" << bpI
+                         << " pointI=" << pointI
+                         << " endwallPatch="
+                         << ((ewPatch >= 0 && ewPatch < label(patchNames_.size()))
+                                ? patchNames_[ewPatch] : word("?"))
+                         << " bladePatch="
+                         << ((blPatch >= 0 && blPatch < label(patchNames_.size()))
+                                ? patchNames_[blPatch] : word("?"))
+                         << " otherVrtsSize=" << label(otherVrts_[pointI].size())
+                         << " newNodeLabel.size=" << newNodeLabel.size()
+                         << endl;
+                }
+                if( nCapErased == 20 )
+                    Info << "CAP_PRECLEANUP_ERASE: (further suppressed)" << endl;
+            }
             newLabelForVertex_[pointI] = newNodeLabel[0];
             otherVrts_.erase(pointI);
         }
