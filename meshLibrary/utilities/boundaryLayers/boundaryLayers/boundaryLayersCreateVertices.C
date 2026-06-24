@@ -1726,6 +1726,47 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             if( blPatch >= 0 && blPatch < label(patchKey_.size()) )
                 blCapCellBladePKey_[bpI] = patchKey_[blPatch];
         }
+
+        //- Step 2: populate capSideVrtMap_ with existing resolved labels.
+        //- Provably no-op: captures old findNewNodeLabel() result while
+        //- capSideVrtMap_ is still empty, then stores that exact label.
+        //- Does NOT assume newLabelForVertex_ == findNewNodeLabel result.
+        capSideVrtMap_.clear();
+        label nCapSideInserted = 0;
+        label nCapSideMissing = 0;
+        const meshSurfaceEngine& mseCap = surfaceEngine();
+        const labelList& bPointsCap = mseCap.boundaryPoints();
+        forAllConstIter(Map<label>, blCapCellEndwallPatch_, it2)
+        {
+            const label bpI = it2.key();
+            if( bpI < 0 || bpI >= label(bPointsCap.size()) )
+            { ++nCapSideMissing; continue; }
+            const label pointI = bPointsCap[bpI];
+            const label ewPKey =
+                blCapCellEndwallPKey_.found(bpI) ?
+                blCapCellEndwallPKey_[bpI] : -1;
+            const label blPKey =
+                blCapCellBladePKey_.found(bpI) ?
+                blCapCellBladePKey_[bpI] : -1;
+            if( ewPKey >= 0 )
+            {
+                const label oldLabel = findNewNodeLabel(pointI, ewPKey);
+                if( oldLabel >= 0 )
+                { capSideVrtMap_[std::make_pair(pointI,ewPKey)] = oldLabel; ++nCapSideInserted; }
+                else { ++nCapSideMissing; }
+            }
+            if( blPKey >= 0 )
+            {
+                const label oldLabel = findNewNodeLabel(pointI, blPKey);
+                if( oldLabel >= 0 )
+                { capSideVrtMap_[std::make_pair(pointI,blPKey)] = oldLabel; ++nCapSideInserted; }
+                else { ++nCapSideMissing; }
+            }
+        }
+        Info << "BL cap side vertex map step2: inserted=" << nCapSideInserted
+             << " missing=" << nCapSideMissing
+             << " (provably no-op labels)" << endl;
+
         writeCapCellRoutingAtlas();
     }
 }
