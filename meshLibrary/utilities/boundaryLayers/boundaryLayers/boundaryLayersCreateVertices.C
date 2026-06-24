@@ -1767,6 +1767,7 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
              << " missing=" << nCapSideMissing
              << " (provably no-op labels)" << endl;
 
+        writeCapCellGeometryDryRun();
         writeCapCellRoutingAtlas();
     }
 }

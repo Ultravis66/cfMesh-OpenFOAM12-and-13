@@ -660,6 +660,7 @@ boundaryLayers::boundaryLayers
     gapLoserRing1Suppress_(true),
     useContactLinePolicy_(false),
     useHardBLBLCapCells_(false),
+    hardBLBLCapScale_(0.10),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
 {
@@ -701,6 +702,13 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("useHardBLBLCapCells") )
             useHardBLBLCapCells_ =
                 Switch(bndLayers.lookup("useHardBLBLCapCells"));
+        if( bndLayers.found("hardBLBLCapScale") )
+            hardBLBLCapScale_ =
+                readScalar(bndLayers.lookup("hardBLBLCapScale"));
+        hardBLBLCapScale_ =
+            Foam::max(scalar(0), Foam::min(scalar(0.5), hardBLBLCapScale_));
+        if( useHardBLBLCapCells_ )
+            Info << "HardBLBL cap scale: " << hardBLBLCapScale_ << endl;
         if( bndLayers.found("blSharpEdgeAngleDeg") )
             blSharpEdgeAngleDeg_ =
                 readScalar(bndLayers.lookup("blSharpEdgeAngleDeg"));

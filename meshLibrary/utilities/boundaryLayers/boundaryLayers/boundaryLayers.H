@@ -194,6 +194,7 @@ class boundaryLayers
         //- Per-bpI maps store the patchI/pKey for endwall and blade sides.
         //- Used after pKey routing is proven by diagnostic atlas.
         bool useHardBLBLCapCells_;
+        scalar hardBLBLCapScale_;  // meshDict: hardBLBLCapScale, default 0.10
         mutable Map<label> blCapCellEndwallPatch_;
         mutable Map<label> blCapCellBladePatch_;
         mutable Map<label> blCapCellEndwallPKey_;
@@ -528,6 +529,7 @@ public:
         void buildBLContactPointPolicy() const;
         //- Build HardBLBL cap cell candidate map (no geometry change)
         void buildBLCapCellCandidates() const;
+        void writeCapCellGeometryDryRun() const;
         //- Write cap cell pKey routing diagnostic CSV
         void writeCapCellRoutingAtlas() const;
         //- Write edge-based BL contact line atlas (diagnostic only)
