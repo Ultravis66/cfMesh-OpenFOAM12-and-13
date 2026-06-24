@@ -660,6 +660,8 @@ boundaryLayers::boundaryLayers
     gapLoserRing1Suppress_(true),
     useContactLinePolicy_(false),
     useHardBLBLCapCells_(false),
+    useHardBLBLCapVertexInsertion_(false),
+    useHardBLBLReducedCells_(false),
     hardBLBLCapScale_(0.10),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
@@ -702,6 +704,29 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("useHardBLBLCapCells") )
             useHardBLBLCapCells_ =
                 Switch(bndLayers.lookup("useHardBLBLCapCells"));
+        if( bndLayers.found("useHardBLBLCapVertexInsertion") )
+            useHardBLBLCapVertexInsertion_ =
+                Switch(bndLayers.lookup("useHardBLBLCapVertexInsertion"));
+        if( bndLayers.found("useHardBLBLReducedCells") )
+            useHardBLBLReducedCells_ =
+                Switch(bndLayers.lookup("useHardBLBLReducedCells"));
+        //- Safety interlock: vertex insertion requires reduced cells
+        //- Without reduced topology, degenerate prisms cause thousands of negVol.
+        if( useHardBLBLCapVertexInsertion_ && !useHardBLBLReducedCells_ )
+        {
+            WarningInFunction
+                << "useHardBLBLCapVertexInsertion=true requires "
+                << "useHardBLBLReducedCells=true. "
+                << "Disabling cap vertex insertion to avoid "
+                << "collapsed-prism topology." << endl;
+            useHardBLBLCapVertexInsertion_ = false;
+        }
+        Info << "HardBLBL cap cells:"
+             << " candidates=" << Switch(useHardBLBLCapCells_)
+             << " vertexInsertion=" << Switch(useHardBLBLCapVertexInsertion_)
+             << " reducedCells=" << Switch(useHardBLBLReducedCells_)
+             << " scale=" << hardBLBLCapScale_
+             << endl;
         if( bndLayers.found("hardBLBLCapScale") )
             hardBLBLCapScale_ =
                 readScalar(bndLayers.lookup("hardBLBLCapScale"));

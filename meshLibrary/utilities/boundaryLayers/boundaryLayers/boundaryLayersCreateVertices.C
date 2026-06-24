@@ -27,6 +27,7 @@ Description
 
 #include "boundaryLayers.H"
 #include "meshSurfaceEngine.H"
+#include "OFstream.H"
 #include "helperFunctions.H"
 #include "helperFunctionsPar.H"
 #include "demandDrivenData.H"
@@ -1727,45 +1728,127 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
                 blCapCellBladePKey_[bpI] = patchKey_[blPatch];
         }
 
-        //- Step 2: populate capSideVrtMap_ with existing resolved labels.
-        //- Provably no-op: captures old findNewNodeLabel() result while
-        //- capSideVrtMap_ is still empty, then stores that exact label.
-        //- Does NOT assume newLabelForVertex_ == findNewNodeLabel result.
+        //- Step 2/4: populate capSideVrtMap_.
+        //- Step 2 (useHardBLBLCapVertexInsertion=false): no-op, same labels.
+        //- Step 4 (useHardBLBLCapVertexInsertion=true): real asymmetric vertices.
+        //- Safety interlock in BL.C prevents step4 without reducedCells.
         capSideVrtMap_.clear();
         label nCapSideInserted = 0;
         label nCapSideMissing = 0;
+        label nCapEWCreated = 0;
         const meshSurfaceEngine& mseCap = surfaceEngine();
         const labelList& bPointsCap = mseCap.boundaryPoints();
+        const faceList::subList& bFacesCap = mseCap.boundaryFaces();
+        const labelList& bFacePatchesCap = mseCap.boundaryFacePatches();
+        const VRWGraph& pFacesCap = mseCap.pointFaces();
+        const VRWGraph& ppCap = mseCap.pointPoints();
+        OFstream* capAtlasOsPtr = nullptr;
+        if( useHardBLBLCapVertexInsertion_ )
+        {
+            capAtlasOsPtr = new OFstream("blCapCellVertexAtlas.csv");
+            *capAtlasOsPtr << "bpI,pointI,endwallPatch,bladePatch,ewPKey,blPKey,"
+                          << "ewVertLabel,blVertLabel,rawDist,capDist,"
+                          << "ewX,ewY,ewZ" << nl;
+        }
         forAllConstIter(Map<label>, blCapCellEndwallPatch_, it2)
         {
             const label bpI = it2.key();
             if( bpI < 0 || bpI >= label(bPointsCap.size()) )
             { ++nCapSideMissing; continue; }
             const label pointI = bPointsCap[bpI];
+            const label ewPatch = it2();
+            const label bladePatch =
+                blCapCellBladePatch_.found(bpI) ?
+                blCapCellBladePatch_[bpI] : -1;
             const label ewPKey =
                 blCapCellEndwallPKey_.found(bpI) ?
                 blCapCellEndwallPKey_[bpI] : -1;
             const label blPKey =
                 blCapCellBladePKey_.found(bpI) ?
                 blCapCellBladePKey_[bpI] : -1;
-            if( ewPKey >= 0 )
+            if( ewPKey < 0 || blPKey < 0 )
+            { ++nCapSideMissing; continue; }
+
+            if( !useHardBLBLCapVertexInsertion_ )
             {
-                const label oldLabel = findNewNodeLabel(pointI, ewPKey);
-                if( oldLabel >= 0 )
-                { capSideVrtMap_[std::make_pair(pointI,ewPKey)] = oldLabel; ++nCapSideInserted; }
+                //- Step 2: no-op -- capture existing resolved labels
+                const label ewOld = findNewNodeLabel(pointI, ewPKey);
+                const label blOld = findNewNodeLabel(pointI, blPKey);
+                if( ewOld >= 0 )
+                { capSideVrtMap_[std::make_pair(pointI,ewPKey)] = ewOld; ++nCapSideInserted; }
                 else { ++nCapSideMissing; }
+                if( blOld >= 0 )
+                { capSideVrtMap_[std::make_pair(pointI,blPKey)] = blOld; ++nCapSideInserted; }
+                else { ++nCapSideMissing; }
+                continue;
             }
-            if( blPKey >= 0 )
+
+            //- Step 4: real asymmetric cap vertices
+            const label blVertLabel = newLabelForVertex_[pointI];
+            if( blVertLabel < 0 || blVertLabel >= label(points.size()) )
+            { ++nCapSideMissing; continue; }
+            const point& p0 = points[pointI];
+            vector ewNormal = vector::zero;
+            forAllRow(pFacesCap, bpI, pfI)
             {
-                const label oldLabel = findNewNodeLabel(pointI, blPKey);
-                if( oldLabel >= 0 )
-                { capSideVrtMap_[std::make_pair(pointI,blPKey)] = oldLabel; ++nCapSideInserted; }
-                else { ++nCapSideMissing; }
+                const label bfI2 = pFacesCap(bpI, pfI);
+                if( bfI2 < 0 || bfI2 >= label(bFacePatchesCap.size()) ) continue;
+                if( bFacePatchesCap[bfI2] != ewPatch ) continue;
+                const face& f2 = bFacesCap[bfI2];
+                if( f2.size() < 3 ) continue;
+                vector n = vector::zero;
+                const point& fp0 = points[f2[0]];
+                for(label i=1; i<f2.size()-1; ++i)
+                    n += (points[f2[i]]-fp0)^(points[f2[i+1]]-fp0);
+                ewNormal += n;
+            }
+            const scalar magN = mag(ewNormal);
+            if( magN < VSMALL ) { ++nCapSideMissing; continue; }
+            ewNormal /= magN;
+            scalar rawDist = GREAT;
+            forAllRow(ppCap, bpI, ppI)
+            {
+                const label bpJ = ppCap(bpI, ppI);
+                if( bpJ < 0 || bpJ >= label(bPointsCap.size()) ) continue;
+                const scalar d = 0.5*mag(points[bPointsCap[bpJ]] - p0);
+                rawDist = Foam::min(rawDist, d);
+            }
+            if( rawDist >= GREAT || rawDist < VSMALL ) { ++nCapSideMissing; continue; }
+            const scalar capDist = hardBLBLCapScale_ * rawDist;
+            const point ewPt = p0 - capDist * ewNormal;
+            if( help::isnan(ewPt) || help::isinf(ewPt) ) { ++nCapSideMissing; continue; }
+            const label ewVertLabel = nPoints_++;
+            if( ewVertLabel >= label(points.size()) )
+                points.setSize(ewVertLabel + 1);
+            points[ewVertLabel] = ewPt;
+            capSideVrtMap_[std::make_pair(pointI, ewPKey)] = ewVertLabel;
+            capSideVrtMap_[std::make_pair(pointI, blPKey)] = blVertLabel;
+            nCapSideInserted += 2;
+            ++nCapEWCreated;
+            if( capAtlasOsPtr )
+            {
+                const word ewName = (ewPatch>=0&&ewPatch<label(patchNames_.size())) ?
+                    patchNames_[ewPatch] : word("?");
+                const word blName = (bladePatch>=0&&bladePatch<label(patchNames_.size())) ?
+                    patchNames_[bladePatch] : word("?");
+                *capAtlasOsPtr << bpI << "," << pointI << ","
+                    << ewName << "," << blName << ","
+                    << ewPKey << "," << blPKey << ","
+                    << ewVertLabel << "," << blVertLabel << ","
+                    << rawDist << "," << capDist << ","
+                    << ewPt.x() << "," << ewPt.y() << "," << ewPt.z() << nl;
             }
         }
-        Info << "BL cap side vertex map step2: inserted=" << nCapSideInserted
-             << " missing=" << nCapSideMissing
-             << " (provably no-op labels)" << endl;
+        delete capAtlasOsPtr; capAtlasOsPtr = nullptr;
+        if( useHardBLBLCapVertexInsertion_ )
+            Info << "BL cap side vertex map step4: inserted=" << nCapSideInserted
+                 << " missing=" << nCapSideMissing
+                 << " ewCreated=" << nCapEWCreated
+                 << " (asymmetric cap vertices)" << endl;
+        else
+            Info << "BL cap side vertex map step2: inserted=" << nCapSideInserted
+                 << " missing=" << nCapSideMissing
+                 << " (provably no-op labels)" << endl;
 
         writeCapCellGeometryDryRun();
         writeCapCellRoutingAtlas();

@@ -137,6 +137,53 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             // will implement proper wedge/pyramid cells at
             // sharp BL/BL feature curves instead of collapsed prisms.
 
+            // CAP_FACE_USAGE_AUDIT: detect cap-touched faces
+            if( useHardBLBLCapCells_ && !capSideVrtMap_.empty() )
+            {
+                label nCapSide = 0;
+                label nCollapsed = 0;
+                forAll(f, pI)
+                {
+                    const label topLabel = findNewNodeLabel(f[pI], pKey);
+                    const std::pair<label,label> capKey(f[pI], pKey);
+                    if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
+                        ++nCapSide;
+                    bool collapsed = false;
+                    if( topLabel == f[pI] ) collapsed = true;
+                    if( !collapsed
+                     && topLabel >= 0
+                     && topLabel < label(mesh_.points().size())
+                     && f[pI] >= 0
+                     && f[pI] < label(mesh_.points().size()) )
+                    {
+                        if( mag(mesh_.points()[topLabel]-mesh_.points()[f[pI]])
+                            < scalar(1e-10) ) collapsed = true;
+                    }
+                    if( collapsed ) ++nCollapsed;
+                }
+                if( nCapSide > 0 )
+                {
+                    static label nAudit = 0;
+                    ++nAudit;
+                    if( nAudit <= 20 )
+                    {
+                        const label patchI = boundaryFacePatches[bfI];
+                        const word pName =
+                            (patchI>=0 && patchI<label(patchNames_.size())) ?
+                            patchNames_[patchI] : word("?");
+                        Info << "CAP_FACE_USAGE: bfI=" << bfI
+                             << " patch=" << pName
+                             << " pKey=" << pKey
+                             << " nPoints=" << f.size()
+                             << " nCapSide=" << nCapSide
+                             << " nCollapsed=" << nCollapsed
+                             << endl;
+                    }
+                    if( nAudit == 20 )
+                        Info << "CAP_FACE_USAGE: (further suppressed)" << endl;
+                }
+            }
+
             DynList<DynList<label> > cellFaces;
 
             DynList<label> newF;

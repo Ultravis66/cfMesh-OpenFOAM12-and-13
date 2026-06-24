@@ -194,6 +194,8 @@ class boundaryLayers
         //- Per-bpI maps store the patchI/pKey for endwall and blade sides.
         //- Used after pKey routing is proven by diagnostic atlas.
         bool useHardBLBLCapCells_;
+        bool useHardBLBLCapVertexInsertion_; // gate for step4 real vertices
+        bool useHardBLBLReducedCells_;        // gate for reduced topology
         scalar hardBLBLCapScale_;  // meshDict: hardBLBLCapScale, default 0.10
         mutable Map<label> blCapCellEndwallPatch_;
         mutable Map<label> blCapCellBladePatch_;
