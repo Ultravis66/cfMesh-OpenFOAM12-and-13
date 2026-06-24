@@ -530,4 +530,113 @@ void boundaryLayers::writeCapCellRoutingAtlas() const
          << endl;
 }
 
+// ---------------------------------------------------------------------------
+// Cap cell geometry dry-run atlas (no new vertices, no behavior change)
+// Computes proposed endwall cap vertex position and writes CSV for inspection.
+// ---------------------------------------------------------------------------
+void boundaryLayers::writeCapCellGeometryDryRun() const
+{
+    if( blCapCellEndwallPatch_.empty() ) return;
+
+    const meshSurfaceEngine& mse = surfaceEngine();
+    const labelList& bPoints = mse.boundaryPoints();
+    const faceList::subList& bFaces = mse.boundaryFaces();
+    const labelList& boundaryFacePatches = mse.boundaryFacePatches();
+    const pointFieldPMG& points = mesh_.points();
+    const VRWGraph& pFaces = mse.pointFaces();
+    const VRWGraph& pointPoints = mse.pointPoints();
+
+    OFstream os("blCapCellGeometryDryRun.csv");
+    os << "bpI,meshPointI,x,y,z,"
+       << "endwallPatch,bladePatch,"
+       << "endwallPKey,bladePKey,"
+       << "rawDist,capScale,capDist,"
+       << "normalX,normalY,normalZ,"
+       << "proposedX,proposedY,proposedZ,"
+       << "validNormal" << nl;
+
+    label nWritten = 0;
+    label nInvalidNormal = 0;
+
+    forAllConstIter(Map<label>, blCapCellEndwallPatch_, it)
+    {
+        const label bpI = it.key();
+        const label endwallPatch = it();
+        const label bladePatch =
+            blCapCellBladePatch_.found(bpI) ? blCapCellBladePatch_[bpI] : -1;
+        const label ewPKey =
+            blCapCellEndwallPKey_.found(bpI) ? blCapCellEndwallPKey_[bpI] : -1;
+        const label blPKey =
+            blCapCellBladePKey_.found(bpI) ? blCapCellBladePKey_[bpI] : -1;
+
+        if( bpI < 0 || bpI >= label(bPoints.size()) ) continue;
+        const label meshPtI = bPoints[bpI];
+        const point& p = points[meshPtI];
+
+        // Compute endwall-only normal (average faces of endwallPatch only)
+        vector endwallNormal = vector::zero;
+        bool validNormal = false;
+
+        forAllRow(pFaces, bpI, pfI)
+        {
+            const label bfI = pFaces(bpI, pfI);
+            if( bfI < 0 || bfI >= label(boundaryFacePatches.size()) ) continue;
+            if( boundaryFacePatches[bfI] != endwallPatch ) continue;
+
+            const face& f = bFaces[bfI];
+            if( f.size() < 3 ) continue;
+            vector n = vector::zero;
+            const point& p0 = points[f[0]];
+            for(label i=1; i<f.size()-1; ++i)
+                n += (points[f[i]]-p0)^(points[f[i+1]]-p0);
+            endwallNormal += n;
+        }
+
+        const scalar magN = mag(endwallNormal);
+        if( magN > VSMALL )
+        {
+            endwallNormal /= magN;
+            validNormal = true;
+        }
+        else
+        {
+            endwallNormal = vector::zero;
+            ++nInvalidNormal;
+        }
+
+        // Compute local raw distance (same as createNewVertex PATCHNODE path)
+        scalar rawDist = GREAT;
+        forAllRow(pointPoints, bpI, ppI)
+        {
+            const label bpJ = pointPoints(bpI, ppI);
+            if( bpJ < 0 || bpJ >= label(bPoints.size()) ) continue;
+            const scalar d = 0.5 * mag(points[bPoints[bpJ]] - p);
+            rawDist = Foam::min(rawDist, d);
+        }
+        if( rawDist >= GREAT ) rawDist = scalar(0);
+
+        const scalar capDist = hardBLBLCapScale_ * rawDist;
+        const point capPt = p - capDist * endwallNormal;
+
+        const word ewName = (endwallPatch >= 0 && endwallPatch < label(patchNames_.size())) ?
+            patchNames_[endwallPatch] : word("?");
+        const word blName = (bladePatch >= 0 && bladePatch < label(patchNames_.size())) ?
+            patchNames_[bladePatch] : word("?");
+
+        os << bpI << "," << meshPtI << ","
+           << p.x() << "," << p.y() << "," << p.z() << ","
+           << ewName << "," << blName << ","
+           << ewPKey << "," << blPKey << ","
+           << rawDist << "," << hardBLBLCapScale_ << "," << capDist << ","
+           << endwallNormal.x() << "," << endwallNormal.y() << "," << endwallNormal.z() << ","
+           << capPt.x() << "," << capPt.y() << "," << capPt.z() << ","
+           << (validNormal ? "1" : "0") << nl;
+        ++nWritten;
+    }
+
+    Info << "BL cap cell geometry dry-run: wrote " << nWritten
+         << " rows to blCapCellGeometryDryRun.csv"
+         << " (invalidNormal=" << nInvalidNormal << ")" << endl;
+}
+
 } // End namespace Foam
