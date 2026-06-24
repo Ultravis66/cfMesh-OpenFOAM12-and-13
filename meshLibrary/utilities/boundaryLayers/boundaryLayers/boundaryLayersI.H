@@ -40,6 +40,15 @@ label boundaryLayers::findNewNodeLabel
     const label pKey
 ) const
 {
+    //- Option C: check cap-side vertex override first.
+    //- Empty map = no behavior change (step 1).
+    {
+        const std::pair<label,label> capKey(pointI, pKey);
+        const auto capIt = capSideVrtMap_.find(capKey);
+        if( capIt != capSideVrtMap_.end() )
+            return capIt->second;
+    }
+
     const std::map
     <
         label, std::map<std::pair<label, label>, label>

@@ -198,6 +198,13 @@ class boundaryLayers
         mutable Map<label> blCapCellBladePatch_;
         mutable Map<label> blCapCellEndwallPKey_;
         mutable Map<label> blCapCellBladePKey_;
+
+        //- Option C: cap-side vertex override map.
+        //- Key: std::pair(meshPointI, pKey).
+        //- Value: vertex label for that point/patch combination.
+        //- findNewNodeLabel() checks this first before otherVrts_/newLabelForVertex_.
+        //- Empty = no behavior change (step 1).
+        mutable std::map<std::pair<label,label>, label> capSideVrtMap_;
         //- Gate for contact-line policy (meshDict: useContactLinePolicy)
         bool useContactLinePolicy_;
         mutable labelHashSet blblCornerPoints_;
