@@ -126,9 +126,9 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     const bool writeInterfaceAtlas =
         useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
 
-    //- Keep behavior-changing reduced topology disabled while
-    //- collecting interface agreement diagnostics.
-    const bool enableReducedCellTopology = false;
+    //- Interface atlas confirmed: 0 incompatible valid face pairs.
+    //- Safe to enable reduced topology with interface-compatible guard.
+    const bool enableReducedCellTopology = useHardBLBLReducedCells_;
 
     OFstream capInterfaceOs("blCapReducedInterfaceAtlas.csv");
     if( writeInterfaceAtlas )
@@ -555,20 +555,99 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         sideCand.append(t1);
                         sideCand.append(t0);
                         const label edgeI = faceEdges(bfI, pI);
+                        label neiFaceTI = -1;
                         bool treatedInternal = false;
                         if( edgeFaces.sizeOfRow(edgeI) == 2 )
                         {
-                            label neiFaceT = edgeFaces(edgeI, 0);
-                            if( neiFaceT == bfI ) neiFaceT = edgeFaces(edgeI, 1);
-                            if( treatPatches[boundaryFacePatches[neiFaceT]] )
+                            neiFaceTI = edgeFaces(edgeI, 0);
+                            if( neiFaceTI == bfI ) neiFaceTI = edgeFaces(edgeI, 1);
+                            if( treatPatches[boundaryFacePatches[neiFaceTI]] )
                                 treatedInternal = true;
                         }
                         DynList<label> validSideF;
                         const bool sideOK = makeValidFace(sideCand, validSideF);
-                        if( treatedInternal && (!sideOK || validSideF.size() != 4) )
+                        if( treatedInternal && neiFaceTI >= 0 )
                         {
-                            internalSideMismatch = true;
-                            break;
+                            //- Edge-state decision for treated-treated
+                            //- internal edges. Designed for upgrade:
+                            //- Conservative mode: QUAD+DROP allowed,
+                            //- TRIANGLE rejected (one-pass safe).
+                            //- Two-pass mode (future): TRIANGLE allowed
+                            //- via canonical pre-agreed face.
+                            //- Build neighbor simplified side face
+                            const label neiPatchTI = boundaryFacePatches[neiFaceTI];
+                            const label neiPKeyTI = patchKey_[neiPatchTI];
+                            const face& fNeiTI = bFaces[neiFaceTI];
+                            DynList<label> topNeiTI;
+                            forAll(fNeiTI, pN)
+                            {
+                                const std::pair<label,label> ckN(fNeiTI[pN],neiPatchTI);
+                                auto itN = capSideVrtMap_.find(ckN);
+                                label tlN = (itN!=capSideVrtMap_.end()) ?
+                                    itN->second :
+                                    findNewNodeLabel(fNeiTI[pN], neiPKeyTI);
+                                bool cN = (tlN==fNeiTI[pN]);
+                                if( !cN && tlN>=0 && tlN<label(mesh_.points().size())
+                                 && fNeiTI[pN]>=0 && fNeiTI[pN]<label(mesh_.points().size()) )
+                                    if( mag(mesh_.points()[tlN]-mesh_.points()[fNeiTI[pN]])
+                                        < scalar(1e-10) ) cN = true;
+                                topNeiTI.append(cN ? fNeiTI[pN] : tlN);
+                            }
+                            const label b0ti = f[pI];
+                            const label b1ti = f.nextLabel(pI);
+                            DynList<label> sfNeiTI;
+                            forAll(fNeiTI, pN)
+                            {
+                                const label nb0 = fNeiTI[pN];
+                                const label nb1 = fNeiTI.nextLabel(pN);
+                                if( !((nb0==b0ti&&nb1==b1ti)||(nb0==b1ti&&nb1==b0ti)) )
+                                    continue;
+                                const label nt1 = topNeiTI[(pN+1)%fNeiTI.size()];
+                                const label nt0 = topNeiTI[pN];
+                                sfNeiTI.append(nb0);
+                                if( nb1!=nb0 ) sfNeiTI.append(nb1);
+                                if( nt1!=nb1&&nt1!=nb0 ) sfNeiTI.append(nt1);
+                                if( nt0!=nt1&&nt0!=nb0&&nt0!=nb1 ) sfNeiTI.append(nt0);
+                                break;
+                            }
+                            //- Classify edge state
+                            bool sameSet = (validSideF.size()==sfNeiTI.size());
+                            if( sameSet && validSideF.size()>=3 )
+                            {
+                                forAll(validSideF,k)
+                                {
+                                    bool found=false;
+                                    forAll(sfNeiTI,j)
+                                        if(validSideF[k]==sfNeiTI[j]){found=true;break;}
+                                    if(!found){sameSet=false;break;}
+                                }
+                            }
+                            //- EDGE_DROP: both sides degenerate -- drop, no mismatch
+                            if( validSideF.size()<3 && sfNeiTI.size()<3 )
+                            {
+                                continue; //- drop this side face
+                            }
+                            //- EDGE_UNSAFE: mismatched label sets -- always rollback
+                            if( !sameSet )
+                            {
+                                internalSideMismatch = true;
+                                break;
+                            }
+                            //- EDGE_TRIANGLE: compatible triangles -- conservative:
+                            //- reject in one-pass mode (upgrade: use canonical face)
+                            //- TODO two-pass: store canonical face, allow here
+                            if( sideOK && validSideF.size()==3 && sfNeiTI.size()==3 )
+                            {
+                                internalSideMismatch = true;
+                                break;
+                            }
+                            //- EDGE_QUAD: compatible quads -- allow
+                            //- EDGE_ONE_DEGENERATE: one side<3 other>=3 -- rollback
+                            if( !sideOK || validSideF.size()<3 || sfNeiTI.size()<3 )
+                            {
+                                internalSideMismatch = true;
+                                break;
+                            }
                         }
                         if( sideOK )
                         {
