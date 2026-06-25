@@ -1534,14 +1534,14 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     }
                     else if( cls == 3 ) // ModerateBLBL
                     {
-                        taperFloor = scalar(0.25);
+                        taperFloor = layerScaleRing1_; // meshDict: layerScaleRing1
                         junctionClass = 1;
                         ++nBLBLModerate;
                         appliedAtlasPolicy = true;
                     }
                     else if( cls == 4 ) // MildBLBL
                     {
-                        taperFloor = scalar(0.50);
+                        taperFloor = layerScaleRing2_; // meshDict: layerScaleRing2
                         junctionClass = 2;
                         ++nBLBLMild;
                         appliedAtlasPolicy = true;
@@ -1565,9 +1565,9 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     if( minDot < cosHard )
                     { taperFloor = scalar(0.0); junctionClass = 0; ++nBLBLHard; }
                     else if( minDot < cosMild )
-                    { taperFloor = scalar(0.25); junctionClass = 1; ++nBLBLModerate; }
+                    { taperFloor = layerScaleRing1_; junctionClass = 1; ++nBLBLModerate; }
                     else
-                    { taperFloor = scalar(0.50); junctionClass = 2; ++nBLBLMild; }
+                    { taperFloor = layerScaleRing2_; junctionClass = 2; ++nBLBLMild; }
                 }
                 layerScale_[bpI] = taperFloor;
                 blSuppressReason_[bpI] = 6;
@@ -1661,8 +1661,11 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                         flowTermination =
                             (noBLName == "inlet" || noBLName == "outlet");
                     }
+                    //- Flow termination taper uses layerScaleRing1_ knob
+                    //- (meshDict: layerScaleRing1, default 0.25).
+                    //- Non-flow termination (symmetry etc) stays at 0.
                     const scalar blNoBLTaper =
-                        flowTermination ? scalar(0.25) : scalar(0.0);
+                        flowTermination ? layerScaleRing1_ : scalar(0.0);
                     zeroDistPoints_[bpI] = (blNoBLTaper < 0.01);
                     layerScale_[bpI] = blNoBLTaper;
                     blSuppressReason_[bpI] = 7;
