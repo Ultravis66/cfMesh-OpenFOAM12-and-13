@@ -176,6 +176,19 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         return true;
     };
 
+    //- ASYMMETRIC EDGE ATLAS: diagnostic for EDGE_UNSAFE cases
+    const bool writeAsymAtlas =
+        enableReducedCellTopology && useHardBLBLCapVertexInsertion_;
+    OFstream capAsymOs("blCapAsymmetricEdgeAtlas.csv");
+    if( writeAsymAtlas )
+        capAsymOs
+            << "edgeI,bfI,bfPatch,neiFace,neiPatch,"
+            << "thisSize,neiSize,unionSize,"
+            << "this0,this1,this2,this3,"
+            << "nei0,nei1,nei2,nei3,"
+            << "union0,union1,union2,union3,union4,"
+            << "hasCapThis,hasCapNei,stateGuess" << nl;
+
     if( enableReducedCellTopology )
     {
         forAll(bFaces, bfI)
@@ -234,6 +247,71 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
                 else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
                 edgeStateMap.insert(edgeIA, estate);
+
+                //- Write asymmetric atlas for UNSAFE edges
+                if( writeAsymAtlas && estate==EDGE_UNSAFE
+                 && sfThis.size()>=3 && sfNei.size()>=3 )
+                {
+                    //- Build union face: unique labels from both sides
+                    DynList<label> unionF;
+                    forAll(sfThis,k)
+                    {
+                        bool dup=false;
+                        forAll(unionF,j) if(unionF[j]==sfThis[k]){dup=true;break;}
+                        if(!dup) unionF.append(sfThis[k]);
+                    }
+                    forAll(sfNei,k)
+                    {
+                        bool dup=false;
+                        forAll(unionF,j) if(unionF[j]==sfNei[k]){dup=true;break;}
+                        if(!dup) unionF.append(sfNei[k]);
+                    }
+                    //- Check if either face has a cap-side vertex
+                    bool hasCapThis=false, hasCapNei=false;
+                    forAll(sfThis,k)
+                    {
+                        const std::pair<label,label> ck(sfThis[k],bfIPatch);
+                        if(capSideVrtMap_.find(ck)!=capSideVrtMap_.end())
+                        {hasCapThis=true;break;}
+                    }
+                    forAll(sfNei,k)
+                    {
+                        const std::pair<label,label> ck(sfNei[k],neiPatchIA);
+                        if(capSideVrtMap_.find(ck)!=capSideVrtMap_.end())
+                        {hasCapNei=true;break;}
+                    }
+                    //- Guess state
+                    word stateGuess = "UNSAFE_OTHER";
+                    if( sfThis.size()!=sfNei.size()
+                     && (hasCapThis||hasCapNei)
+                     && unionF.size()<=6 )
+                        stateGuess = "ASYM_CAP_CANDIDATE";
+                    else if( sfThis.size()!=sfNei.size() )
+                        stateGuess = "UNSAFE_SIZE_MISMATCH";
+                    else
+                        stateGuess = "UNSAFE_LABEL_MISMATCH";
+                    capAsymOs
+                        << edgeIA << "," << bfI << "," << bfIPatch
+                        << "," << neiFaceIA << "," << neiPatchIA
+                        << "," << sfThis.size() << "," << sfNei.size()
+                        << "," << unionF.size()
+                        << "," << (sfThis.size()>0?sfThis[0]:-1)
+                        << "," << (sfThis.size()>1?sfThis[1]:-1)
+                        << "," << (sfThis.size()>2?sfThis[2]:-1)
+                        << "," << (sfThis.size()>3?sfThis[3]:-1)
+                        << "," << (sfNei.size()>0?sfNei[0]:-1)
+                        << "," << (sfNei.size()>1?sfNei[1]:-1)
+                        << "," << (sfNei.size()>2?sfNei[2]:-1)
+                        << "," << (sfNei.size()>3?sfNei[3]:-1)
+                        << "," << (unionF.size()>0?unionF[0]:-1)
+                        << "," << (unionF.size()>1?unionF[1]:-1)
+                        << "," << (unionF.size()>2?unionF[2]:-1)
+                        << "," << (unionF.size()>3?unionF[3]:-1)
+                        << "," << (unionF.size()>4?unionF[4]:-1)
+                        << "," << (hasCapThis?"1":"0")
+                        << "," << (hasCapNei?"1":"0")
+                        << "," << stateGuess << nl;
+                }
             }
         }
         Info << "Two-pass edge states: QUAD=" << nEdgeQuad
@@ -340,6 +418,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             << "thisSideSize,neiSideSize,compatible,"
             << "this0,this1,this2,this3,"
             << "nei0,nei1,nei2,nei3" << nl;
+
 
     forAll(bFaces, bfI)
     {
