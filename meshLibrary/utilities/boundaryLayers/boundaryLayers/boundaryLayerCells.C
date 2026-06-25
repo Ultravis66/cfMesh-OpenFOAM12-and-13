@@ -120,16 +120,219 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             << "cellClass,collapsedMask,"
             << "nCandidateFaces,nValidFaces,nInvalidFaces" << nl;
 
-    //- INTERFACE ATLAS: for each treated-treated internal edge adjacent
-    //- to a cap-touched face, record simplified side faces from both
-    //- sides and whether they agree. No topology changes.
-    const bool writeInterfaceAtlas =
+    //- TWO-PASS CANONICAL FACE SYSTEM
+    //- Pass 1: classify all treated-treated internal edges
+    //- Pass 2: decide per-face whether to reduce or fallback
+    //- Pass 3 (cell loop): build using pre-agreed canonical faces
+    enum EdgeState { EDGE_QUAD=0, EDGE_DROP=1, EDGE_TRIANGLE=2, EDGE_UNSAFE=3 };
+    Map<label> edgeStateMap;
+    Map<DynList<label>> edgeCanonicalFace;
+    boolList faceReducible(bFaces.size(), false);
+    label nEdgeQuad=0,nEdgeDrop=0,nEdgeTriangle=0,nEdgeUnsafe=0;
+    label nFaceReduce=0,nFaceFallbackTri=0,nFaceFallbackUnsafe=0;
+
+    const bool enableReducedCellTopology =
         useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
 
-    //- Interface atlas confirmed: 0 incompatible valid face pairs.
-    //- Safe to enable reduced topology with interface-compatible guard.
-    const bool enableReducedCellTopology = useHardBLBLReducedCells_;
+    auto buildTopFaceTP =
+    [&](const face& bf, const label bfPatch, DynList<label>& topOut)
+    {
+        topOut.clear();
+        const label pKeyBF = patchKey_[bfPatch];
+        forAll(bf, pI2)
+        {
+            label tl = findNewNodeLabelForPatch(bf[pI2], bfPatch, pKeyBF);
+            bool coll = (tl==bf[pI2]);
+            if( !coll && tl>=0 && tl<label(mesh_.points().size())
+             && bf[pI2]>=0 && bf[pI2]<label(mesh_.points().size()) )
+                if( mag(mesh_.points()[tl]-mesh_.points()[bf[pI2]])
+                    < scalar(1e-10) ) coll = true;
+            topOut.append(coll ? bf[pI2] : tl);
+        }
+    };
 
+    auto buildSideFaceTP =
+    [](const label b0, const label b1,
+       const label t0, const label t1,
+       DynList<label>& sf)
+    {
+        sf.clear();
+        sf.append(b0);
+        if( b1!=b0 ) sf.append(b1);
+        if( t1!=b1 && t1!=b0 ) sf.append(t1);
+        if( t0!=t1 && t0!=b0 && t0!=b1 ) sf.append(t0);
+    };
+
+    auto sameLabelSetTP =
+    [](const DynList<label>& a, const DynList<label>& b) -> bool
+    {
+        if( a.size()!=b.size() ) return false;
+        forAll(a,i)
+        {
+            bool found=false;
+            forAll(b,j) if(a[i]==b[j]){found=true;break;}
+            if(!found) return false;
+        }
+        return true;
+    };
+
+    if( enableReducedCellTopology )
+    {
+        forAll(bFaces, bfI)
+        {
+            const label bfIPatch = boundaryFacePatches[bfI];
+            if( !treatPatches[bfIPatch] ) continue;
+            const face& f = bFaces[bfI];
+            bool hasCapSide = false;
+            forAll(f, pI2)
+            {
+                const std::pair<label,label> ck(f[pI2], bfIPatch);
+                if( capSideVrtMap_.find(ck)!=capSideVrtMap_.end() )
+                { hasCapSide=true; break; }
+            }
+            if( !hasCapSide ) continue;
+            DynList<label> topThis;
+            buildTopFaceTP(f, bfIPatch, topThis);
+            forAll(f, pIA)
+            {
+                const label edgeIA = faceEdges(bfI, pIA);
+                if( edgeFaces.sizeOfRow(edgeIA)!=2 ) continue;
+                label neiFaceIA = edgeFaces(edgeIA,0);
+                if( neiFaceIA==bfI ) neiFaceIA=edgeFaces(edgeIA,1);
+                const label neiPatchIA = boundaryFacePatches[neiFaceIA];
+                if( !treatPatches[neiPatchIA] ) continue;
+                if( edgeStateMap.found(edgeIA) ) continue;
+                const label b0=f[pIA], b1=f.nextLabel(pIA);
+                const label t0=topThis[pIA], t1=topThis[(pIA+1)%f.size()];
+                DynList<label> sfThis;
+                buildSideFaceTP(b0,b1,t0,t1,sfThis);
+                const face& fNei = bFaces[neiFaceIA];
+                DynList<label> topNei;
+                buildTopFaceTP(fNei, neiPatchIA, topNei);
+                DynList<label> sfNei;
+                forAll(fNei, pN)
+                {
+                    const label nb0=fNei[pN], nb1=fNei.nextLabel(pN);
+                    if(!((nb0==b0&&nb1==b1)||(nb0==b1&&nb1==b0))) continue;
+                    const label nt0=topNei[pN], nt1=topNei[(pN+1)%fNei.size()];
+                    buildSideFaceTP(nb0,nb1,nt0,nt1,sfNei);
+                    break;
+                }
+                label estate = EDGE_UNSAFE;
+                if( sfThis.size()<3 && sfNei.size()<3 )
+                { estate=EDGE_DROP; ++nEdgeDrop; }
+                else if( sameLabelSetTP(sfThis,sfNei) )
+                {
+                    if( sfThis.size()==4 )
+                    { estate=EDGE_QUAD; ++nEdgeQuad; }
+                    else if( sfThis.size()==3 )
+                    {
+                        estate=EDGE_TRIANGLE; ++nEdgeTriangle;
+                        edgeCanonicalFace.insert(edgeIA, sfThis);
+                    }
+                    else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
+                }
+                else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
+                edgeStateMap.insert(edgeIA, estate);
+            }
+        }
+        Info << "Two-pass edge states: QUAD=" << nEdgeQuad
+             << " DROP=" << nEdgeDrop
+             << " TRIANGLE=" << nEdgeTriangle
+             << " UNSAFE=" << nEdgeUnsafe << endl;
+
+        forAll(bFaces, bfI)
+        {
+            const label bfIPatch = boundaryFacePatches[bfI];
+            if( !treatPatches[bfIPatch] ) continue;
+            const face& f = bFaces[bfI];
+            bool hasCapSide = false;
+            forAll(f, pI2)
+            {
+                const std::pair<label,label> ck(f[pI2], bfIPatch);
+                if( capSideVrtMap_.find(ck)!=capSideVrtMap_.end() )
+                { hasCapSide=true; break; }
+            }
+            if( !hasCapSide ) continue;
+            //- Check partial collapse: only reduce if some top vertices
+            //- collapse (REDUCED_CAP_CELL pattern, not NORMAL_PRISM)
+            label nCollapsedP2 = 0;
+            const label pKeyP2 = patchKey_[bfIPatch];
+            forAll(f, pI2c)
+            {
+                label tl = findNewNodeLabelForPatch(f[pI2c], bfIPatch, pKeyP2);
+                bool coll = (tl==f[pI2c]);
+                if( !coll && tl>=0 && tl<label(mesh_.points().size())
+                 && f[pI2c]>=0 && f[pI2c]<label(mesh_.points().size()) )
+                    if( mag(mesh_.points()[tl]-mesh_.points()[f[pI2c]])
+                        < scalar(1e-10) ) coll = true;
+                if( coll ) ++nCollapsedP2;
+            }
+            //- Only REDUCED_CAP_CELL pattern qualifies
+            if( nCollapsedP2==0 || nCollapsedP2==label(f.size()) ) continue;
+
+            bool reducible=true;
+            forAll(f, pIA)
+            {
+                const label edgeIA = faceEdges(bfI, pIA);
+                if( edgeFaces.sizeOfRow(edgeIA)!=2 ) continue;
+                label neiFaceIA = edgeFaces(edgeIA,0);
+                if( neiFaceIA==bfI ) neiFaceIA=edgeFaces(edgeIA,1);
+                if( !treatPatches[boundaryFacePatches[neiFaceIA]] ) continue;
+                if( !edgeStateMap.found(edgeIA) )
+                { reducible=false; ++nFaceFallbackUnsafe; break; }
+                const label es = edgeStateMap[edgeIA];
+                if( es==EDGE_UNSAFE )
+                { reducible=false; ++nFaceFallbackUnsafe; break; }
+            }
+            if( reducible ) { faceReducible[bfI]=true; ++nFaceReduce; }
+        }
+        Info << "Two-pass face decisions: REDUCE=" << nFaceReduce
+             << " FALLBACK_UNSAFE=" << nFaceFallbackUnsafe << endl;
+
+        //- MUTUAL REDUCIBILITY PASS: a face can only reduce if
+        //- ALL treated neighbors sharing TRIANGLE/DROP edges are
+        //- also reducible. Iterate until stable.
+        bool anyChange = true;
+        label nMutualFallback = 0;
+        while( anyChange )
+        {
+            anyChange = false;
+            forAll(bFaces, bfI)
+            {
+                if( !faceReducible[bfI] ) continue;
+                const face& f = bFaces[bfI];
+                forAll(f, pIA)
+                {
+                    const label edgeIA = faceEdges(bfI, pIA);
+                    if( edgeFaces.sizeOfRow(edgeIA)!=2 ) continue;
+                    label neiFaceIA = edgeFaces(edgeIA,0);
+                    if( neiFaceIA==bfI ) neiFaceIA=edgeFaces(edgeIA,1);
+                    if( !treatPatches[boundaryFacePatches[neiFaceIA]] ) continue;
+                    if( !edgeStateMap.found(edgeIA) ) continue;
+                    const label es = edgeStateMap[edgeIA];
+                    //- Only check TRIANGLE and DROP edges
+                    //- (QUAD edges don't need mutual reducibility)
+                    if( es!=EDGE_TRIANGLE && es!=EDGE_DROP ) continue;
+                    //- Neighbor must also be reducible
+                    if( !faceReducible[neiFaceIA] )
+                    {
+                        faceReducible[bfI] = false;
+                        --nFaceReduce;
+                        ++nMutualFallback;
+                        anyChange = true;
+                        break;
+                    }
+                }
+            }
+        }
+        Info << "Mutual reducibility pass: "
+             << nMutualFallback << " faces demoted, "
+             << nFaceReduce << " faces remain reducible" << endl;
+    }
+
+    //- Legacy interface atlas disabled
+    const bool writeInterfaceAtlas = false;
     OFstream capInterfaceOs("blCapReducedInterfaceAtlas.csv");
     if( writeInterfaceAtlas )
         capInterfaceOs
@@ -442,7 +645,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             //- Reduced cap cell builder (Franjo TODO implementation).
             //- Gate: useHardBLBLReducedCells_ (default false).
             bool builtReducedCell = false;
-            if( enableReducedCellTopology && useHardBLBLReducedCells_ && !capSideVrtMap_.empty() )
+            if( enableReducedCellTopology && useHardBLBLReducedCells_
+             && !capSideVrtMap_.empty() && faceReducible[bfI] )
             {
                 label nCapSideRC = 0;
                 label nCollapsedRC = 0;
@@ -561,83 +765,25 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         const bool sideOK = makeValidFace(sideCand, validSideF);
                         if( treatedInternal && neiFaceTI >= 0 )
                         {
-                            //- Edge-state decision for treated-treated
-                            //- internal edges. Designed for upgrade:
-                            //- Conservative mode: QUAD+DROP allowed,
-                            //- TRIANGLE rejected (one-pass safe).
-                            //- Two-pass mode (future): TRIANGLE allowed
-                            //- via canonical pre-agreed face.
-                            //- Build neighbor simplified side face
-                            const label neiPatchTI = boundaryFacePatches[neiFaceTI];
-                            const label neiPKeyTI = patchKey_[neiPatchTI];
-                            const face& fNeiTI = bFaces[neiFaceTI];
-                            DynList<label> topNeiTI;
-                            forAll(fNeiTI, pN)
+                            //- Use pre-computed edge state from two-pass pre-pass
+                            if( !edgeStateMap.found(edgeI) )
+                            { internalSideMismatch=true; break; }
+                            const label preEs = edgeStateMap[edgeI];
+                            if( preEs==EDGE_UNSAFE )
+                            { internalSideMismatch=true; break; }
+                            if( preEs==EDGE_DROP )
+                            { continue; } //- drop degenerate side face
+                            if( preEs==EDGE_TRIANGLE )
                             {
-                                label tlN = findNewNodeLabelForPatch(
-                                    fNeiTI[pN], neiPatchTI, neiPKeyTI);
-                                bool cN = (tlN==fNeiTI[pN]);
-                                if( !cN && tlN>=0 && tlN<label(mesh_.points().size())
-                                 && fNeiTI[pN]>=0 && fNeiTI[pN]<label(mesh_.points().size()) )
-                                    if( mag(mesh_.points()[tlN]-mesh_.points()[fNeiTI[pN]])
-                                        < scalar(1e-10) ) cN = true;
-                                topNeiTI.append(cN ? fNeiTI[pN] : tlN);
+                                //- Two-pass pre-pass confirmed compatible.
+                                //- faceReducible[bfI] ensures neighbor also reduces.
+                                //- Use local validSideF for correct per-cell orientation.
+                                if( !sideOK || validSideF.size() != 3 )
+                                { internalSideMismatch=true; break; }
+                                cellFaces.append(validSideF);
+                                continue;
                             }
-                            const label b0ti = f[pI];
-                            const label b1ti = f.nextLabel(pI);
-                            DynList<label> sfNeiTI;
-                            forAll(fNeiTI, pN)
-                            {
-                                const label nb0 = fNeiTI[pN];
-                                const label nb1 = fNeiTI.nextLabel(pN);
-                                if( !((nb0==b0ti&&nb1==b1ti)||(nb0==b1ti&&nb1==b0ti)) )
-                                    continue;
-                                const label nt1 = topNeiTI[(pN+1)%fNeiTI.size()];
-                                const label nt0 = topNeiTI[pN];
-                                sfNeiTI.append(nb0);
-                                if( nb1!=nb0 ) sfNeiTI.append(nb1);
-                                if( nt1!=nb1&&nt1!=nb0 ) sfNeiTI.append(nt1);
-                                if( nt0!=nt1&&nt0!=nb0&&nt0!=nb1 ) sfNeiTI.append(nt0);
-                                break;
-                            }
-                            //- Classify edge state
-                            bool sameSet = (validSideF.size()==sfNeiTI.size());
-                            if( sameSet && validSideF.size()>=3 )
-                            {
-                                forAll(validSideF,k)
-                                {
-                                    bool found=false;
-                                    forAll(sfNeiTI,j)
-                                        if(validSideF[k]==sfNeiTI[j]){found=true;break;}
-                                    if(!found){sameSet=false;break;}
-                                }
-                            }
-                            //- EDGE_DROP: both sides degenerate -- drop, no mismatch
-                            if( validSideF.size()<3 && sfNeiTI.size()<3 )
-                            {
-                                continue; //- drop this side face
-                            }
-                            //- EDGE_UNSAFE: mismatched label sets -- always rollback
-                            if( !sameSet )
-                            {
-                                internalSideMismatch = true;
-                                break;
-                            }
-                            //- EDGE_TRIANGLE: compatible triangles -- conservative:
-                            //- reject in one-pass mode (upgrade: use canonical face)
-                            //- TODO two-pass: store canonical face, allow here
-                            if( sideOK && validSideF.size()==3 && sfNeiTI.size()==3 )
-                            {
-                                internalSideMismatch = true;
-                                break;
-                            }
-                            //- EDGE_QUAD: compatible quads -- allow
-                            //- EDGE_ONE_DEGENERATE: one side<3 other>=3 -- rollback
-                            if( !sideOK || validSideF.size()<3 || sfNeiTI.size()<3 )
-                            {
-                                internalSideMismatch = true;
-                                break;
-                            }
+                            //- EDGE_QUAD: fall through to sideOK append
                         }
                         if( sideOK )
                         {
