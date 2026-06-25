@@ -120,6 +120,24 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             << "cellClass,collapsedMask,"
             << "nCandidateFaces,nValidFaces,nInvalidFaces" << nl;
 
+    //- INTERFACE ATLAS: for each treated-treated internal edge adjacent
+    //- to a cap-touched face, record simplified side faces from both
+    //- sides and whether they agree. No topology changes.
+    const bool writeInterfaceAtlas =
+        useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
+
+    //- Keep behavior-changing reduced topology disabled while
+    //- collecting interface agreement diagnostics.
+    const bool enableReducedCellTopology = false;
+
+    OFstream capInterfaceOs("blCapReducedInterfaceAtlas.csv");
+    if( writeInterfaceAtlas )
+        capInterfaceOs
+            << "bfI,bfIPatch,edgeI,pI,neiFace,neiPatch,"
+            << "thisSideSize,neiSideSize,compatible,"
+            << "this0,this1,this2,this3,"
+            << "nei0,nei1,nei2,nei3" << nl;
+
     forAll(bFaces, bfI)
     {
         if( treatPatches[boundaryFacePatches[bfI]] )
@@ -302,13 +320,139 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
             }
 
+            //- INTERFACE ATLAS: check treated-treated internal edges
+            if( writeInterfaceAtlas )
+            {
+                const label bfIPatchIA = boundaryFacePatches[bfI];
+                //- Only process cap-touched faces
+                bool hasCapSide = false;
+                forAll(f, pI2)
+                {
+                    const std::pair<label,label> ck(f[pI2], bfIPatchIA);
+                    if( capSideVrtMap_.find(ck) != capSideVrtMap_.end() )
+                    { hasCapSide = true; break; }
+                }
+                if( hasCapSide )
+                {
+                    const label pKeyIA = patchKey_[bfIPatchIA];
+                    //- Build top face for this bfI using patch-aware lookup
+                    DynList<label> topIA;
+                    forAll(f, pI2)
+                    {
+                        const std::pair<label,label> ck(f[pI2], bfIPatchIA);
+                        auto it = capSideVrtMap_.find(ck);
+                        label tl = (it != capSideVrtMap_.end()) ?
+                            it->second : findNewNodeLabel(f[pI2], pKeyIA);
+                        bool coll = (tl == f[pI2]);
+                        if( !coll && tl>=0 && tl<label(mesh_.points().size())
+                         && f[pI2]>=0 && f[pI2]<label(mesh_.points().size()) )
+                            if( mag(mesh_.points()[tl]-mesh_.points()[f[pI2]])
+                                < scalar(1e-10) ) coll = true;
+                        topIA.append(coll ? f[pI2] : tl);
+                    }
+                    //- Helper: simplify side face (same rule as builder)
+                    auto simpleSide =
+                    [](const label b0, const label b1,
+                       const label t1, const label t0,
+                       DynList<label>& sf)
+                    {
+                        sf.clear();
+                        sf.append(b0);
+                        if( b1!=b0 ) sf.append(b1);
+                        if( t1!=b1 && t1!=b0 ) sf.append(t1);
+                        if( t0!=t1 && t0!=b0 && t0!=b1 ) sf.append(t0);
+                    };
+                    //- Helper: same label set (no operator== on HashSet)
+                    auto sameLabelSet =
+                    [](const DynList<label>& a,
+                       const DynList<label>& b) -> bool
+                    {
+                        if( a.size() != b.size() ) return false;
+                        forAll(a, i)
+                        {
+                            bool found = false;
+                            forAll(b, j) if(a[i]==b[j]){found=true;break;}
+                            if(!found) return false;
+                        }
+                        return true;
+                    };
+                    forAll(f, pIA)
+                    {
+                        const label edgeIA = faceEdges(bfI, pIA);
+                        if( edgeFaces.sizeOfRow(edgeIA) != 2 ) continue;
+                        label neiFaceIA = edgeFaces(edgeIA, 0);
+                        if( neiFaceIA == bfI )
+                            neiFaceIA = edgeFaces(edgeIA, 1);
+                        const label neiPatchIA = boundaryFacePatches[neiFaceIA];
+                        if( !treatPatches[neiPatchIA] ) continue;
+                        //- This side face
+                        const label b0 = f[pIA];
+                        const label b1 = f.nextLabel(pIA);
+                        const label t1 = topIA[(pIA+1)%f.size()];
+                        const label t0 = topIA[pIA];
+                        DynList<label> sfThis;
+                        simpleSide(b0, b1, t1, t0, sfThis);
+                        //- Neighbor top face
+                        const face& fNei = bFaces[neiFaceIA];
+                        const label neiPKeyIA = patchKey_[neiPatchIA];
+                        DynList<label> topNei;
+                        forAll(fNei, pN)
+                        {
+                            const std::pair<label,label> ckN(fNei[pN], neiPatchIA);
+                            auto itN = capSideVrtMap_.find(ckN);
+                            label tlN = (itN != capSideVrtMap_.end()) ?
+                                itN->second :
+                                findNewNodeLabel(fNei[pN], neiPKeyIA);
+                            bool cN = (tlN == fNei[pN]);
+                            if( !cN && tlN>=0 && tlN<label(mesh_.points().size())
+                             && fNei[pN]>=0 && fNei[pN]<label(mesh_.points().size()) )
+                                if( mag(mesh_.points()[tlN]-mesh_.points()[fNei[pN]])
+                                    < scalar(1e-10) ) cN = true;
+                            topNei.append(cN ? fNei[pN] : tlN);
+                        }
+                        //- Find matching edge in neighbor and build its side
+                        DynList<label> sfNei;
+                        forAll(fNei, pN)
+                        {
+                            const label nb0 = fNei[pN];
+                            const label nb1 = fNei.nextLabel(pN);
+                            if( !((nb0==b0&&nb1==b1)||(nb0==b1&&nb1==b0)) )
+                                continue;
+                            const label nt1 = topNei[(pN+1)%fNei.size()];
+                            const label nt0 = topNei[pN];
+                            simpleSide(nb0, nb1, nt1, nt0, sfNei);
+                            break;
+                        }
+                        const bool compat =
+                            sfThis.size() >= 3
+                         && sfNei.size() >= 3
+                         && sameLabelSet(sfThis, sfNei);
+                        capInterfaceOs
+                            << bfI << "," << bfIPatchIA
+                            << "," << edgeIA << "," << pIA
+                            << "," << neiFaceIA << "," << neiPatchIA
+                            << "," << sfThis.size() << "," << sfNei.size()
+                            << "," << (compat?"1":"0")
+                            << "," << (sfThis.size()>0?sfThis[0]:-1)
+                            << "," << (sfThis.size()>1?sfThis[1]:-1)
+                            << "," << (sfThis.size()>2?sfThis[2]:-1)
+                            << "," << (sfThis.size()>3?sfThis[3]:-1)
+                            << "," << (sfNei.size()>0?sfNei[0]:-1)
+                            << "," << (sfNei.size()>1?sfNei[1]:-1)
+                            << "," << (sfNei.size()>2?sfNei[2]:-1)
+                            << "," << (sfNei.size()>3?sfNei[3]:-1)
+                            << nl;
+                    }
+                }
+            }
+
             DynList<DynList<label> > cellFaces;
             DynList<label> newF;
 
             //- Reduced cap cell builder (Franjo TODO implementation).
             //- Gate: useHardBLBLReducedCells_ (default false).
             bool builtReducedCell = false;
-            if( useHardBLBLReducedCells_ && !capSideVrtMap_.empty() )
+            if( enableReducedCellTopology && useHardBLBLReducedCells_ && !capSideVrtMap_.empty() )
             {
                 label nCapSideRC = 0;
                 label nCollapsedRC = 0;
