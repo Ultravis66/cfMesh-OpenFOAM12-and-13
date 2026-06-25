@@ -109,6 +109,17 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         capFaceAuditOs << "bfI,patchName,pKey,nPoints,nCapSide,nCollapsed,"
                        << "fullyCollapsed" << nl;
 
+    //- REDUCED-CELL DRY-RUN ATLAS: classify collapse patterns
+    //- Gated by useHardBLBLReducedCells_ (no topology change yet)
+    const bool writeReducedDryRun =
+        useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
+    OFstream capReducedDryRunOs("blCapReducedCellDryRunAtlas.csv");
+    if( writeReducedDryRun )
+        capReducedDryRunOs
+            << "bfI,patchName,pKey,nPoints,nCapSide,nCollapsed,"
+            << "cellClass,collapsedMask,"
+            << "nCandidateFaces,nValidFaces,nInvalidFaces" << nl;
+
     forAll(bFaces, bfI)
     {
         if( treatPatches[boundaryFacePatches[bfI]] )
@@ -142,10 +153,11 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
             }
 
-            // Candidate quality check placeholder.
-            // TODO: bl-junction-transition-topology branch
-            // will implement proper wedge/pyramid cells at
-            // sharp BL/BL feature curves instead of collapsed prisms.
+            // Franjo TODO: build proper wedge/pyramid/reduced cells
+            // at sharp BL/BL feature curves instead of collapsed prisms.
+            // Implementation: appendValidFace canonicalizer + reduced
+            // topology for REDUCED_CAP_CELL pattern faces.
+            // Gate: useHardBLBLReducedCells_ (default false).
 
             // CAP_FACE_USAGE_AUDIT: write to local CSV OFstream
             if( writeCapFaceAtlas )
@@ -181,30 +193,301 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         << bfI << "," << pName << "," << pKey << ","
                         << f.size() << "," << nCapSide << "," << nCollapsed << ","
                         << (nCollapsed==label(f.size()) ? "1" : "0") << nl;
+
+                    if( writeReducedDryRun )
+                    {
+                        word cellClass = "NORMAL_PRISM";
+                        if( nCollapsed == label(f.size()) )
+                            cellClass = "INVALID_FULL_COLLAPSE";
+                        else if( nCollapsed > 0 )
+                            cellClass = "REDUCED_CAP_CELL";
+
+                        //- Build collapsed mask and top face
+                        word collapsedMask = "";
+                        DynList<label> topFace;
+                        forAll(f, pI)
+                        {
+                            const label topLabel = findNewNodeLabel(f[pI], pKey);
+                            bool coll = (topLabel == f[pI]);
+                            if( !coll && topLabel>=0
+                             && topLabel<label(mesh_.points().size())
+                             && f[pI]>=0
+                             && f[pI]<label(mesh_.points().size()) )
+                                if( mag(mesh_.points()[topLabel]-mesh_.points()[f[pI]])
+                                    < scalar(1e-10) ) coll = true;
+                            collapsedMask += (coll ? "1" : "0");
+                            topFace.append(coll ? f[pI] : topLabel);
+                        }
+
+                        label nCandidateFaces = 0;
+                        label nValidFaces = 0;
+
+                        //- Helper lambda: unique-label + area check
+                        auto faceValid = [&](const DynList<label>& sf) -> bool
+                        {
+                            if( sf.size() < 3 ) return false;
+                            //- Unique label check
+                            forAll(sf, i)
+                                for(label j=0;j<i;++j)
+                                    if(sf[i]==sf[j]) return false;
+                            //- Area check
+                            vector areaVec = vector::zero;
+                            const point& p0a = mesh_.points()[sf[0]];
+                            for(label ai=1;ai<sf.size()-1;++ai)
+                                areaVec += (mesh_.points()[sf[ai]]-p0a)
+                                         ^ (mesh_.points()[sf[ai+1]]-p0a);
+                            return mag(areaVec) > VSMALL;
+                        };
+
+                        //- Base face
+                        ++nCandidateFaces;
+                        {
+                            DynList<label> bf2;
+                            forAll(f, pI) bf2.append(f[pI]);
+                            if( faceValid(bf2) ) ++nValidFaces;
+                        }
+
+                        //- Top face
+                        ++nCandidateFaces;
+                        {
+                            DynList<label> tf;
+                            forAll(topFace, pI) tf.append(topFace[pI]);
+                            if( faceValid(tf) ) ++nValidFaces;
+                        }
+
+                        //- Side faces
+                        forAll(f, pI)
+                        {
+                            ++nCandidateFaces;
+                            const label b0 = f[pI];
+                            const label b1 = f.nextLabel(pI);
+                            const label t1 = topFace[(pI+1)%topFace.size()];
+                            const label t0 = topFace[pI];
+                            DynList<label> sf;
+                            sf.append(b0);
+                            if( b1!=b0 ) sf.append(b1);
+                            if( t1!=b1 && t1!=b0 ) sf.append(t1);
+                            if( t0!=t1 && t0!=b0 && t0!=b1 ) sf.append(t0);
+                            if( faceValid(sf) ) ++nValidFaces;
+                        }
+
+                        const label nInvalidFaces =
+                            nCandidateFaces - nValidFaces;
+                        capReducedDryRunOs
+                            << bfI << "," << pName << "," << pKey << ","
+                            << f.size() << "," << nCapSide << "," << nCollapsed << ","
+                            << cellClass << "," << collapsedMask << ","
+                            << nCandidateFaces << "," << nValidFaces
+                            << "," << nInvalidFaces << nl;
+                    }
                 }
             }
 
             DynList<DynList<label> > cellFaces;
-
             DynList<label> newF;
 
+            //- Reduced cap cell builder (Franjo TODO implementation).
+            //- Gate: useHardBLBLReducedCells_ (default false).
+            bool builtReducedCell = false;
+            if( useHardBLBLReducedCells_ && !capSideVrtMap_.empty() )
+            {
+                label nCapSideRC = 0;
+                label nCollapsedRC = 0;
+                DynList<label> topFaceRC;
+                forAll(f, pI)
+                {
+                    const label topLabel = findNewNodeLabel(f[pI], pKey);
+                    const std::pair<label,label> capKey(f[pI], pKey);
+                    if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
+                        ++nCapSideRC;
+                    bool coll = (topLabel == f[pI]);
+                    if( !coll && topLabel>=0
+                     && topLabel<label(mesh_.points().size())
+                     && f[pI]>=0 && f[pI]<label(mesh_.points().size()) )
+                        if( mag(mesh_.points()[topLabel]-mesh_.points()[f[pI]])
+                            < scalar(1e-10) ) coll = true;
+                    if( coll ) ++nCollapsedRC;
+                    topFaceRC.append(coll ? f[pI] : topLabel);
+                }
+
+                if( nCapSideRC > 0 && nCollapsedRC > 0
+                 && nCollapsedRC < label(f.size()) )
+                {
+                    //- Snapshot boundary face lists for rollback
+                    const label nBndFacesSnap = newBoundaryFaces.size();
+                    const label nBndOwnSnap = newBoundaryOwners.size();
+                    const label nBndPatchSnap = newBoundaryPatches.size();
+
+                    //- makeValidFace: simplify duplicates first, then
+                    //- validate unique-label count and nonzero area.
+                    //- Returns cleaned face in validFace, true if valid.
+                    auto makeValidFace =
+                    [&](const DynList<label>& cand,
+                        DynList<label>& validFace) -> bool
+                    {
+                        validFace.clear();
+                        //- Remove consecutive duplicates
+                        forAll(cand, i)
+                        {
+                            const label lbl = cand[i];
+                            if( validFace.size()==0
+                             || validFace[validFace.size()-1] != lbl )
+                                validFace.append(lbl);
+                        }
+                        //- Remove last if same as first (closed loop)
+                        if( validFace.size() > 1
+                         && validFace[validFace.size()-1] == validFace[0] )
+                            validFace.setSize(validFace.size()-1);
+                        if( validFace.size() < 3 ) return false;
+                        //- Unique label check
+                        forAll(validFace, i)
+                            for(label j=0;j<i;++j)
+                                if(validFace[i]==validFace[j]) return false;
+                        //- Nonzero area check
+                        vector areaVec = vector::zero;
+                        const point& p0a = mesh_.points()[validFace[0]];
+                        for(label ai=1;ai<validFace.size()-1;++ai)
+                            areaVec += (mesh_.points()[validFace[ai]]-p0a)
+                                     ^ (mesh_.points()[validFace[ai+1]]-p0a);
+                        return mag(areaVec) > VSMALL;
+                    };
+
+                    //- Base face (reversed boundary face)
+                    DynList<label> baseCand;
+                    baseCand.append(f[0]);
+                    for(label pI=f.size()-1;pI>0;--pI)
+                        baseCand.append(f[pI]);
+                    DynList<label> validBaseF;
+                    if( makeValidFace(baseCand, validBaseF) )
+                        cellFaces.append(validBaseF);
+
+                    //- Top face (collapsed top_i replaced by base_i)
+                    DynList<label> validTopF;
+                    const bool topOK = makeValidFace(topFaceRC, validTopF);
+                    if( topOK )
+                    {
+                        cellFaces.append(validTopF);
+                        newBoundaryFaces.appendList(validTopF);
+                        newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
+                        newBoundaryPatches.append(boundaryFacePatches[bfI]);
+                    }
+
+                    //- Side faces + edge-boundary patch logic
+                    forAll(f, pI)
+                    {
+                        const label b0 = f[pI];
+                        const label b1 = f.nextLabel(pI);
+                        const label t1 = topFaceRC[(pI+1)%f.size()];
+                        const label t0 = topFaceRC[pI];
+                        DynList<label> sideCand;
+                        sideCand.append(b0);
+                        sideCand.append(b1);
+                        sideCand.append(t1);
+                        sideCand.append(t0);
+                        DynList<label> validSideF;
+                        if( makeValidFace(sideCand, validSideF) )
+                        {
+                            cellFaces.append(validSideF);
+                            //- Mirror normal path edge-boundary check
+                            const label edgeI = faceEdges(bfI, pI);
+                            if( edgeFaces.sizeOfRow(edgeI) == 2 )
+                            {
+                                label neiFace = edgeFaces(edgeI, 0);
+                                if( neiFace == bfI )
+                                    neiFace = edgeFaces(edgeI, 1);
+                                if( !treatPatches[boundaryFacePatches[neiFace]] )
+                                {
+                                    newBoundaryFaces.appendList(validSideF);
+                                    newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
+                                    newBoundaryPatches.append(boundaryFacePatches[neiFace]);
+                                }
+                            }
+                            else if( edgeFaces.sizeOfRow(edgeI) == 1 )
+                            {
+                                const Map<label>& otherProcPatch = *otherProcPatchPtr;
+                                if( !treatPatches[otherProcPatch[edgeI]] )
+                                {
+                                    newBoundaryFaces.appendList(validSideF);
+                                    newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
+                                    newBoundaryPatches.append(otherProcPatch[edgeI]);
+                                }
+                            }
+                        }
+                    }
+
+                    //- Closed-cell check: every undirected edge must
+                    //- appear exactly twice. Otherwise the reduced
+                    //- polyhedron has holes or non-manifold topology.
+                    auto cellLooksClosed =
+                    [&](const DynList<DynList<label> >& cFaces) -> bool
+                    {
+                        std::map<std::pair<label,label>,label> edgeUse;
+                        forAll(cFaces, fi)
+                        {
+                            const DynList<label>& cf = cFaces[fi];
+                            if( cf.size() < 3 ) return false;
+                            forAll(cf, i)
+                            {
+                                const label a = cf[i];
+                                const label b = cf[(i+1)%cf.size()];
+                                if( a == b ) return false;
+                                const label lo = Foam::min(a, b);
+                                const label hi = Foam::max(a, b);
+                                ++edgeUse[std::make_pair(lo, hi)];
+                            }
+                        }
+                        for( auto it=edgeUse.begin();
+                             it!=edgeUse.end(); ++it )
+                            if( it->second != 2 ) return false;
+                        return true;
+                    };
+
+                    static label nReducedAttempt = 0;
+                    static label nReducedBuilt = 0;
+                    static label nReducedRollback = 0;
+                    ++nReducedAttempt;
+
+                    //- Accept only if >=4 faces AND closed topology
+                    if( cellFaces.size() >= 4
+                     && cellLooksClosed(cellFaces) )
+                    {
+                        builtReducedCell = true;
+                        ++nReducedBuilt;
+                        if( nReducedBuilt == 1 || nReducedBuilt % 100 == 0 )
+                            Info << "Reduced cap cells: attempt="
+                                 << nReducedAttempt
+                                 << " built=" << nReducedBuilt
+                                 << " rollback=" << nReducedRollback
+                                 << endl;
+                    }
+                    else
+                    {
+                        ++nReducedRollback;
+                        //- Roll back and fall through to normal prism
+                        cellFaces.clear();
+                        newBoundaryFaces.setSize(nBndFacesSnap);
+                        newBoundaryOwners.setSize(nBndOwnSnap);
+                        newBoundaryPatches.setSize(nBndPatchSnap);
+                    }
+                }
+            }
+
+            if( !builtReducedCell )
+            {
+            //- Normal prism path
             //- store the current boundary face
             newF.clear();
             newF.append(f[0]);
             for(label pI=f.size()-1;pI>0;--pI)
                 newF.append(f[pI]);
             cellFaces.append(newF);
-
             //- create parallel face
             forAll(f, pI)
                 newF[pI] = findNewNodeLabel(f[pI], pKey);
-
             cellFaces.append(newF);
-
             newBoundaryFaces.appendList(newF);
             newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
             newBoundaryPatches.append(boundaryFacePatches[bfI]);
-
             //- create quad faces
             newF.setSize(4);
             forAll(f, pI)
@@ -213,9 +496,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 newF[1] = f.nextLabel(pI);
                 newF[2] = findNewNodeLabel(newF[1], pKey);
                 newF[3] = findNewNodeLabel(f[pI], pKey);
-
                 cellFaces.append(newF);
-
                 //- check if the face is at the boundary
                 //- of the treated partitions
                 const label edgeI = faceEdges(bfI, pI);
@@ -248,6 +529,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             # ifdef DEBUGLayer
             Info << "Adding cell " << cellFaces << endl;
             # endif
+
+            } //- end if( !builtReducedCell )
 
             cellsToAdd.appendGraph(cellFaces);
         }
