@@ -557,9 +557,9 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             for(label pI=f.size()-1;pI>0;--pI)
                 newF.append(f[pI]);
             cellFaces.append(newF);
-            //- create parallel face (patch-aware cap vertex)
+            //- create parallel face
             forAll(f, pI)
-                newF[pI] = capAwareTopLabel(f[pI]);
+                newF[pI] = findNewNodeLabel(f[pI], pKey);
             cellFaces.append(newF);
             newBoundaryFaces.appendList(newF);
             newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
@@ -570,8 +570,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             {
                 newF[0] = f[pI];
                 newF[1] = f.nextLabel(pI);
-                newF[2] = capAwareTopLabel(newF[1]);
-                newF[3] = capAwareTopLabel(f[pI]);
+                newF[2] = findNewNodeLabel(newF[1], pKey);
+                newF[3] = findNewNodeLabel(f[pI], pKey);
                 cellFaces.append(newF);
                 //- check if the face is at the boundary
                 //- of the treated partitions
