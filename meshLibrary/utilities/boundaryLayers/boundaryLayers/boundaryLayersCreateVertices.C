@@ -1771,14 +1771,15 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
 
             if( !useHardBLBLCapVertexInsertion_ )
             {
-                //- Step 2: no-op -- capture existing resolved labels
-                const label ewOld = findNewNodeLabel(pointI, ewPKey);
-                const label blOld = findNewNodeLabel(pointI, blPKey);
+                //- Step 2: no-op -- key by patchI not pKey
+                //- hub+blade share pKey=0, so pKey cannot distinguish sides
+                const label ewOld = newLabelForVertex_[pointI];
+                const label blOld = newLabelForVertex_[pointI];
                 if( ewOld >= 0 )
-                { capSideVrtMap_[std::make_pair(pointI,ewPKey)] = ewOld; ++nCapSideInserted; }
+                { capSideVrtMap_[std::make_pair(pointI,ewPatch)] = ewOld; ++nCapSideInserted; }
                 else { ++nCapSideMissing; }
                 if( blOld >= 0 )
-                { capSideVrtMap_[std::make_pair(pointI,blPKey)] = blOld; ++nCapSideInserted; }
+                { capSideVrtMap_[std::make_pair(pointI,bladePatch)] = blOld; ++nCapSideInserted; }
                 else { ++nCapSideMissing; }
                 continue;
             }
@@ -1821,8 +1822,9 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             if( ewVertLabel >= label(points.size()) )
                 points.setSize(ewVertLabel + 1);
             points[ewVertLabel] = ewPt;
-            capSideVrtMap_[std::make_pair(pointI, ewPKey)] = ewVertLabel;
-            capSideVrtMap_[std::make_pair(pointI, blPKey)] = blVertLabel;
+            //- Key by patchI not pKey (hub+blade share pKey=0)
+            capSideVrtMap_[std::make_pair(pointI, ewPatch)] = ewVertLabel;
+            capSideVrtMap_[std::make_pair(pointI, bladePatch)] = blVertLabel;
             nCapSideInserted += 2;
             ++nCapEWCreated;
             if( capAtlasOsPtr )

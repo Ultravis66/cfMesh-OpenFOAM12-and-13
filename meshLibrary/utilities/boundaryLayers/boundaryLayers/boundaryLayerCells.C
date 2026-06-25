@@ -127,6 +127,21 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             const face& f = bFaces[bfI];
 
             const label pKey = patchKey_[boundaryFacePatches[bfI]];
+            const label bfIPatch = boundaryFacePatches[bfI];
+            //- Patch-aware top vertex resolver: checks capSideVrtMap_
+            //- keyed by (meshPointI, patchI) first, then falls back
+            //- to findNewNodeLabel. Required because hub+blade share
+            //- pKey=0 in the same treatPatchesWithPatch_ group.
+            auto capAwareTopLabel = [&](const label baseLabel) -> label
+            {
+                if( !capSideVrtMap_.empty() )
+                {
+                    const std::pair<label,label> capKey(baseLabel, bfIPatch);
+                    auto it = capSideVrtMap_.find(capKey);
+                    if( it != capSideVrtMap_.end() ) return it->second;
+                }
+                return findNewNodeLabel(baseLabel, pKey);
+            };
 
             // Guard 0: skip faces with missing extruded vertices.
             // findNewNodeLabel returns -1 for transition-zone points
@@ -167,7 +182,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 forAll(f, pI)
                 {
                     const label topLabel = findNewNodeLabel(f[pI], pKey);
-                    const std::pair<label,label> capKey(f[pI], pKey);
+                    //- Key by patchI (hub+blade share pKey=0)
+                    const std::pair<label,label> capKey(f[pI], boundaryFacePatches[bfI]);
                     if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
                         ++nCapSide;
                     bool collapsed = false;
@@ -207,7 +223,10 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         DynList<label> topFace;
                         forAll(f, pI)
                         {
-                            const label topLabel = findNewNodeLabel(f[pI], pKey);
+                            const std::pair<label,label> dryCapKey(f[pI], boundaryFacePatches[bfI]);
+                            auto dryIt = capSideVrtMap_.find(dryCapKey);
+                            const label topLabel = (dryIt != capSideVrtMap_.end()) ?
+                                dryIt->second : findNewNodeLabel(f[pI], pKey);
                             bool coll = (topLabel == f[pI]);
                             if( !coll && topLabel>=0
                              && topLabel<label(mesh_.points().size())
@@ -294,22 +313,27 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 label nCapSideRC = 0;
                 label nCollapsedRC = 0;
                 DynList<label> topFaceRC;
+                //- Use outer capAwareTopLabel lambda (patchI-keyed)
+                auto isCollapsedTop = [&](const label base, const label top) -> bool
+                {
+                    if( top == base ) return true;
+                    if( top>=0 && top<label(mesh_.points().size())
+                     && base>=0 && base<label(mesh_.points().size()) )
+                        return mag(mesh_.points()[top]-mesh_.points()[base])
+                               < scalar(1e-10);
+                    return true;
+                };
                 forAll(f, pI)
                 {
-                    const label topLabel = findNewNodeLabel(f[pI], pKey);
-                    const std::pair<label,label> capKey(f[pI], pKey);
+                    const label baseLabel = f[pI];
+                    const label topLabel = capAwareTopLabel(baseLabel);
+                    const std::pair<label,label> capKey(baseLabel, bfIPatch);
                     if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
                         ++nCapSideRC;
-                    bool coll = (topLabel == f[pI]);
-                    if( !coll && topLabel>=0
-                     && topLabel<label(mesh_.points().size())
-                     && f[pI]>=0 && f[pI]<label(mesh_.points().size()) )
-                        if( mag(mesh_.points()[topLabel]-mesh_.points()[f[pI]])
-                            < scalar(1e-10) ) coll = true;
+                    const bool coll = isCollapsedTop(baseLabel, topLabel);
                     if( coll ) ++nCollapsedRC;
-                    topFaceRC.append(coll ? f[pI] : topLabel);
+                    topFaceRC.append(coll ? baseLabel : topLabel);
                 }
-
                 if( nCapSideRC > 0 && nCollapsedRC > 0
                  && nCollapsedRC < label(f.size()) )
                 {
@@ -533,9 +557,9 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             for(label pI=f.size()-1;pI>0;--pI)
                 newF.append(f[pI]);
             cellFaces.append(newF);
-            //- create parallel face
+            //- create parallel face (patch-aware cap vertex)
             forAll(f, pI)
-                newF[pI] = findNewNodeLabel(f[pI], pKey);
+                newF[pI] = capAwareTopLabel(f[pI]);
             cellFaces.append(newF);
             newBoundaryFaces.appendList(newF);
             newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
@@ -546,8 +570,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             {
                 newF[0] = f[pI];
                 newF[1] = f.nextLabel(pI);
-                newF[2] = findNewNodeLabel(newF[1], pKey);
-                newF[3] = findNewNodeLabel(f[pI], pKey);
+                newF[2] = capAwareTopLabel(newF[1]);
+                newF[3] = capAwareTopLabel(f[pI]);
                 cellFaces.append(newF);
                 //- check if the face is at the boundary
                 //- of the treated partitions
