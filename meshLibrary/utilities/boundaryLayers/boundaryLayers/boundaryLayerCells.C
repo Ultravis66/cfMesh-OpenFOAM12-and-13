@@ -152,13 +152,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             //- pKey=0 in the same treatPatchesWithPatch_ group.
             auto capAwareTopLabel = [&](const label baseLabel) -> label
             {
-                if( !capSideVrtMap_.empty() )
-                {
-                    const std::pair<label,label> capKey(baseLabel, bfIPatch);
-                    auto it = capSideVrtMap_.find(capKey);
-                    if( it != capSideVrtMap_.end() ) return it->second;
-                }
-                return findNewNodeLabel(baseLabel, pKey);
+                return findNewNodeLabelForPatch(baseLabel, bfIPatch, pKey);
             };
 
             // Guard 0: skip faces with missing extruded vertices.
@@ -199,11 +193,14 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 label nCollapsed = 0;
                 forAll(f, pI)
                 {
-                    const label topLabel = findNewNodeLabel(f[pI], pKey);
-                    //- Key by patchI (hub+blade share pKey=0)
-                    const std::pair<label,label> capKey(f[pI], boundaryFacePatches[bfI]);
-                    if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
-                        ++nCapSide;
+                    const label topLabel = findNewNodeLabelForPatch(
+                        f[pI], boundaryFacePatches[bfI], pKey);
+                    //- Cap-side detection: resolved label differs from base
+                    {
+                        const std::pair<label,label> capKey(f[pI], boundaryFacePatches[bfI]);
+                        if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
+                            ++nCapSide;
+                    }
                     bool collapsed = false;
                     if( topLabel == f[pI] ) collapsed = true;
                     if( !collapsed
@@ -241,10 +238,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         DynList<label> topFace;
                         forAll(f, pI)
                         {
-                            const std::pair<label,label> dryCapKey(f[pI], boundaryFacePatches[bfI]);
-                            auto dryIt = capSideVrtMap_.find(dryCapKey);
-                            const label topLabel = (dryIt != capSideVrtMap_.end()) ?
-                                dryIt->second : findNewNodeLabel(f[pI], pKey);
+                            const label topLabel = findNewNodeLabelForPatch(
+                                f[pI], boundaryFacePatches[bfI], pKey);
                             bool coll = (topLabel == f[pI]);
                             if( !coll && topLabel>=0
                              && topLabel<label(mesh_.points().size())
@@ -339,10 +334,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     DynList<label> topIA;
                     forAll(f, pI2)
                     {
-                        const std::pair<label,label> ck(f[pI2], bfIPatchIA);
-                        auto it = capSideVrtMap_.find(ck);
-                        label tl = (it != capSideVrtMap_.end()) ?
-                            it->second : findNewNodeLabel(f[pI2], pKeyIA);
+                        label tl = findNewNodeLabelForPatch(
+                            f[pI2], bfIPatchIA, pKeyIA);
                         bool coll = (tl == f[pI2]);
                         if( !coll && tl>=0 && tl<label(mesh_.points().size())
                          && f[pI2]>=0 && f[pI2]<label(mesh_.points().size()) )
@@ -398,11 +391,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         DynList<label> topNei;
                         forAll(fNei, pN)
                         {
-                            const std::pair<label,label> ckN(fNei[pN], neiPatchIA);
-                            auto itN = capSideVrtMap_.find(ckN);
-                            label tlN = (itN != capSideVrtMap_.end()) ?
-                                itN->second :
-                                findNewNodeLabel(fNei[pN], neiPKeyIA);
+                            label tlN = findNewNodeLabelForPatch(
+                                fNei[pN], neiPatchIA, neiPKeyIA);
                             bool cN = (tlN == fNei[pN]);
                             if( !cN && tlN>=0 && tlN<label(mesh_.points().size())
                              && fNei[pN]>=0 && fNei[pN]<label(mesh_.points().size()) )
@@ -471,9 +461,12 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 {
                     const label baseLabel = f[pI];
                     const label topLabel = capAwareTopLabel(baseLabel);
-                    const std::pair<label,label> capKey(baseLabel, bfIPatch);
-                    if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
-                        ++nCapSideRC;
+                    //- Cap-side detection via map lookup
+                    {
+                        const std::pair<label,label> capKey(baseLabel, bfIPatch);
+                        if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() )
+                            ++nCapSideRC;
+                    }
                     const bool coll = isCollapsedTop(baseLabel, topLabel);
                     if( coll ) ++nCollapsedRC;
                     topFaceRC.append(coll ? baseLabel : topLabel);
@@ -581,11 +574,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                             DynList<label> topNeiTI;
                             forAll(fNeiTI, pN)
                             {
-                                const std::pair<label,label> ckN(fNeiTI[pN],neiPatchTI);
-                                auto itN = capSideVrtMap_.find(ckN);
-                                label tlN = (itN!=capSideVrtMap_.end()) ?
-                                    itN->second :
-                                    findNewNodeLabel(fNeiTI[pN], neiPKeyTI);
+                                label tlN = findNewNodeLabelForPatch(
+                                    fNeiTI[pN], neiPatchTI, neiPKeyTI);
                                 bool cN = (tlN==fNeiTI[pN]);
                                 if( !cN && tlN>=0 && tlN<label(mesh_.points().size())
                                  && fNeiTI[pN]>=0 && fNeiTI[pN]<label(mesh_.points().size()) )

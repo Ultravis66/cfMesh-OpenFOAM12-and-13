@@ -345,6 +345,14 @@ class boundaryLayers
             const label pKey
         ) const;
 
+        //- Patch-aware lookup (patchI-keyed capSideVrtMap_)
+        inline label findNewNodeLabelForPatch
+        (
+            const label pointI,
+            const label patchI,
+            const label pKey
+        ) const;
+
         //- creating hex cells near feature edges
         inline void createNewCellFromEdge
         (
