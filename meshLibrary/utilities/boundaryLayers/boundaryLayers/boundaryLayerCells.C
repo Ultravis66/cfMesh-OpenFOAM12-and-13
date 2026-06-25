@@ -373,8 +373,10 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     }
 
                     //- Side faces + edge-boundary patch logic
+                    bool internalSideMismatch = false;
                     forAll(f, pI)
                     {
+                        if( internalSideMismatch ) break;
                         const label b0 = f[pI];
                         const label b1 = f.nextLabel(pI);
                         const label t1 = topFaceRC[(pI+1)%f.size()];
@@ -384,22 +386,34 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         sideCand.append(b1);
                         sideCand.append(t1);
                         sideCand.append(t0);
+                        const label edgeI = faceEdges(bfI, pI);
+                        bool treatedInternal = false;
+                        if( edgeFaces.sizeOfRow(edgeI) == 2 )
+                        {
+                            label neiFaceT = edgeFaces(edgeI, 0);
+                            if( neiFaceT == bfI ) neiFaceT = edgeFaces(edgeI, 1);
+                            if( treatPatches[boundaryFacePatches[neiFaceT]] )
+                                treatedInternal = true;
+                        }
                         DynList<label> validSideF;
-                        if( makeValidFace(sideCand, validSideF) )
+                        const bool sideOK = makeValidFace(sideCand, validSideF);
+                        if( treatedInternal && (!sideOK || validSideF.size() != 4) )
+                        {
+                            internalSideMismatch = true;
+                            break;
+                        }
+                        if( sideOK )
                         {
                             cellFaces.append(validSideF);
-                            //- Mirror normal path edge-boundary check
-                            const label edgeI = faceEdges(bfI, pI);
                             if( edgeFaces.sizeOfRow(edgeI) == 2 )
                             {
-                                label neiFace = edgeFaces(edgeI, 0);
-                                if( neiFace == bfI )
-                                    neiFace = edgeFaces(edgeI, 1);
-                                if( !treatPatches[boundaryFacePatches[neiFace]] )
+                                label neiFace2 = edgeFaces(edgeI, 0);
+                                if( neiFace2 == bfI ) neiFace2 = edgeFaces(edgeI, 1);
+                                if( !treatPatches[boundaryFacePatches[neiFace2]] )
                                 {
                                     newBoundaryFaces.appendList(validSideF);
                                     newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
-                                    newBoundaryPatches.append(boundaryFacePatches[neiFace]);
+                                    newBoundaryPatches.append(boundaryFacePatches[neiFace2]);
                                 }
                             }
                             else if( edgeFaces.sizeOfRow(edgeI) == 1 )
@@ -414,10 +428,16 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                             }
                         }
                     }
+                    static label nReducedAttempt = 0;
+                    static label nReducedBuilt = 0;
+                    static label nRollbackTopo = 0;
+                    static label nRollbackGeom = 0;
+                    static label nRollbackInternal = 0;
+                    static label nRollbackFewFaces = 0;
+                    ++nReducedAttempt;
 
-                    //- Closed-cell check: every undirected edge must
-                    //- appear exactly twice. Otherwise the reduced
-                    //- polyhedron has holes or non-manifold topology.
+                    //- Check 1: topological closure
+                    //- Every undirected edge must appear exactly twice.
                     auto cellLooksClosed =
                     [&](const DynList<DynList<label> >& cFaces) -> bool
                     {
@@ -430,40 +450,72 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                             {
                                 const label a = cf[i];
                                 const label b = cf[(i+1)%cf.size()];
-                                if( a == b ) return false;
-                                const label lo = Foam::min(a, b);
-                                const label hi = Foam::max(a, b);
-                                ++edgeUse[std::make_pair(lo, hi)];
+                                if( a==b ) return false;
+                                ++edgeUse[std::make_pair(Foam::min(a,b),Foam::max(a,b))];
                             }
                         }
-                        for( auto it=edgeUse.begin();
-                             it!=edgeUse.end(); ++it )
+                        for( auto it=edgeUse.begin(); it!=edgeUse.end(); ++it )
                             if( it->second != 2 ) return false;
                         return true;
                     };
 
-                    static label nReducedAttempt = 0;
-                    static label nReducedBuilt = 0;
-                    static label nReducedRollback = 0;
-                    ++nReducedAttempt;
+                    //- Check 2: geometric openness
+                    //- Sum of oriented face area vectors must be ~0.
+                    auto cellGeomClosed =
+                    [&](const DynList<DynList<label> >& cFaces) -> bool
+                    {
+                        vector areaSum = vector::zero;
+                        scalar areaMagSum = scalar(0);
+                        forAll(cFaces, fi)
+                        {
+                            const DynList<label>& cf = cFaces[fi];
+                            vector fArea = vector::zero;
+                            const point& p0f = mesh_.points()[cf[0]];
+                            for(label ai=1;ai<cf.size()-1;++ai)
+                                fArea += (mesh_.points()[cf[ai]]-p0f)
+                                       ^ (mesh_.points()[cf[ai+1]]-p0f);
+                            areaSum += fArea;
+                            areaMagSum += mag(fArea);
+                        }
+                        if( areaMagSum < VSMALL ) return false;
+                        return mag(areaSum)/areaMagSum < scalar(1e-4);
+                    };
 
-                    //- Accept only if >=4 faces AND closed topology
-                    if( cellFaces.size() >= 4
-                     && cellLooksClosed(cellFaces) )
+                    const bool fewFacesOK = (cellFaces.size() >= 4);
+                    const bool topoOK = fewFacesOK
+                        && !internalSideMismatch
+                        && cellLooksClosed(cellFaces);
+                    const bool geomOK = topoOK && cellGeomClosed(cellFaces);
+
+                    if( !fewFacesOK ) ++nRollbackFewFaces;
+                    else if( internalSideMismatch ) ++nRollbackInternal;
+                    else if( !topoOK ) ++nRollbackTopo;
+                    else if( !geomOK ) ++nRollbackGeom;
+
+                    if( fewFacesOK && !internalSideMismatch && topoOK && geomOK )
                     {
                         builtReducedCell = true;
                         ++nReducedBuilt;
-                        if( nReducedBuilt == 1 || nReducedBuilt % 100 == 0 )
-                            Info << "Reduced cap cells: attempt="
-                                 << nReducedAttempt
+                        if
+                        (
+                            nReducedAttempt == 1
+                         || nReducedAttempt % 100 == 0
+                         || nReducedBuilt == 1
+                         || nReducedBuilt % 100 == 0
+                        )
+                        {
+                            Info << "Reduced cap cells: attempt=" << nReducedAttempt
                                  << " built=" << nReducedBuilt
-                                 << " rollback=" << nReducedRollback
+                                 << " rollbackTopo=" << nRollbackTopo
+                                 << " rollbackGeom=" << nRollbackGeom
+                                 << " rollbackInternal=" << nRollbackInternal
+                                 << " rollbackFewFaces=" << nRollbackFewFaces
                                  << endl;
+                        }
                     }
                     else
                     {
-                        ++nReducedRollback;
-                        //- Roll back and fall through to normal prism
+                        //- Roll back all speculative additions
                         cellFaces.clear();
                         newBoundaryFaces.setSize(nBndFacesSnap);
                         newBoundaryOwners.setSize(nBndOwnSnap);
