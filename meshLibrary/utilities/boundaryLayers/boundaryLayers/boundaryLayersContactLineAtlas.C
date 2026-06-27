@@ -132,10 +132,17 @@ static bool classifyEdge
     result.bp0TripleJunction = false;
     result.bp1TripleJunction = false;
     // Per-endpoint triple-junction detection.
-    // A point is a triple junction if it touches:
+    // REQUIREMENT: the edge itself must be a BL/BL edge (both pA and pB
+    // are BL patches). A BL/neutral edge (blade/periodic) can never be a
+    // true triple junction -- it is always PeriodicSeam. Only a BL/BL
+    // edge endpoint that also touches a neutral or term patch is genuine.
+    // Without this gate, blade/periodic endpoints that also touch hub get
+    // incorrectly stamped TripleJunction causing hard suppression.
+    //
+    // A point is triple if the edge is BL/BL AND the endpoint touches:
     //   (a) 3+ BL patches, OR
     //   (b) 2+ BL patches AND at least 1 non-BL patch (term or neutral)
-    // This correctly catches hub+blade+periodic (2 BL + 1 neutral).
+    const bool edgeIsBLBL = isBL[result.pA] && isBL[result.pB];
     for( label ei = 0; ei < 2; ++ei )
     {
         const label bpI = (ei == 0) ? result.bp0 : result.bp1;
@@ -152,8 +159,11 @@ static bool classifyEdge
             else if( isNeutral[patchI] ) ++nNeutralPatches;
         }
         const bool isTriple =
-            (nBLPatches >= 3) ||
-            (nBLPatches >= 2 && (nTermPatches + nNeutralPatches) >= 1);
+            edgeIsBLBL &&
+            (
+                (nBLPatches >= 3) ||
+                (nBLPatches >= 2 && (nTermPatches + nNeutralPatches) >= 1)
+            );
         if( ei == 0 ) result.bp0TripleJunction = isTriple;
         else          result.bp1TripleJunction = isTriple;
         if( isTriple ) result.tripleJunction = true;
