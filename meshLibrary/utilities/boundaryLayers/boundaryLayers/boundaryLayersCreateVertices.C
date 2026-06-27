@@ -260,47 +260,127 @@ point boundaryLayers::createNewVertex
             const scalar magN = mag(normal) + VSMALL;
             normal /= magN;
 
-            // Geometry preservation: skip neighbor dist clamping for
-            // BL ramp zone points. layerScale_ already handles reduction.
-            // The neighbor loop pulls dist to near-zero for transition
-            // points near flat inlet/outlet/periodic faces causing warts.
-            if( !terminateLayersAtConcaveEdges_
-             || layerScale_.size() <= bpI
-             || layerScale_[bpI] >= 0.99 )
-            {
-            const scalar distBeforeClamp = dist;
-            forAllRow(pointPoints, bpI, ppI)
-            {
-                if( patchVertex[pointPoints(bpI, ppI)] )
-                    continue;
+            // BL/no-BL FlowBoundaryTermination ramp points still need
+            // a finite local height baseline. The previous logic skipped
+            // neighbor-distance clamping for all ramp points
+            // (layerScale_<0.99), which could leave dist=VGREAT until the
+            // final layerScale_ multiplication. On inlet/outlet contacts
+            // this can create visible blowout/protrusion artifacts.
+            //
+            // Scoped to explicit termination patches (patchRole_==1) only
+            // so periodic/neutral seam behavior is unchanged.
+            const bool anyRampZone =
+                terminateLayersAtConcaveEdges_
+             && layerScale_.size() > bpI
+             && layerScale_[bpI] < 0.99;
 
-                const vector vec = points[bPoints[pointPoints(bpI, ppI)]] - p;
-                const scalar prod = 0.5 * mag(vec & normal);
-
-                if( prod < dist )
-                    dist = prod;
-            }
-            // CLAMPDIAG: log points whose extrusion height was collapsed by
-            // the neighbor-distance clamp at (suspected) flat end-plane faces.
+            bool flowRampZone = false;
+            if( anyRampZone )
             {
-                static label nClampDiag = 0;
-                const scalar lsThis =
-                    (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
-                if( distBeforeClamp < VGREAT
-                 && distBeforeClamp > VSMALL
-                 && dist < scalar(0.10)*distBeforeClamp
-                 && nClampDiag < 200 )
+                forAll(otherPatches, opI)
                 {
-                    ++nClampDiag;
-                    Info << "CLAMPDIAG bpI=" << bpI
-                         << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
-                         << " layerScale=" << lsThis
-                         << " distBefore=" << distBeforeClamp
-                         << " distAfter=" << dist
-                         << " ratio=" << (dist/distBeforeClamp) << endl;
+                    const label op = otherPatches[opI];
+                    if( op >= 0
+                     && op < label(patchRole_.size())
+                     && patchRole_[op] == 1 )
+                    {
+                        flowRampZone = true;
+                        break;
+                    }
                 }
             }
+
+            if( !anyRampZone )
+            {
+                // Original non-ramp behavior.
+                const scalar distBeforeClamp = dist;
+                forAllRow(pointPoints, bpI, ppI)
+                {
+                    const label bpJ = pointPoints(bpI, ppI);
+                    if( patchVertex[bpJ] )
+                        continue;
+
+                    const vector vec = points[bPoints[bpJ]] - p;
+                    const scalar prod = 0.5 * mag(vec & normal);
+
+                    if( prod < dist )
+                        dist = prod;
+                }
+                // CLAMPDIAG
+                {
+                    static label nClampDiag = 0;
+                    const scalar lsThis =
+                        (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+                    if( distBeforeClamp < VGREAT
+                     && distBeforeClamp > VSMALL
+                     && dist < scalar(0.10)*distBeforeClamp
+                     && nClampDiag < 200 )
+                    {
+                        ++nClampDiag;
+                        Info << "CLAMPDIAG bpI=" << bpI
+                             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " distBefore=" << distBeforeClamp
+                             << " distAfter=" << dist
+                             << " ratio=" << (dist/distBeforeClamp) << endl;
+                    }
+                }
             }
+            else if( flowRampZone )
+            {
+                // FlowBoundaryTermination ramp: compute finite neighbor
+                // baseline. Prefer projected spacing when meaningful;
+                // otherwise fall back to local edge length.
+                scalar neighProj = VGREAT;
+                scalar neighLen  = VGREAT;
+
+                forAllRow(pointPoints, bpI, ppI)
+                {
+                    const label bpJ = pointPoints(bpI, ppI);
+                    if( bpJ < 0 || bpJ >= label(bPoints.size()) ) continue;
+                    if( patchVertex[bpJ] ) continue;
+
+                    const vector vec = points[bPoints[bpJ]] - p;
+                    const scalar halfLen = 0.5 * mag(vec);
+                    if( halfLen > VSMALL && halfLen < neighLen )
+                        neighLen = halfLen;
+
+                    const scalar proj = 0.5 * mag(vec & normal);
+                    if( halfLen > VSMALL
+                     && proj > scalar(100) * VSMALL
+                     && proj > scalar(1e-4) * halfLen
+                     && proj < neighProj )
+                        neighProj = proj;
+                }
+
+                const scalar neighDist =
+                    (neighProj < VGREAT) ? neighProj : neighLen;
+
+                const scalar distBeforeClamp = dist;
+                if( neighDist < VGREAT )
+                    dist = Foam::min(dist, neighDist);
+
+                // RAMPCLAMPDIAG: confirm ramp points get finite baseline.
+                {
+                    static label nRampClampDiag = 0;
+                    const scalar lsThis =
+                        (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+                    if( nRampClampDiag < 200 )
+                    {
+                        ++nRampClampDiag;
+                        Info << "RAMPCLAMPDIAG bpI=" << bpI
+                             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " distBefore=" << distBeforeClamp
+                             << " neighProj=" << neighProj
+                             << " neighLen=" << neighLen
+                             << " neighDist=" << neighDist
+                             << " distAfter=" << dist
+                             << endl;
+                    }
+                }
+            }
+            // else: neutral/periodic ramp zone -- behavior unchanged.
             }  // closes zero-dist else block
         }
         else if( otherPatches.size() == 2 )
