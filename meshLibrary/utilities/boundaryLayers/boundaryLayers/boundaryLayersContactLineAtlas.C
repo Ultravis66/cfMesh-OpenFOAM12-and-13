@@ -69,7 +69,10 @@ struct ContactEdgeResult
     label  pA, pB;
     scalar minDot, angleDeg;
     bool   tripleJunction;
+    bool   bp0TripleJunction;
+    bool   bp1TripleJunction;
     word   contactType;
+    word   nonTripleContactType;
 };
 
 static bool classifyEdge
@@ -126,18 +129,34 @@ static bool classifyEdge
     result.bp1 = (it1 != globalToBP.end()) ? it1() : -1;
 
     result.tripleJunction = false;
+    result.bp0TripleJunction = false;
+    result.bp1TripleJunction = false;
+    // Per-endpoint triple-junction detection.
+    // A point is a triple junction if it touches:
+    //   (a) 3+ BL patches, OR
+    //   (b) 2+ BL patches AND at least 1 non-BL patch (term or neutral)
+    // This correctly catches hub+blade+periodic (2 BL + 1 neutral).
     for( label ei = 0; ei < 2; ++ei )
     {
         const label bpI = (ei == 0) ? result.bp0 : result.bp1;
         if( bpI < 0 ) continue;
-        label nBLPatches = 0;
+        label nBLPatches      = 0;
+        label nTermPatches    = 0;
+        label nNeutralPatches = 0;
         forAllRow(pPatches, bpI, pI)
         {
             const label patchI = pPatches(bpI, pI);
-            if( patchI >= 0 && patchI < nPatches && isBL[patchI] )
-                ++nBLPatches;
+            if( patchI < 0 || patchI >= nPatches ) continue;
+            if( isBL[patchI] )           ++nBLPatches;
+            else if( isTerm[patchI] )    ++nTermPatches;
+            else if( isNeutral[patchI] ) ++nNeutralPatches;
         }
-        if( nBLPatches >= 3 ) result.tripleJunction = true;
+        const bool isTriple =
+            (nBLPatches >= 3) ||
+            (nBLPatches >= 2 && (nTermPatches + nNeutralPatches) >= 1);
+        if( ei == 0 ) result.bp0TripleJunction = isTriple;
+        else          result.bp1TripleJunction = isTriple;
+        if( isTriple ) result.tripleJunction = true;
     }
 
     const label termPatch =
@@ -147,6 +166,15 @@ static bool classifyEdge
         (termPatch >= 0 && termPatch < nPatches) ?
         patchNames[termPatch] : word("unknown");
 
+    // Non-triple fallback: used for per-endpoint stamping so only the
+    // actual junction point gets class 1, not its neighbor.
+    result.nonTripleContactType = classifyContactEdge
+    (
+        nBL, nTerm, nNeutral,
+        result.angleDeg,
+        false,
+        termPatchName
+    );
     result.contactType = classifyContactEdge
     (
         nBL, nTerm, nNeutral,
@@ -200,13 +228,19 @@ void boundaryLayers::buildBLContactPointPolicy() const
                 isBL, isTerm, isNeutral, patchNames_, nPatches, r) )
             continue;
 
-        const label cls = contactTypeToClass(r.contactType);
-        if( cls == 0 ) continue;
+        // Per-endpoint stamping: triple junction points get class 1,
+        // their non-triple neighbors get the non-triple contact class.
+        // This prevents over-suppression bleeding along the contact line.
+        const label baseCls = contactTypeToClass(r.nonTripleContactType);
 
         for( label ei = 0; ei < 2; ++ei )
         {
             const label bpI = (ei == 0) ? r.bp0 : r.bp1;
             if( bpI < 0 ) continue;
+            const bool pointTriple =
+                (ei == 0) ? r.bp0TripleJunction : r.bp1TripleJunction;
+            const label cls = pointTriple ? 1 : baseCls;
+            if( cls == 0 ) continue;
             if( !blContactPointClass_.found(bpI) )
             {
                 blContactPointClass_.insert(bpI, cls);
@@ -260,12 +294,27 @@ void boundaryLayers::writeBLContactLineAtlas() const
        << "nBL,nTerm,nNeutral,"
        << "minDot,angleDeg,"
        << "contactType,"
-       << "tripleJunction" << nl;
+       << "tripleJunction,"
+       << "bp0TripleJunction,bp1TripleJunction,"
+       << "nonTripleContactType" << nl;
 
     label nWritten = 0;
+    label nSkipEdgeFaces0   = 0;
+    label nSkipEdgeFaces1   = 0;
+    label nSkipEdgeFacesGt2 = 0;
 
     forAll(edges, eI)
     {
+        // Count edges skipped due to non-manifold face count before
+        // classifyEdge() swallows them silently.
+        const label nEF = edgeFaces.sizeOfRow(eI);
+        if( nEF != 2 )
+        {
+            if( nEF == 0 )      ++nSkipEdgeFaces0;
+            else if( nEF == 1 ) ++nSkipEdgeFaces1;
+            else                ++nSkipEdgeFacesGt2;
+        }
+
         ContactEdgeResult r;
         if( !classifyEdge(eI, edges, edgeFaces, boundaryFacePatches,
                 faceNormals, globalToBP, pPatches,
@@ -295,13 +344,19 @@ void boundaryLayers::writeBLContactLineAtlas() const
            << r.minDot << ","
            << r.angleDeg << ","
            << r.contactType << ","
-           << (r.tripleJunction ? "1" : "0") << nl;
+           << (r.tripleJunction ? "1" : "0") << ","
+           << (r.bp0TripleJunction ? "1" : "0") << ","
+           << (r.bp1TripleJunction ? "1" : "0") << ","
+           << r.nonTripleContactType << nl;
 
         ++nWritten;
     }
 
     Info << "BL contact line atlas: wrote " << nWritten
-         << " contact edges to blContactLineAtlas.csv" << endl;
+         << " contact edges to blContactLineAtlas.csv"
+         << " skipped edgeFaces{0=" << nSkipEdgeFaces0
+         << ",1=" << nSkipEdgeFaces1
+         << ",gt2=" << nSkipEdgeFacesGt2 << "}" << endl;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +381,9 @@ void boundaryLayers::buildBLCapCellCandidates() const
     forAll(bPoints, bpI)
         globalToBP.insert(bPoints[bpI], bpI);
 
+    const meshSurfacePartitioner& mPart = surfacePartitioner();
+    const VRWGraph& pPatches = mPart.pointPatches();
+
     const label nPatches = patchNames_.size();
     boolList isBL(nPatches, false);
     boolList isEndwall(nPatches, false);
@@ -348,6 +406,7 @@ void boundaryLayers::buildBLCapCellCandidates() const
     label nCandidates = 0;
     label nDuplicateSame = 0;
     label nConflicts = 0;
+    label nContaminated = 0;
 
     forAll(edges, eI)
     {
@@ -388,6 +447,21 @@ void boundaryLayers::buildBLCapCellCandidates() const
             if( it == globalToBP.end() ) continue;
             const label bpI = it();
 
+            // Skip endpoints that touch periodic, inlet, outlet, or any
+            // patch beyond the blade/endwall pair. These are triple/corner
+            // junction points where cap topology is unsafe.
+            bool contaminated = false;
+            forAllRow(pPatches, bpI, pI)
+            {
+                const label patchI = pPatches(bpI, pI);
+                if( patchI < 0 || patchI >= nPatches ) continue;
+                if( patchI == endwallPatch || patchI == bladePatch ) continue;
+                // Any other patch (neutral/term/extra BL) contaminates
+                contaminated = true;
+                break;
+            }
+            if( contaminated ) { ++nContaminated; continue; }
+
             if( !blCapCellEndwallPatch_.found(bpI) )
             {
                 blCapCellEndwallPatch_.insert(bpI, endwallPatch);
@@ -421,7 +495,8 @@ void boundaryLayers::buildBLCapCellCandidates() const
 
     Info << "BL cap cell candidates: " << nCandidates
          << " new, " << nDuplicateSame << " duplicate-same,"
-         << " " << nConflicts << " conflicts" << endl;
+         << " " << nConflicts << " conflicts,"
+         << " " << nContaminated << " contaminated-skipped" << endl;
 }
 
 // ---------------------------------------------------------------------------
