@@ -199,6 +199,7 @@ class boundaryLayers
         bool useHardBLBLReducedCells_;        // gate for reduced topology
         scalar hardBLBLCapScale_;  // meshDict: hardBLBLCapScale, default 0.10
         scalar flowTerminationTaperFloor_; // meshDict: flowTerminationTaperFloor, default 0.25
+        scalar periodicNeutralTaperFloor_; // meshDict: periodicNeutralTaperFloor, default 0.0
         mutable Map<label> blCapCellEndwallPatch_;
         mutable Map<label> blCapCellBladePatch_;
         mutable Map<label> blCapCellEndwallPKey_;

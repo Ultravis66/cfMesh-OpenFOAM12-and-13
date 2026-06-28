@@ -671,6 +671,7 @@ boundaryLayers::boundaryLayers
     useHardBLBLReducedCells_(false),
     hardBLBLCapScale_(0.10),
     flowTerminationTaperFloor_(0.25),
+    periodicNeutralTaperFloor_(0.0),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
 {
@@ -779,6 +780,11 @@ boundaryLayers::boundaryLayers
         // Clamp after layerScaleRing1_ is known
         flowTerminationTaperFloor_ =
             Foam::max(scalar(0), Foam::min(layerScaleRing1_, flowTerminationTaperFloor_));
+        if( bndLayers.found("periodicNeutralTaperFloor") )
+            periodicNeutralTaperFloor_ =
+                readScalar(bndLayers.lookup("periodicNeutralTaperFloor"));
+        periodicNeutralTaperFloor_ =
+            Foam::max(scalar(0), Foam::min(layerScaleRing1_, periodicNeutralTaperFloor_));
         if( bndLayers.found("layerScaleRing2") )
             layerScaleRing2_ =
                 readScalar(bndLayers.lookup("layerScaleRing2"));
@@ -1123,6 +1129,22 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     rampSeedPoints_.setSize(bPoints.size(), false);
     rampSeedPoints_ = false;
     boolList zeroPts(bPoints.size(), false);
+
+    // Periodic/neutral seam taper: applied after scale fields are initialized.
+    label nPeriodicNeutralTaper = 0;
+    if( periodicNeutralTaperFloor_ > scalar(0.01) )
+    {
+        forAllConstIter(labelHashSet, blNeutralEdgePoints_, iter)
+        {
+            const label bpI = iter.key();
+            if( bpI < 0 || bpI >= label(layerScale_.size()) ) continue;
+            layerScale_[bpI] = Foam::min(layerScale_[bpI], periodicNeutralTaperFloor_);
+            if( blSuppressReason_[bpI] == 0 ) blSuppressReason_[bpI] = 8;
+            ++nPeriodicNeutralTaper;
+        }
+    }
+    Info << "Periodic neutral taper: floor=" << periodicNeutralTaperFloor_
+         << " points=" << nPeriodicNeutralTaper << endl;
 
     // Inject externally detected gap points (mesh point labels) into zeroPts.
     if( gapPoints_.size() > 0 )
@@ -1793,7 +1815,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 << "patches" << nl;
         const char* reasonNames[] = {
             "none","gap","transEdge","tripleJunction",
-            "corner","sharpEdge","blblSharp","blNoBLEdge"
+            "corner","sharpEdge","blblSharp","blNoBLEdge",
+            "periodicNeutral"
         };
         label nDumped = 0;
         forAll(bPtsAtlas, bpI)
@@ -1823,7 +1846,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 }
                 if( patchStr.size() == 0 ) patchStr = "unknown";
             }
-            const label rcClamped = (rc >= 0 && rc <= 7) ? rc : 0;
+            const label rcClamped = (rc >= 0 && rc <= 8) ? rc : 0;
             const label rampRing =
                 (blRampRing_.size() > bpI) ? blRampRing_[bpI] : 0;
             const label rampSeedRc =
@@ -2833,7 +2856,8 @@ void boundaryLayers::applyGapFaceRingExclusion() const
                  << "patches" << nl;
         const char* rnF[] = {
             "none","gap","transEdge","tripleJunction",
-            "corner","sharpEdge","blblSharp","blNoBLEdge"
+            "corner","sharpEdge","blblSharp","blNoBLEdge",
+            "periodicNeutral"
         };
         label nDumpedF = 0;
         forAll(bPtsF, bpI)
@@ -2865,7 +2889,7 @@ void boundaryLayers::applyGapFaceRingExclusion() const
                 }
                 if( pStr.size() == 0 ) pStr = "unknown";
             }
-            const label rcC = (rc >= 0 && rc <= 7) ? rc : 0;
+            const label rcC = (rc >= 0 && rc <= 8) ? rc : 0;
             const label rsc =
                 (blRampSeedReason_.size() > bpI) ? blRampSeedReason_[bpI] : 0;
             const label rscC = (rsc >= 0 && rsc <= 7) ? rsc : 0;
