@@ -43,12 +43,17 @@ int main(int argc, char *argv[])
 #   include "setRootCase.H"
 #   include "createTime.H"
 
-    cartesianMeshGenerator cmg(runTime);
+    // Heap-allocate generator to keep it off main's stack frame.
+    // Prevents stack-canary false-positives from large member fields.
+    cartesianMeshGenerator* cmgPtr = new cartesianMeshGenerator(runTime);
 
     Info<< "ExecutionTime = " << runTime.elapsedCpuTime() << " s\n"
         << "ClockTime = " << runTime.elapsedClockTime() << " s" << endl;
 
-    cmg.writeMesh();
+    cmgPtr->writeMesh();
+
+    delete cmgPtr;
+    cmgPtr = nullptr;
 
     Info << "End\n" << endl;
     return 0;
