@@ -1113,6 +1113,8 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
     blRampRing_.setSize(bPoints.size(), 0);
     blRampSeedReason_.setSize(bPoints.size(), 0);
     zeroDistPoints_.setSize(bPoints.size(), false);
+    rampSeedPoints_.setSize(bPoints.size(), false);
+    rampSeedPoints_ = false;
     boolList zeroPts(bPoints.size(), false);
 
     // Inject externally detected gap points (mesh point labels) into zeroPts.
@@ -1327,12 +1329,21 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
             // Default 0.3 (~73 degrees). Lower = more conservative.
             const bool isAcute = (minDot < blblCornerAcuteThreshold_ && minDot < GREAT);
 
-            zeroDistPoints_[bpI] = true;
-            layerScale_[bpI] = isAcute ? 0.0 : 0.15;
-            zeroPts[bpI] = true;
-            blblCornerPoints_.insert(bpI);
+            layerScale_[bpI] = isAcute ? scalar(0.0) : scalar(0.15);
+            zeroDistPoints_[bpI] = true;  // topology contract: always protected
+            zeroPts[bpI] = true;           // seeds ring propagation
             if( isAcute )
+            {
                 blblAcuteCornerPoints_.insert(bpI);
+                blSuppressReason_[bpI] = 3; // tripleJunction/acute
+            }
+            else
+            {
+                // Non-acute: member-field ramp seed -- excluded from blblJunctionPoints_
+                rampSeedPoints_[bpI] = true;
+                blSuppressReason_[bpI] = 4; // finite corner taper
+            }
+            blblCornerPoints_.insert(bpI);
             ++nTriple;
 
             # ifdef DEBUGLayer
@@ -1483,6 +1494,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         const scalar cosThresh = Foam::cos(blblFeatureAngleDeg_ * M_PI / 180.0);
         label nBLBL = 0;
         label nBLBLHard = 0;
+        label nRampSeedExcluded = 0;
         label nBLBLModerate = 0;
         label nBLBLMild = 0;
         const VRWGraph& ptFaces = mse.pointFaces();
@@ -1598,6 +1610,20 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                     else
                     { taperFloor = layerScaleRing2_; junctionClass = 2; ++nBLBLMild; }
                 }
+                // rampSeedPoints_ are finite-height BL+BL+neutral corner seeds,
+                // not hard BLBL junctions. Preserve their explicit corner policy
+                // and do not let the generic blblSharp block overwrite layerScale_,
+                // zeroPts, zeroDistPoints_, or blSuppressReason_.
+                if( bpI < label(rampSeedPoints_.size()) && rampSeedPoints_[bpI] )
+                {
+                    layerScale_[bpI] = Foam::min(layerScale_[bpI], scalar(0.15));
+                    zeroDistPoints_[bpI] = true;
+                    zeroPts[bpI] = true;
+                    blSuppressReason_[bpI] = 4;
+                    ++nRampSeedExcluded;
+                    continue;
+                }
+
                 layerScale_[bpI] = taperFloor;
                 blSuppressReason_[bpI] = 6;
                 if( taperFloor < 0.01 )
@@ -1620,6 +1646,7 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
         }
         Info << "BL/BL sharp-junction suppression: "
              << nBLBL << " points total"
+             << " rampSeedExcluded=" << nRampSeedExcluded
              << " (hard=" << nBLBLHard
              << " moderate=" << nBLBLModerate
              << " mild=" << nBLBLMild << ")"

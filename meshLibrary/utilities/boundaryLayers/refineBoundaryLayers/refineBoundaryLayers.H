@@ -152,6 +152,7 @@ class refineBoundaryLayers
 
         //- BL/BL junction points from boundaryLayers - used for wedge topology
         labelHashSet blblJunctionPoints_;
+        boolList rampSeedPoints_; //- finite ramp seeds excluded from junction caps
 
         //- Virtual topology face ring from boundaryLayers
         //- -1=untouched, 0/1/2=ring. BL/BL ramp skips handled faces.
@@ -485,6 +486,7 @@ public:
         //- set BL/BL junction points for wedge topology emission
         void setBlblJunctionPoints(const labelHashSet& pts);
         void setBlblAcuteCornerPoints(const labelHashSet& pts);
+        void setRampSeedPoints(const boolList& pts);
         void setVtFaceRing(const labelList& ring);
         void setAcuteCornerCapLayers(const bool cap) { acuteCornerCapLayers_ = cap; }
         //- set gap conflict arbitration data for local split-edge layer capping

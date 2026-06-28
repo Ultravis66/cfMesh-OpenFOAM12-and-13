@@ -38,6 +38,7 @@ SourceFiles
 #include "polyMeshGen.H"
 #include "Map.H"
 #include "HashSet.H"
+#include "boolList.H"
 #include "IOdictionary.H"
 #include "workflowControls.H"
 #include "meshQualityTypes.H"
@@ -86,6 +87,7 @@ class cartesianMeshGenerator
         //- BL/BL junction points passed from boundaryLayers to refineBoundaryLayers
         labelHashSet blblJunctionPoints_;
         labelHashSet blblAcuteCornerPoints_;
+        boolList blRampSeedPoints_; //- finite ramp seeds from BL+BL+neutral corners
         labelList vtFaceRing_;
         labelHashSet blGapActionPoints_;
         wordList     blGapLoserPatchNames_;

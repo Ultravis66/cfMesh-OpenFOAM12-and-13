@@ -737,6 +737,19 @@ void refineBoundaryLayers::setBlblAcuteCornerPoints
          << " acute BL+BL+neutral corner points" << endl;
 }
 
+void refineBoundaryLayers::setRampSeedPoints
+(
+    const boolList& pts
+)
+{
+    rampSeedPoints_ = pts;
+    label nRamp = 0;
+    forAll(rampSeedPoints_, i)
+        if( rampSeedPoints_[i] ) ++nRamp;
+    Info << "refineBoundaryLayers: received "
+         << nRamp
+         << " finite ramp seed points (excluded from junction caps)" << endl;
+}
 void refineBoundaryLayers::setVtFaceRing
 (
     const labelList& ring

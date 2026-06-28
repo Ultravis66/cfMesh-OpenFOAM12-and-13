@@ -334,6 +334,8 @@ bool refineBoundaryLayers::analyseLayers()
         {
             const label bpI = it.key();
             if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+            // Skip finite ramp seeds -- not hard junction caps
+            if( rampSeedPoints_.size() > bpI && rampSeedPoints_[bpI] ) continue;
             forAllRow(ptFaces, bpI, pfI)
             {
                 const label bfI = ptFaces(bpI, pfI);
@@ -408,6 +410,8 @@ bool refineBoundaryLayers::analyseLayers()
         {
             const label bpI = it.key();
             if( bpI < 0 || bpI >= label(ptFaces.size()) ) continue;
+            // Skip finite ramp seeds -- not hard junction caps
+            if( rampSeedPoints_.size() > bpI && rampSeedPoints_[bpI] ) continue;
             forAllRow(ptFaces, bpI, pfI)
             {
                 const label bfI = ptFaces(bpI, pfI);

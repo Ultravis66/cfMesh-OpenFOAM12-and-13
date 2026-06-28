@@ -76,6 +76,7 @@ class boundaryLayers
         //- shall the layers be terminated at concave edges (true)
         bool terminateLayersAtConcaveEdges_;
         mutable boolList zeroDistPoints_;
+        mutable boolList rampSeedPoints_; //- finite ramp seeds: not collapsed, seeds ring prop, excluded from blblJunctionPoints_
         mutable scalarField layerScale_;
 
         //- meshDict-configurable BL transition parameters
@@ -434,6 +435,10 @@ public:
         const labelHashSet& blblAcuteCornerPoints() const
         {
             return blblAcuteCornerPoints_;
+        }
+        const boolList& rampSeedPoints() const
+        {
+            return rampSeedPoints_;
         }
 
         //- Return per-boundary-point intended layer scale

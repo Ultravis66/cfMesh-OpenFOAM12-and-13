@@ -834,6 +834,7 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
     blblAcuteCornerPoints_ = bl.blblAcuteCornerPoints();
+    blRampSeedPoints_ = bl.rampSeedPoints();
     vtFaceRing_ = bl.vtFaceRing();
     blGapActionPoints_    = bl.gapPoints();
     blGapLoserPatchNames_ = bl.gapLoserPatchNames();
@@ -861,6 +862,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
         // Pass BL/BL junction points for wedge topology
         refLayers.setBlblJunctionPoints(blblJunctionPoints_);
         refLayers.setBlblAcuteCornerPoints(blblAcuteCornerPoints_);
+        refLayers.setRampSeedPoints(blRampSeedPoints_);
         refLayers.setVtFaceRing(vtFaceRing_);
         // Pass gap conflict data for Option B local split-edge layer capping.
         // Uses stable mesh-point labels + patch names -- no face-index mismatch.
@@ -1148,6 +1150,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
             // and must match the mesh state restored by this snapshot.
             labelHashSet blblJunctionPoints;
             labelHashSet blblAcuteCornerPoints;
+            boolList     rampSeedPoints;
             labelList    vtFaceRing;
 
             bool         valid;
@@ -1183,6 +1186,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
             snap.blblJunctionPoints = blblJunctionPoints_;
             snap.blblAcuteCornerPoints = blblAcuteCornerPoints_;
+            snap.rampSeedPoints = blRampSeedPoints_;
             snap.vtFaceRing = vtFaceRing_;
 
             snap.valid = true;
@@ -1227,6 +1231,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
             blblJunctionPoints_ = snap.blblJunctionPoints;
             blblAcuteCornerPoints_ = snap.blblAcuteCornerPoints;
+            blRampSeedPoints_ = snap.rampSeedPoints;
             vtFaceRing_ = snap.vtFaceRing;
 
             mesh_.clearAddressingData();
@@ -1458,6 +1463,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 (preRefBLSnap.blblJunctionPoints);
                             refLayers2.setBlblAcuteCornerPoints
                                 (preRefBLSnap.blblAcuteCornerPoints);
+                            refLayers2.setRampSeedPoints
+                                (preRefBLSnap.rampSeedPoints);
                             refLayers2.setVtFaceRing(preRefBLSnap.vtFaceRing);
 
                             if( haveClassifierPlans )
