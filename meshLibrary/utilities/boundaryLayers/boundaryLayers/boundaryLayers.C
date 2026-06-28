@@ -670,6 +670,7 @@ boundaryLayers::boundaryLayers
     useHardBLBLCapVertexInsertion_(false),
     useHardBLBLReducedCells_(false),
     hardBLBLCapScale_(0.10),
+    flowTerminationTaperFloor_(0.25),
     gapLoserRing1MaxLayers_(1),
     gapLoserRing2MaxLayers_(2)
 {
@@ -772,6 +773,12 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("layerScaleRing1") )
             layerScaleRing1_ =
                 readScalar(bndLayers.lookup("layerScaleRing1"));
+        if( bndLayers.found("flowTerminationTaperFloor") )
+            flowTerminationTaperFloor_ =
+                readScalar(bndLayers.lookup("flowTerminationTaperFloor"));
+        // Clamp after layerScaleRing1_ is known
+        flowTerminationTaperFloor_ =
+            Foam::max(scalar(0), Foam::min(layerScaleRing1_, flowTerminationTaperFloor_));
         if( bndLayers.found("layerScaleRing2") )
             layerScaleRing2_ =
                 readScalar(bndLayers.lookup("layerScaleRing2"));
@@ -1710,22 +1717,52 @@ void boundaryLayers::markConcaveEdgePoints(boolList& skipPoint) const
                 const label bpI = it();
                 if( blNoBlEdgePoints_.insert(bpI) )
                 {
-                    bool flowTermination = false;
-                    if( noBLPatchI >= 0 && noBLPatchI < label(patchNames_.size()) )
-                    {
-                        const word& noBLName = patchNames_[noBLPatchI];
-                        flowTermination =
-                            (noBLName == "inlet" || noBLName == "outlet");
-                    }
-                    //- Flow termination taper uses layerScaleRing1_ knob
-                    //- (meshDict: layerScaleRing1, default 0.25).
-                    //- Non-flow termination (symmetry etc) stays at 0.
+                    // Use patchRole_==1 (termination) not hardcoded names.
+                    // flowTerminationTaperFloor_ is separate from layerScaleRing1_
+                    // so ModerateBLBL and FlowBoundaryTermination tune independently.
+                    const bool explicitTermination =
+                        (noBLPatchI >= 0
+                      && noBLPatchI < label(patchRole_.size())
+                      && patchRole_[noBLPatchI] == 1);
                     const scalar blNoBLTaper =
-                        flowTermination ? layerScaleRing1_ : scalar(0.0);
-                    zeroDistPoints_[bpI] = (blNoBLTaper < 0.01);
-                    layerScale_[bpI] = blNoBLTaper;
-                    blSuppressReason_[bpI] = 7;
-                    zeroPts[bpI] = (blNoBLTaper < 0.01);
+                        explicitTermination ? flowTerminationTaperFloor_ : scalar(0.0);
+                    // Most-restrictive-wins: preserve structural zero anchors.
+                    // Gap(1), TripleJunction(3), blblSharp(6), and rampSeedPoints_
+                    // are structural topology contracts.
+                    // Generic corner(4)/sharpEdge(5) may reopen, but not ramp seeds.
+                    const scalar oldScale = layerScale_[bpI];
+                    const label priorReason =
+                        (blSuppressReason_.size() > bpI) ? blSuppressReason_[bpI] : 0;
+                    const bool priorZero =
+                        (oldScale < scalar(0.01))
+                     || zeroDistPoints_[bpI]
+                     || zeroPts[bpI];
+                    const bool isRampSeed =
+                        (bpI >= 0
+                      && bpI < label(rampSeedPoints_.size())
+                      && rampSeedPoints_[bpI]);
+                    const bool preserveStructuralZero =
+                        priorZero
+                     && (   priorReason == 1   // gap
+                         || priorReason == 3   // tripleJunction
+                         || priorReason == 6   // blblSharp
+                         || isRampSeed);       // finite ramp seed topology contract
+                    scalar finalScale = Foam::min(oldScale, blNoBLTaper);
+                    if( priorZero && !preserveStructuralZero )
+                        finalScale = blNoBLTaper;
+                    layerScale_[bpI] = finalScale;
+                    if( finalScale < scalar(0.01) || preserveStructuralZero )
+                    {
+                        zeroDistPoints_[bpI] = true;
+                        zeroPts[bpI] = true;
+                    }
+                    else
+                    {
+                        zeroDistPoints_[bpI] = false;
+                        zeroPts[bpI] = false;
+                    }
+                    if( !preserveStructuralZero )
+                        blSuppressReason_[bpI] = 7;
                 }
                 // Store BL-side patch for patch-constrained projection
                 if( !blNoBlPointPatch_.found(bpI) )

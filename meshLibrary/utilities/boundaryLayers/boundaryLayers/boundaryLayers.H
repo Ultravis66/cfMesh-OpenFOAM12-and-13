@@ -198,6 +198,7 @@ class boundaryLayers
         bool useHardBLBLCapVertexInsertion_; // gate for step4 real vertices
         bool useHardBLBLReducedCells_;        // gate for reduced topology
         scalar hardBLBLCapScale_;  // meshDict: hardBLBLCapScale, default 0.10
+        scalar flowTerminationTaperFloor_; // meshDict: flowTerminationTaperFloor, default 0.25
         mutable Map<label> blCapCellEndwallPatch_;
         mutable Map<label> blCapCellBladePatch_;
         mutable Map<label> blCapCellEndwallPKey_;
