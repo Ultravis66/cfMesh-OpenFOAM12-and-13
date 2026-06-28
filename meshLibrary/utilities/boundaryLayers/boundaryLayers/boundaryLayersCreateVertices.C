@@ -1366,7 +1366,7 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
     mse.boundaryFaces();
     mse.pointNormals();
     mse.pointFaces();
-    mse.pointPoints();
+    const VRWGraph& pointPoints = mse.pointPoints();
 
     pointFieldPMG& points = mesh_.points();
     boolList treatPatches(mesh_.boundaries().size());
@@ -1711,6 +1711,16 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             points[pLabel] = points[bPoints[bpI]];
             points[bPoints[bpI]] = p;
         }
+    }
+
+    // Contact-line height limiter: runs after coordinate swap,
+    // before rollback. Detects and limits local height spikes/collapses
+    // along contact-line points. Diagnostic atlas always written;
+    // point movement gated by useContactLineHeightSmoother.
+    if( useContactLineHeightSmoother_ || writeContactLineHeightSmootherAtlas_ )
+    {
+        for( label iter=0; iter<contactLineSmootherIterations_; ++iter )
+            smoothContactLineHeights("pass2_iter" + Foam::name(iter), bPoints, pointPoints);
     }
 
     // Local topology-aware layer rollback with minimum-height floor.

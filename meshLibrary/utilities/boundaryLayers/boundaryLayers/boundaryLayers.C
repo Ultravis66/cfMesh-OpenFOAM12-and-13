@@ -659,6 +659,13 @@ boundaryLayers::boundaryLayers
     gapLoserPatchNames_(),
     gapLoserRing1Suppress_(true),
     useContactLinePolicy_(false),
+    useContactLineHeightSmoother_(false),
+    writeContactLineHeightSmootherAtlas_(false),
+    contactLineSmootherMaxGrowth_(1.5),
+    contactLineSmootherMinCollapse_(0.35),
+    contactLineSmootherMaxMoveFraction_(0.50),
+    contactLineSmootherIterations_(2),
+    contactLineSmootherMinHeight_(1e-8),
     useHardBLBLCapCells_(false),
     useHardBLBLCapVertexInsertion_(false),
     useHardBLBLReducedCells_(false),
@@ -701,6 +708,28 @@ boundaryLayers::boundaryLayers
         if( bndLayers.found("useContactLinePolicy") )
             useContactLinePolicy_ =
                 Switch(bndLayers.lookup("useContactLinePolicy"));
+        if( bndLayers.found("useContactLineHeightSmoother") )
+            useContactLineHeightSmoother_ =
+                Switch(bndLayers.lookup("useContactLineHeightSmoother"));
+        if( bndLayers.found("writeContactLineHeightSmootherAtlas") )
+            writeContactLineHeightSmootherAtlas_ =
+                Switch(bndLayers.lookup("writeContactLineHeightSmootherAtlas"));
+        if( bndLayers.found("contactLineSmootherMaxGrowth") )
+            contactLineSmootherMaxGrowth_ =
+                readScalar(bndLayers.lookup("contactLineSmootherMaxGrowth"));
+        if( bndLayers.found("contactLineSmootherMinCollapse") )
+            contactLineSmootherMinCollapse_ =
+                readScalar(bndLayers.lookup("contactLineSmootherMinCollapse"));
+        if( bndLayers.found("contactLineSmootherMaxMoveFraction") )
+            contactLineSmootherMaxMoveFraction_ =
+                readScalar(bndLayers.lookup("contactLineSmootherMaxMoveFraction"));
+        if( bndLayers.found("contactLineSmootherIterations") )
+            contactLineSmootherIterations_ =
+                readLabel(bndLayers.lookup("contactLineSmootherIterations"));
+        if( bndLayers.found("contactLineSmootherMinHeight") )
+            contactLineSmootherMinHeight_ =
+                readScalar(bndLayers.lookup("contactLineSmootherMinHeight"));
+
         if( bndLayers.found("useHardBLBLCapCells") )
             useHardBLBLCapCells_ =
                 Switch(bndLayers.lookup("useHardBLBLCapCells"));

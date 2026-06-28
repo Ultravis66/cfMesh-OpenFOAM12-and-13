@@ -269,6 +269,7 @@ $(boundaryLayers)/boundaryLayerCells.C
 $(boundaryLayers)/boundaryLayersCheckTopologyOfBndFaces.C
 $(boundaryLayers)/boundaryLayersWrapperLayer.C
 $(boundaryLayers)/boundaryLayersContactLineAtlas.C
+$(boundaryLayers)/boundaryLayersContactLineSmoother.C
 $(extrudeLayer)/extrudeLayer.C
 $(detectBoundaryLayers)/detectBoundaryLayers.C
 $(detectBoundaryLayers)/detectBoundaryLayersFunctions.C

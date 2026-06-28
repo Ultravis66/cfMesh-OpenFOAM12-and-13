@@ -210,6 +210,14 @@ class boundaryLayers
         mutable std::map<std::pair<label,label>, label> capSideVrtMap_;
         //- Gate for contact-line policy (meshDict: useContactLinePolicy)
         bool useContactLinePolicy_;
+        bool useContactLineHeightSmoother_;
+        bool writeContactLineHeightSmootherAtlas_;
+        scalar contactLineSmootherMaxGrowth_;
+        scalar contactLineSmootherMinCollapse_;
+        scalar contactLineSmootherMaxMoveFraction_;
+        label  contactLineSmootherIterations_;
+        scalar contactLineSmootherMinHeight_;
+
         mutable labelHashSet blblCornerPoints_;
         mutable labelHashSet blblAcuteCornerPoints_;
 
@@ -537,6 +545,8 @@ public:
         //- Build per-point contact class from edge-based atlas
         //- Call before blblSharp suppression block
         void buildBLContactPointPolicy() const;
+        void smoothContactLineHeights(const word& passName, const labelList& bPoints, const VRWGraph& pointPoints);
+
         //- Build HardBLBL cap cell candidate map (no geometry change)
         void buildBLCapCellCandidates() const;
         void writeCapCellGeometryDryRun() const;
