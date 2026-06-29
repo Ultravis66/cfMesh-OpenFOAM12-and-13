@@ -1,4 +1,3 @@
-cat > ~/rotor37_mesh/system/meshDict << 'MESHDICT'
 FoamFile
 {
     version   2.0;
@@ -23,7 +22,7 @@ geometryPreprocessing
     active                true;
     reportOnly            false;
     weldNearPoints        false;
-    selectiveWeld         false;   // must stay false -- weld breaks surface connectivity
+    selectiveWeld         false;
     weldTolerance         1e-4;
     autoScaleWithCellSize false;
     minFeatureToCellRatio 0.20;
@@ -58,18 +57,15 @@ localRefinement
 // ------------------------------------------------------------
 boundaryLayers
 {
-    nLayers 0;                              // global default -- overridden per patch below
-    terminationPatches (inlet outlet);      // no BL on inlet/outlet
+    nLayers 0;
+    terminationPatches (inlet outlet);
 
     // -- BL/BL junction detection --------------------------------
-    // Detects points where two BL patches meet at acute angles.
-    // Controls acute-corner taper to avoid zero-thickness extrusion.
     blblFeatureAngleDeg      35.0;
     blblCornerAcuteThreshold 0.5;
     lockAcuteCornerPoints    true;
 
-    // Acute corner layerScale taper (6-ring, seeded from blblAcuteCornerPoints_)
-    // Ring 0 = corner point (suppressed), ring 6 = full BL thickness
+    // Acute corner layerScale taper
     acuteCornerRing0  0.00;
     acuteCornerRing1  0.02;
     acuteCornerRing2  0.05;
@@ -84,9 +80,7 @@ boundaryLayers
     optimiseLayerBuffer  false;
     postRefineBLOptimisation true;
 
-    // -- Virtual topology: triple-junction suppression -----------
-    // Suppresses BL extrusion at hub/shroud-periodic-blade
-    // triple-junction corners using face-ring exclusion zones.
+    // -- Virtual topology ----------------------------------------
     virtualTopologyExclusion true;
     virtualTopoRing0          0.05;
     virtualTopoRing1          0.15;
@@ -98,8 +92,6 @@ boundaryLayers
     tripleJunctionNeutralPatches   (periodic_1 periodic_2);
 
     // -- Gap/proximity detection ---------------------------------
-    // Suppresses BL where blade-tip clearance is too small for
-    // full extrusion. Prevents collapsed cells near shroud.
     detectGaps       true;
     gapThreshold     1e-5;
     gapPatchPairs
@@ -116,33 +108,22 @@ boundaryLayers
     gapFaceRing2Scale    0.20;
 
     // -- Periodic transition protection --------------------------
-    // Prevents unsafe face flips at periodic-patch BL transitions.
     periodicTransitionProtection true;
     periodicTransitionSkipFlip   true;
     periodicTransitionPatches    (periodic_1 periodic_2);
 
-    // -- Surface-constrained optimizer (Layer 3) -----------------
-    // Re-projects single-patch boundary points onto their STL patch
-    // during volume optimization, preventing drift accumulation.
-    // Two-phase: serial octree pre-pass + parallel write-back.
-    // Set false to disable and revert to unconstrained optimization.
+    // -- Surface-constrained optimizer ---------------------------
     constrainOptimizerBoundaryMotion true;
 
-    // -- Post-optimizer incremental re-projection ----------------
-    // After optimizeMeshFV, corrects residual drift using limited
-    // displacement passes. Only moves points farther than
-    // postBLSnapTolerance from the STL.
-    postOptimizerReprojStepFraction  0.005;  // fraction of drift corrected per pass
-    postOptimizerReprojPasses        10;     // max passes
+    // -- Post-optimizer re-projection ----------------------------
+    postOptimizerReprojStepFraction  0.005;
+    postOptimizerReprojPasses        10;
 
     // -- Pre-BL snap ---------------------------------------------
-    // Re-projects surface after volume optimisation, before BL
-    // extrusion. Uses displacement filter to avoid perturbing
-    // already-good points. Falls back gracefully if mesh worsens.
     postBLSnap                           true;
-    postBLSnapTolerance                  1e-4;   // min drift to trigger snap (m)
-    postBLSnapAllowedPyramidIncrease     25;     // absolute pyramid increase allowed
-    postBLSnapAllowedPyramidIncreaseFraction 0.001; // fractional pyramid increase allowed
+    postBLSnapTolerance                  1e-4;
+    postBLSnapAllowedPyramidIncrease     25;
+    postBLSnapAllowedPyramidIncreaseFraction 0.001;
 
     // -- Snapping controls ---------------------------------------
     cornerSnapRelaxation  0.25;
@@ -152,13 +133,39 @@ boundaryLayers
     snapMinPyramidHeight  1e-10;
 
     // -- BL thickness ramp ---------------------------------------
-    // Smooth 6-ring taper from patch edge to full BL thickness.
-    layerScaleRing1  0.10;
-    layerScaleRing2  0.25;
+    layerScaleRing1  0.25;
+    layerScaleRing2  0.50;
     layerScaleRing3  0.45;
     layerScaleRing4  0.65;
     layerScaleRing5  0.80;
     layerScaleRing6  1.00;
+
+    // -- Contact-line policies (Jun 28 2026) ---------------------
+    // FlowBoundaryTermination: separate taper from layerScaleRing1
+    flowTerminationTaperFloor 0.25;
+
+    // PeriodicSeam: gentle taper at blade/periodic junctions
+    periodicNeutralTaperFloor 0.20;
+
+    // -- Contact-line height smoother ----------------------------
+    useContactLinePolicy             true;
+    useContactLineHeightSmoother     true;
+    writeContactLineHeightSmootherAtlas false;
+    contactLineSmootherMaxGrowth     1.5;
+    contactLineSmootherMinCollapse   0.05;
+    contactLineSmootherMaxMoveFraction 0.25;
+    contactLineSmootherIterations    1;
+    contactLineSmootherMinHeight     1e-8;
+
+    // -- Hard BL/BL cap cells ------------------------------------
+    useHardBLBLCapCells          true;
+    useHardBLBLCapVertexInsertion true;
+    useHardBLBLReducedCells      true;
+    useHardBLBLAsymmetricCapFaces false;
+    hardBLBLCapScale             0.10;
+
+    // -- Pre-refBL snapshot (two-pass repair) --------------------
+    preRefBLSnapshot true;
 
     thicknessRatio          1.3;
     maxFirstLayerThickness  1e-4;
@@ -200,5 +207,3 @@ renameBoundary
         blade_4    { newName blade_4;    type wall;  }
     }
 }
-MESHDICT
-echo "meshDict written"
