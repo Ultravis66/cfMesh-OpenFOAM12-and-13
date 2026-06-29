@@ -141,8 +141,15 @@ void boundaryLayers::smoothContactLineHeights
         if( clsIt != blContactPointClass_.end() ) cls = clsIt();
 
         // Zero-seed anchor: don't lift truly collapsed singular points
+        // rampSeedPoints_ have zeroDistPoints_=true for topology contract
+        // but are finite-height -- they CAN be lifted by pinch correction.
+        const bool isRampSeed =
+            (bpI >= 0
+          && bpI < label(rampSeedPoints_.size())
+          && rampSeedPoints_[bpI]);
         const bool isZeroSeed =
-            bpI < label(zeroDistPoints_.size()) && zeroDistPoints_[bpI];
+            (bpI < label(zeroDistPoints_.size()) && zeroDistPoints_[bpI])
+            && !isRampSeed;
 
         // Compute target
         scalar hTarget = h;

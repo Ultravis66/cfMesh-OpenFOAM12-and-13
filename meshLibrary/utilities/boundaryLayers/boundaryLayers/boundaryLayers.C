@@ -556,6 +556,9 @@ void boundaryLayers::findPatchesToBeTreatedTogether()
     mesh_.write();
     # endif
 
+    // Populate blNeutralEdgePoints_ so periodic seam taper is available
+    // during createNewVertices() -> markConcaveEdgePoints().
+    detectBLNoBlTransitionEdges();
     geometryAnalysed_ = true;
 }
 
