@@ -135,6 +135,44 @@ point boundaryLayers::createNewVertex
     label  bd_branch = -1;   // 0=edge size1, 2=corner size2, 3=multipatch, 9=interior
     scalar bd_edgeDotNormal = -2.0;
     scalar bd_rawDist = -1.0;
+    // BLNOBLPATHDIAG: classify which createNewVertex path the
+    // BL/no-BL termination points actually take. Diagnostic only.
+    if( blNoBlEdgePoints_.found(bpI) )
+    {
+        DynList<label> pathDiagOtherPatches;
+        forAllRow(pPatches, bpI, patchI)
+        {
+            const label patchLabel = pPatches(bpI, patchI);
+            if( !treatPatches[patchLabel] )
+                pathDiagOtherPatches.appendIfNotIn(patchLabel);
+        }
+
+        label pathDiagTermRoleCount = 0;
+        forAll(pathDiagOtherPatches, opI)
+        {
+            const label op = pathDiagOtherPatches[opI];
+            if( op >= 0
+             && op < label(patchRole_.size())
+             && patchRole_[op] == 1 )
+            {
+                ++pathDiagTermRoleCount;
+            }
+        }
+
+        const scalar lsThis =
+            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+
+        Info << "BLNOBLPATHDIAG bpI=" << bpI
+             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+             << " edgeNode=" << ((patchVertex[bpI] & EDGENODE) ? 1 : 0)
+             << " otherPatchSize=" << pathDiagOtherPatches.size()
+             << " termRoleCount=" << pathDiagTermRoleCount
+             << " layerScale=" << lsThis
+             << " blblCorner=" << (blblCornerPoints_.found(bpI) ? 1 : 0)
+             << " blblJunction=" << (blblJunctionPoints_.found(bpI) ? 1 : 0)
+             << endl;
+    }
+
     if( patchVertex[bpI] & EDGENODE )
     {
         # ifdef DEBUGLayer
@@ -365,7 +403,7 @@ point boundaryLayers::createNewVertex
                     static label nRampClampDiag = 0;
                     const scalar lsThis =
                         (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
-                    if( nRampClampDiag < 200 )
+                    if( nRampClampDiag < 5000 )
                     {
                         ++nRampClampDiag;
                         Info << "RAMPCLAMPDIAG bpI=" << bpI
@@ -438,6 +476,76 @@ point boundaryLayers::createNewVertex
                     const vector trueN = pNormals[bpI];
                     const scalar mn = mag(normal)*mag(trueN) + VSMALL;
                     bd_edgeDotNormal = (normal & trueN)/mn;
+                }
+
+                // 2-patch BL/no-BL flow-termination corner.
+                // The raw edge-colinear corner distance can be too large
+                // compared with the surrounding BL height field. Clamp it
+                // to a finite neighboring baseline before common layerScale_
+                // multiplication is applied below.
+                bool cornerFlowRampZone = false;
+                forAll(otherPatches, opI)
+                {
+                    const label op = otherPatches[opI];
+                    if( op >= 0
+                     && op < label(patchRole_.size())
+                     && patchRole_[op] == 1 )
+                    {
+                        cornerFlowRampZone = true;
+                        break;
+                    }
+                }
+
+                if( cornerFlowRampZone )
+                {
+                    scalar neighProj = VGREAT;
+                    scalar neighLen  = VGREAT;
+
+                    forAllRow(pointPoints, bpI, ppI)
+                    {
+                        const label bpJ = pointPoints(bpI, ppI);
+                        if( bpJ < 0 || bpJ >= label(bPoints.size()) ) continue;
+                        if( patchVertex[bpJ] ) continue;
+
+                        const vector vec = points[bPoints[bpJ]] - p;
+                        const scalar halfLen = 0.5 * mag(vec);
+                        if( halfLen > VSMALL && halfLen < neighLen )
+                            neighLen = halfLen;
+
+                        const scalar proj = 0.5 * mag(vec & normal);
+                        if( halfLen > VSMALL
+                         && proj > scalar(100) * VSMALL
+                         && proj > scalar(1e-4) * halfLen
+                         && proj < neighProj )
+                        {
+                            neighProj = proj;
+                        }
+                    }
+
+                    const scalar neighDist =
+                        (neighProj < VGREAT) ? neighProj : neighLen;
+
+                    const scalar distBeforeCornerClamp = dist;
+                    if( neighDist < VGREAT )
+                        dist = Foam::min(dist, neighDist);
+
+                    static label nCornerClampDiag = 0;
+                    if( nCornerClampDiag < 200 )
+                    {
+                        ++nCornerClampDiag;
+                        const scalar lsThis =
+                            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+
+                        Info << "CORNERCLAMPDIAG bpI=" << bpI
+                             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " distBefore=" << distBeforeCornerClamp
+                             << " neighProj=" << neighProj
+                             << " neighLen=" << neighLen
+                             << " neighDist=" << neighDist
+                             << " distAfter=" << dist
+                             << endl;
+                    }
                 }
             }
         }
@@ -760,9 +868,34 @@ point boundaryLayers::createNewVertex
             const label faceI = pFaces(bpI, pfI);
             const label patchI = boundaryFacePatches[faceI];
             if( patchI < 0 || patchI >= label(patchNames_.size()) ) continue;
-            // Only check neutral patches (patchRole_ == 2)
+            // Only check true neutral guard patches (patchRole_ == 2).
+            // Periodic patches are topological continuations, not guard planes.
+            // Applying this crossing clamp to blade/periodic seam points
+            // creates false positives and collapses valid BL extrusion.
             if( patchRole_.size() <= patchI ) continue;
             if( patchRole_[patchI] != 2 ) continue;
+
+            bool isPeriodicPatch = false;
+            if( patchI < label(patchNames_.size()) )
+            {
+                const word& pName = patchNames_[patchI];
+                if( pName.find("periodic") != std::string::npos )
+                    isPeriodicPatch = true;
+            }
+            if( isPeriodicPatch )
+            {
+                static label nSkipPeriodicGuardDiag = 0;
+                if( nSkipPeriodicGuardDiag < 200 )
+                {
+                    ++nSkipPeriodicGuardDiag;
+                    Info << "SKIPPERIODICNEUTRALGUARD bpI=" << bpI
+                         << " patchI=" << patchI
+                         << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                         << endl;
+                }
+                continue;
+            }
+
             const face& f = bFaces[faceI];
             vector fn = vector::zero;
             const point& fp0 = points[f[0]];
@@ -781,6 +914,7 @@ point boundaryLayers::createNewVertex
                 // zero-thickness BL cells and astronomical aspect ratios.
                 scalar localDist = dist;
                 point candidate = newP;
+                bool bisectAccepted = false;
                 for(label attempt=0; attempt<6; ++attempt)
                 {
                     localDist *= scalar(0.5);
@@ -789,8 +923,28 @@ point boundaryLayers::createNewVertex
                     if( s0*sCand >= scalar(0) )
                     {
                         newP = candidate;
+                        bisectAccepted = true;
                         break;
                     }
+                }
+                if( !bisectAccepted )
+                {
+                    static label nBisectFailDiag = 0;
+                    if( nBisectFailDiag < 500 )
+                    {
+                        ++nBisectFailDiag;
+                        const scalar lsThis =
+                            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+                        Info << "BISECTFAILSUPPRESS bpI=" << bpI
+                             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " dist=" << dist
+                             << " localDist=" << localDist
+                             << " finalHBeforeSuppress=" << mag(candidate - p)
+                             << " -- setting newP=p"
+                             << endl;
+                    }
+                    newP = p;
                 }
                 break;
             }
@@ -836,6 +990,7 @@ point boundaryLayers::createNewVertex
                 // zero-thickness BL cells and astronomical aspect ratios.
                 scalar localDist = dist;
                 point candidate = newP;
+                bool bisectAccepted = false;
                 for(label attempt=0; attempt<6; ++attempt)
                 {
                     localDist *= scalar(0.5);
@@ -844,8 +999,28 @@ point boundaryLayers::createNewVertex
                     if( s0*sCand >= scalar(0) )
                     {
                         newP = candidate;
+                        bisectAccepted = true;
                         break;
                     }
+                }
+                if( !bisectAccepted )
+                {
+                    static label nBisectFailDiag = 0;
+                    if( nBisectFailDiag < 500 )
+                    {
+                        ++nBisectFailDiag;
+                        const scalar lsThis =
+                            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+                        Info << "BISECTFAILSUPPRESS bpI=" << bpI
+                             << " x=" << p.x() << " y=" << p.y() << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " dist=" << dist
+                             << " localDist=" << localDist
+                             << " finalHBeforeSuppress=" << mag(candidate - p)
+                             << " -- setting newP=p"
+                             << endl;
+                    }
+                    newP = p;
                 }
                 break;
             }
