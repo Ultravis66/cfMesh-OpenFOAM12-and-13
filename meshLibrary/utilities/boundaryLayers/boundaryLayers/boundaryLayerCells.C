@@ -939,6 +939,20 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                                 cellFaces.append(validSideF);
                                 continue;
                             }
+                            if( preEs==EDGE_ASYM_STITCH )
+                            {
+                                //- Emit the two pre-computed, pre-validated stitch
+                                //- triangles (same stored labels used by whichever
+                                //- side -- this face or neighbor -- looks them up
+                                //- for this edgeI, guaranteeing matching internal
+                                //- boundary labels on both cells).
+                                if( !edgeStitchTriA.found(edgeI)
+                                 || !edgeStitchTriB.found(edgeI) )
+                                { internalSideMismatch=true; break; }
+                                cellFaces.append(edgeStitchTriA[edgeI]);
+                                cellFaces.append(edgeStitchTriB[edgeI]);
+                                continue;
+                            }
                             //- EDGE_QUAD: fall through to sideOK append
                         }
                         if( sideOK )
