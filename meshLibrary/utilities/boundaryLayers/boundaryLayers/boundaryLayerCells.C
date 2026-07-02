@@ -127,6 +127,10 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     enum EdgeState { EDGE_QUAD=0, EDGE_DROP=1, EDGE_TRIANGLE=2, EDGE_UNSAFE=3, EDGE_ASYM_STITCH=4 };
     Map<label> edgeStateMap;
     Map<DynList<label>> edgeCanonicalFace;
+    // Diagnostic/staging storage for EDGE_ASYM_STITCH candidates.
+    // Not used by downstream topology until the activation patch.
+    Map<DynList<label>> edgeStitchTriA;
+    Map<DynList<label>> edgeStitchTriB;
     boolList faceReducible(bFaces.size(), false);
     label nEdgeQuad=0,nEdgeDrop=0,nEdgeTriangle=0,nEdgeUnsafe=0;
     label nFaceReduce=0,nFaceFallbackTri=0,nFaceFallbackUnsafe=0;
@@ -175,6 +179,40 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             if(!found) return false;
         }
         return true;
+    };
+
+    // EDGE_ASYM_STITCH: build two triangles that tile a quad-vs-degenerate
+    // side-face pair. b0,b1 is the shared base edge (identical on both
+    // sides by construction). t0,t1 are the QUAD side's own two cap
+    // vertices (t1 corresponds to b1, t0 corresponds to b0). Always
+    // computed from the quad side's own labels, in a fixed deterministic
+    // order, so both adjacent cells produce byte-identical triangles
+    // regardless of which one is doing the computing.
+    auto buildStitchTriangles =
+    [](const label b0, const label b1, const label t0, const label t1,
+       DynList<label>& triA, DynList<label>& triB)
+    {
+        triA.clear();
+        triA.append(b0); triA.append(b1); triA.append(t1);
+        triB.clear();
+        triB.append(b0); triB.append(t1); triB.append(t0);
+    };
+
+    // Geometric sanity check for a stitch triangle: unique labels,
+    // nonzero area. Used before ever accepting a stitch triangle into
+    // a cell's face list.
+    auto validStitchTri =
+    [&](const DynList<label>& tri) -> bool
+    {
+        if( tri.size() != 3 ) return false;
+        if( tri[0]==tri[1] || tri[1]==tri[2] || tri[0]==tri[2] ) return false;
+        if( tri[0] < 0 || tri[0] >= label(mesh_.points().size()) ) return false;
+        if( tri[1] < 0 || tri[1] >= label(mesh_.points().size()) ) return false;
+        if( tri[2] < 0 || tri[2] >= label(mesh_.points().size()) ) return false;
+        const point& p0 = mesh_.points()[tri[0]];
+        const point& p1 = mesh_.points()[tri[1]];
+        const point& p2 = mesh_.points()[tri[2]];
+        return mag((p1-p0)^(p2-p0)) > VSMALL;
     };
 
     //- ASYMMETRIC EDGE ATLAS: diagnostic for EDGE_UNSAFE cases
@@ -249,15 +287,37 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 else
                 {
                     estate=EDGE_UNSAFE; ++nEdgeUnsafe;
-                    // Diagnostic only: identify quad-vs-degenerate size
-                    // mismatches (our target stitch pattern) without
-                    // changing estate or any downstream behavior.
+                    // Quad-vs-degenerate size mismatch: our target stitch
+                    // pattern. estate stays EDGE_UNSAFE for now (mutual
+                    // reducibility / cell builder behavior unchanged).
+                    // We only compute and store the candidate triangles
+                    // here so a later, separate activation step can use
+                    // them without needing to redo this classification.
                     const bool isQuadVsDegenerate =
                         (sfThis.size()==4 && sfNei.size()==2)
                      || (sfThis.size()==2 && sfNei.size()==4);
                     if( isQuadVsDegenerate )
                     {
                         ++nAsymStitchCandidate;
+                        // sfThis/sfNei built via buildSideFaceTP(b0,b1,t0,t1,sf)
+                        // which appends in order [b0,b1,t1,t0]. The quad
+                        // side is whichever has size 4.
+                        const DynList<label>& quadSf =
+                            (sfThis.size()==4) ? sfThis : sfNei;
+                        if( quadSf.size() == 4 )
+                        {
+                            const label qb0 = quadSf[0];
+                            const label qb1 = quadSf[1];
+                            const label qt1 = quadSf[2];
+                            const label qt0 = quadSf[3];
+                            DynList<label> triA, triB;
+                            buildStitchTriangles(qb0,qb1,qt0,qt1,triA,triB);
+                            if( validStitchTri(triA) && validStitchTri(triB) )
+                            {
+                                edgeStitchTriA.insert(edgeIA, triA);
+                                edgeStitchTriB.insert(edgeIA, triB);
+                            }
+                        }
                     }
                 }
                 edgeStateMap.insert(edgeIA, estate);
@@ -333,6 +393,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << " TRIANGLE=" << nEdgeTriangle
              << " UNSAFE=" << nEdgeUnsafe
              << " ASYMSTITCHCANDIDATE_TOTAL=" << nAsymStitchCandidate
+             << " ASYMSTITCH_STORED=" << edgeStitchTriA.size()
              << endl;
 
         forAll(bFaces, bfI)
