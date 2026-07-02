@@ -910,22 +910,50 @@ point boundaryLayers::createNewVertex
             const scalar s1 = (newP - fc) & fn;
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                // Bisect extrusion distance -- hard clamp to p creates
-                // zero-thickness BL cells and astronomical aspect ratios.
+                // Analytic clamp: the constraint
+                // (p - d*normal - fc) & fn == 0 is linear in d.
+                // Solve the exact crossing distance instead of blindly
+                // halving six times. But do not accept epsilon-height
+                // clamps; those become sliver cells. If the safe crossing
+                // distance is too small, leave bisectAccepted=false and
+                // let the existing suppress-to-surface path handle it.
                 scalar localDist = dist;
                 point candidate = newP;
                 bool bisectAccepted = false;
-                for(label attempt=0; attempt<6; ++attempt)
+                scalar dCross = -VGREAT;
+                const scalar nDotFn = normal & fn;
+                const scalar minCross =
+                    Foam::max(scalar(0.02) * dist, scalar(100) * VSMALL);
+
+                if( mag(nDotFn) > VSMALL )
                 {
-                    localDist *= scalar(0.5);
-                    candidate = p - localDist*normal;
-                    const scalar sCand = (candidate - fc) & fn;
-                    if( s0*sCand >= scalar(0) )
+                    dCross = s0 / nDotFn;
+                    if( dCross > minCross && dCross < dist )
                     {
-                        newP = candidate;
-                        bisectAccepted = true;
-                        break;
+                        localDist = scalar(0.9) * dCross;
+                        candidate = p - localDist*normal;
+                        const scalar sCand = (candidate - fc) & fn;
+                        if( s0*sCand >= scalar(0) )
+                        {
+                            newP = candidate;
+                            bisectAccepted = true;
+                        }
                     }
+                }
+
+                static label nAnalyticClampDiag = 0;
+                if( nAnalyticClampDiag < 300 )
+                {
+                    ++nAnalyticClampDiag;
+                    Info << "ANALYTICCLAMPDIAG bpI=" << bpI
+                         << " nDotFn=" << nDotFn
+                         << " s0=" << s0
+                         << " dist=" << dist
+                         << " dCross=" << dCross
+                         << " minCross=" << minCross
+                         << " accepted=" << bisectAccepted
+                         << " localDist=" << localDist
+                         << endl;
                 }
                 if( !bisectAccepted )
                 {
@@ -986,22 +1014,50 @@ point boundaryLayers::createNewVertex
             // s1 < 0 means extruded point crossed to wrong side
             if( mag(s0) > SMALL && s0*s1 < scalar(0) )
             {
-                // Bisect extrusion distance -- hard clamp to p creates
-                // zero-thickness BL cells and astronomical aspect ratios.
+                // Analytic clamp: the constraint
+                // (p - d*normal - fc) & fn == 0 is linear in d.
+                // Solve the exact crossing distance instead of blindly
+                // halving six times. But do not accept epsilon-height
+                // clamps; those become sliver cells. If the safe crossing
+                // distance is too small, leave bisectAccepted=false and
+                // let the existing suppress-to-surface path handle it.
                 scalar localDist = dist;
                 point candidate = newP;
                 bool bisectAccepted = false;
-                for(label attempt=0; attempt<6; ++attempt)
+                scalar dCross = -VGREAT;
+                const scalar nDotFn = normal & fn;
+                const scalar minCross =
+                    Foam::max(scalar(0.02) * dist, scalar(100) * VSMALL);
+
+                if( mag(nDotFn) > VSMALL )
                 {
-                    localDist *= scalar(0.5);
-                    candidate = p - localDist*normal;
-                    const scalar sCand = (candidate - fc) & fn;
-                    if( s0*sCand >= scalar(0) )
+                    dCross = s0 / nDotFn;
+                    if( dCross > minCross && dCross < dist )
                     {
-                        newP = candidate;
-                        bisectAccepted = true;
-                        break;
+                        localDist = scalar(0.9) * dCross;
+                        candidate = p - localDist*normal;
+                        const scalar sCand = (candidate - fc) & fn;
+                        if( s0*sCand >= scalar(0) )
+                        {
+                            newP = candidate;
+                            bisectAccepted = true;
+                        }
                     }
+                }
+
+                static label nAnalyticClampDiag = 0;
+                if( nAnalyticClampDiag < 300 )
+                {
+                    ++nAnalyticClampDiag;
+                    Info << "ANALYTICCLAMPDIAG bpI=" << bpI
+                         << " nDotFn=" << nDotFn
+                         << " s0=" << s0
+                         << " dist=" << dist
+                         << " dCross=" << dCross
+                         << " minCross=" << minCross
+                         << " accepted=" << bisectAccepted
+                         << " localDist=" << localDist
+                         << endl;
                 }
                 if( !bisectAccepted )
                 {
