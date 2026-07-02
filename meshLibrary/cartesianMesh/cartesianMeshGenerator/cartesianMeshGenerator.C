@@ -3440,7 +3440,7 @@ void cartesianMeshGenerator::optimiseFinalMesh()
 
         const pointField pointsBefore(mesh_.points());
 
-        label dirtyRecoverableMaxNegVol = 5;
+        label dirtyRecoverableMaxNegVol = 0;
         if( meshDict_.found("dirtyRecoverableMaxNegVol") )
             dirtyRecoverableMaxNegVol =
                 readLabel(meshDict_.lookup("dirtyRecoverableMaxNegVol"));
@@ -4377,7 +4377,7 @@ void cartesianMeshGenerator::generateMesh()
             if( meshOptNegNonZero && !meshOptNegWorse && !meshOptPyrTooMuchWorse )
             {
                 {
-                    label dirtyRecoverableMaxNegVol = 5;
+                    label dirtyRecoverableMaxNegVol = 0;
                     if( meshDict_.found("dirtyRecoverableMaxNegVol") )
                         dirtyRecoverableMaxNegVol =
                             readLabel(meshDict_.lookup("dirtyRecoverableMaxNegVol"));
