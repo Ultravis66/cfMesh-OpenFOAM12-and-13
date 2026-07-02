@@ -124,12 +124,13 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     //- Pass 1: classify all treated-treated internal edges
     //- Pass 2: decide per-face whether to reduce or fallback
     //- Pass 3 (cell loop): build using pre-agreed canonical faces
-    enum EdgeState { EDGE_QUAD=0, EDGE_DROP=1, EDGE_TRIANGLE=2, EDGE_UNSAFE=3 };
+    enum EdgeState { EDGE_QUAD=0, EDGE_DROP=1, EDGE_TRIANGLE=2, EDGE_UNSAFE=3, EDGE_ASYM_STITCH=4 };
     Map<label> edgeStateMap;
     Map<DynList<label>> edgeCanonicalFace;
     boolList faceReducible(bFaces.size(), false);
     label nEdgeQuad=0,nEdgeDrop=0,nEdgeTriangle=0,nEdgeUnsafe=0;
     label nFaceReduce=0,nFaceFallbackTri=0,nFaceFallbackUnsafe=0;
+    label nAsymStitchCandidate=0; // diagnostic only -- not yet acted upon
 
     const bool enableReducedCellTopology =
         useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
@@ -245,7 +246,20 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     }
                     else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
                 }
-                else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
+                else
+                {
+                    estate=EDGE_UNSAFE; ++nEdgeUnsafe;
+                    // Diagnostic only: identify quad-vs-degenerate size
+                    // mismatches (our target stitch pattern) without
+                    // changing estate or any downstream behavior.
+                    const bool isQuadVsDegenerate =
+                        (sfThis.size()==4 && sfNei.size()==2)
+                     || (sfThis.size()==2 && sfNei.size()==4);
+                    if( isQuadVsDegenerate )
+                    {
+                        ++nAsymStitchCandidate;
+                    }
+                }
                 edgeStateMap.insert(edgeIA, estate);
 
                 //- Write asymmetric atlas for UNSAFE edges
@@ -317,7 +331,9 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         Info << "Two-pass edge states: QUAD=" << nEdgeQuad
              << " DROP=" << nEdgeDrop
              << " TRIANGLE=" << nEdgeTriangle
-             << " UNSAFE=" << nEdgeUnsafe << endl;
+             << " UNSAFE=" << nEdgeUnsafe
+             << " ASYMSTITCHCANDIDATE_TOTAL=" << nAsymStitchCandidate
+             << endl;
 
         forAll(bFaces, bfI)
         {
