@@ -37,6 +37,7 @@ Description
 #include "HashSet.H"
 
 #include <map>
+#include <unordered_map>
 
 //#define DEBUGLayer
 
@@ -92,6 +93,12 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
     //- create lists for new boundary faces
     VRWGraph newBoundaryFaces;
+
+    // Global top-vertex collapse rules discovered while building
+    // canonical triangle transition cells. If one normal cell
+    // collapses top T -> base B, every queued cell/boundary face
+    // touching T must use B before addCells().
+    std::map<label,label> globalNormalTopSubst;
     labelLongList newBoundaryOwners;
     labelLongList newBoundaryPatches;
 
@@ -132,6 +139,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     Map<DynList<label>> edgeStitchTriA;
     Map<DynList<label>> edgeStitchTriB;
     boolList faceReducible(bFaces.size(), false);
+    boolList triangleBypassFace(bFaces.size(), false);
     label nEdgeQuad=0,nEdgeDrop=0,nEdgeTriangle=0,nEdgeUnsafe=0;
     label nFaceReduce=0,nFaceFallbackTri=0,nFaceFallbackUnsafe=0;
     label nAsymStitchCandidate=0; // diagnostic only -- not yet acted upon
@@ -466,6 +474,33 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     if( !treatPatches[boundaryFacePatches[neiFaceIA]] ) continue;
                     if( !edgeStateMap.found(edgeIA) ) continue;
                     const label es = edgeStateMap[edgeIA];
+
+                    if( es==EDGE_TRIANGLE && !faceReducible[neiFaceIA] )
+                    {
+                        static label nTriangleBypassFaces = 0;
+                        const label triangleBypassFaceLimit = 1;
+
+                        if( !triangleBypassFace[bfI]
+                         && nTriangleBypassFaces < triangleBypassFaceLimit )
+                        {
+                            triangleBypassFace[bfI] = true;
+                            ++nTriangleBypassFaces;
+                            Info << "TRIANGLE_BYPASS_FACE"
+                                 << " bfI=" << bfI
+                                 << " bfPatch=" << boundaryFacePatches[bfI]
+                                 << " firstEdgeIA=" << edgeIA
+                                 << " firstNeiFace=" << neiFaceIA
+                                 << " firstNeiPatch=" << boundaryFacePatches[neiFaceIA]
+                                 << " count=" << nTriangleBypassFaces
+                                 << endl;
+                        }
+
+                        if( triangleBypassFace[bfI] )
+                        {
+                            continue;
+                        }
+                    }
+
                     //- Only check TRIANGLE and DROP edges
                     //- (QUAD edges don't need mutual reducibility)
                     if( es!=EDGE_TRIANGLE && es!=EDGE_DROP ) continue;
@@ -1077,6 +1112,11 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
             }
 
+            bool normalCellUsedCanonicalTri = false;
+            std::map<label,label> normalTopSubst;
+            label normalTopCellFaceI = -1;
+            label normalTopBoundaryRow = -1;
+
             if( !builtReducedCell )
             {
             //- Normal prism path
@@ -1089,10 +1129,13 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             //- create parallel face
             forAll(f, pI)
                 newF[pI] = findNewNodeLabel(f[pI], pKey);
+            normalTopCellFaceI = cellFaces.size();
+            normalTopBoundaryRow = newBoundaryFaces.size();
             cellFaces.append(newF);
             newBoundaryFaces.appendList(newF);
             newBoundaryOwners.append(cellsToAdd.size() + nOldCells);
             newBoundaryPatches.append(boundaryFacePatches[bfI]);
+
             //- create quad faces
             newF.setSize(4);
             forAll(f, pI)
@@ -1101,6 +1144,89 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 newF[1] = f.nextLabel(pI);
                 newF[2] = findNewNodeLabel(newF[1], pKey);
                 newF[3] = findNewNodeLabel(f[pI], pKey);
+
+                // Pairing fix experiment: if this normal-prism side
+                // edge is a treated-treated EDGE_TRIANGLE, emit the same
+                // canonical 3-label side face used by the reduced-cell
+                // path. Otherwise one side can emit a reduced triangle
+                // while the other emits a raw quad, creating addCells
+                // orphans and open cells.
+                const label edgeIA = faceEdges(bfI, pI);
+                bool emittedCanonicalTri = false;
+
+                if
+                (
+                    edgeFaces.sizeOfRow(edgeIA) == 2
+                 && edgeStateMap.found(edgeIA)
+                 && edgeStateMap[edgeIA] == EDGE_TRIANGLE
+                 && edgeCanonicalFace.found(edgeIA)
+                )
+                {
+                    label neiFaceIA = edgeFaces(edgeIA, 0);
+                    if( neiFaceIA == bfI ) neiFaceIA = edgeFaces(edgeIA, 1);
+
+                    if( treatPatches[boundaryFacePatches[neiFaceIA]]
+                     && faceReducible[neiFaceIA] )
+                    {
+                        static label nNormalSideCanonTri = 0;
+                        ++nNormalSideCanonTri;
+                        if( nNormalSideCanonTri <= 20
+                         || nNormalSideCanonTri % 100 == 0 )
+                        {
+                            Info << "NORMAL_SIDE_CANON_TRI"
+                                 << " bfI=" << bfI
+                                 << " bfPatch=" << boundaryFacePatches[bfI]
+                                 << " edgeIA=" << edgeIA
+                                 << " neiFace=" << neiFaceIA
+                                 << " neiPatch=" << boundaryFacePatches[neiFaceIA]
+                                 << " count=" << nNormalSideCanonTri
+                                 << endl;
+                        }
+
+                        const DynList<label>& canonF = edgeCanonicalFace[edgeIA];
+
+                        auto canonContains = [&](const label v) -> bool
+                        {
+                            forAll(canonF, ci)
+                            {
+                                if( canonF[ci] == v ) return true;
+                            }
+                            return false;
+                        };
+
+                        // Raw side quad convention here is [b0,b1,t1,t0].
+                        // If the canonical triangle dropped t1, collapse it
+                        // to b1. If it dropped t0, collapse it to b0.
+                        if( !canonContains(newF[2]) )
+                        {
+                            normalTopSubst[newF[2]] = newF[1];
+                            globalNormalTopSubst[newF[2]] = newF[1];
+                            Info << "NORMAL_CANON_TRI_TOP_SUBST"
+                                 << " bfI=" << bfI
+                                 << " top=" << newF[2]
+                                 << " base=" << newF[1]
+                                 << endl;
+                        }
+
+                        if( !canonContains(newF[3]) )
+                        {
+                            normalTopSubst[newF[3]] = newF[0];
+                            globalNormalTopSubst[newF[3]] = newF[0];
+                            Info << "NORMAL_CANON_TRI_TOP_SUBST"
+                                 << " bfI=" << bfI
+                                 << " top=" << newF[3]
+                                 << " base=" << newF[0]
+                                 << endl;
+                        }
+
+                        cellFaces.append(canonF);
+                        emittedCanonicalTri = true;
+                        normalCellUsedCanonicalTri = true;
+                    }
+                }
+
+                if( emittedCanonicalTri ) continue;
+
                 cellFaces.append(newF);
                 //- check if the face is at the boundary
                 //- of the treated partitions
@@ -1136,6 +1262,188 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             # endif
 
             } //- end if( !builtReducedCell )
+
+            if( normalCellUsedCanonicalTri && !normalTopSubst.empty() )
+            {
+                auto substituteAndCleanFace =
+                [&](const DynList<label>& inF, DynList<label>& outF) -> bool
+                {
+                    outF.clear();
+
+                    forAll(inF, ii)
+                    {
+                        label v = inF[ii];
+                        std::map<label,label>::const_iterator sit = normalTopSubst.find(v);
+                        if( sit != normalTopSubst.end() ) v = sit->second;
+
+                        bool already = false;
+                        forAll(outF, oi)
+                        {
+                            if( outF[oi] == v )
+                            {
+                                already = true;
+                                break;
+                            }
+                        }
+
+                        if( !already ) outF.append(v);
+                    }
+
+                    return outF.size() >= 3;
+                };
+
+                DynList<DynList<label> > cleanedCellFaces;
+
+                forAll(cellFaces, fi)
+                {
+                    DynList<label> cleanedF;
+                    if( substituteAndCleanFace(cellFaces[fi], cleanedF) )
+                    {
+                        cleanedCellFaces.append(cleanedF);
+                    }
+                    else
+                    {
+                        Info << "NORMAL_CANON_TRI_DROPPED_FACE"
+                             << " bfI=" << bfI
+                             << " fi=" << fi
+                             << endl;
+                    }
+                }
+
+                cellFaces.clear();
+                forAll(cleanedCellFaces, fi)
+                {
+                    cellFaces.append(cleanedCellFaces[fi]);
+                }
+
+                if( normalTopBoundaryRow >= 0 && normalTopCellFaceI >= 0 )
+                {
+                    DynList<label> cleanedTopF;
+                    if( substituteAndCleanFace(cleanedCellFaces[normalTopCellFaceI], cleanedTopF) )
+                    {
+                        newBoundaryFaces.setRow(normalTopBoundaryRow, cleanedTopF);
+                        Info << "NORMAL_CANON_TRI_TOPFACE_REWRITE"
+                             << " bfI=" << bfI
+                             << " row=" << normalTopBoundaryRow
+                             << " size=" << cleanedTopF.size()
+                             << endl;
+                    }
+                }
+            }
+
+            if( normalCellUsedCanonicalTri )
+            {
+                bool topoOK = true;
+                std::map<std::pair<label,label>, label> edgeUse;
+
+                forAll(cellFaces, fi)
+                {
+                    const DynList<label>& cf = cellFaces[fi];
+                    if( cf.size() < 3 ) topoOK = false;
+
+                    forAll(cf, i)
+                    {
+                        const label a = cf[i];
+                        const label b = cf[(i+1)%cf.size()];
+                        if( a == b ) topoOK = false;
+                        ++edgeUse[std::make_pair(Foam::min(a,b), Foam::max(a,b))];
+                    }
+                }
+
+                label nBadEdgeUse = 0;
+                for
+                (
+                    std::map<std::pair<label,label>, label>::const_iterator
+                        iter = edgeUse.begin();
+                    iter != edgeUse.end();
+                    ++iter
+                )
+                {
+                    if( iter->second != 2 )
+                    {
+                        topoOK = false;
+                        ++nBadEdgeUse;
+                    }
+                }
+
+                vector areaSum = vector::zero;
+                scalar areaMagSum = scalar(0);
+
+                forAll(cellFaces, fi)
+                {
+                    const DynList<label>& cf = cellFaces[fi];
+                    vector fArea = vector::zero;
+                    const point& p0f = mesh_.points()[cf[0]];
+
+                    for(label ai=1; ai<cf.size()-1; ++ai)
+                    {
+                        fArea += (mesh_.points()[cf[ai]] - p0f)
+                               ^ (mesh_.points()[cf[ai+1]] - p0f);
+                    }
+
+                    areaSum += fArea;
+                    areaMagSum += mag(fArea);
+                }
+
+                const bool geomOK =
+                    areaMagSum >= VSMALL
+                 && mag(areaSum)/areaMagSum < scalar(1e-4);
+
+                static label nNormalCanonTriCellClosureDiag = 0;
+                ++nNormalCanonTriCellClosureDiag;
+
+                Info << "NORMAL_CANON_TRI_CELL_CLOSURE"
+                     << " bfI=" << bfI
+                     << " bfPatch=" << boundaryFacePatches[bfI]
+                     << " nFaces=" << cellFaces.size()
+                     << " topoOK=" << (topoOK ? 1 : 0)
+                     << " geomOK=" << (geomOK ? 1 : 0)
+                     << " badEdgeUse=" << nBadEdgeUse
+                     << " openness="
+                     << (areaMagSum > VSMALL ? mag(areaSum)/areaMagSum : GREAT)
+                     << " count=" << nNormalCanonTriCellClosureDiag
+                     << endl;
+
+                if( !topoOK && nNormalCanonTriCellClosureDiag <= 5 )
+                {
+                    forAll(cellFaces, fi)
+                    {
+                        const DynList<label>& cf = cellFaces[fi];
+                        Info << "NORMAL_CANON_TRI_CELL_FACE"
+                             << " bfI=" << bfI
+                             << " fi=" << fi
+                             << " size=" << cf.size()
+                             << " labels=(";
+                        forAll(cf, pi)
+                        {
+                            if( pi ) Info << ',';
+                            Info << cf[pi];
+                        }
+                        Info << ')' << endl;
+                    }
+
+                    label nPrintedBadEdges = 0;
+                    for
+                    (
+                        std::map<std::pair<label,label>, label>::const_iterator
+                            iter = edgeUse.begin();
+                        iter != edgeUse.end();
+                        ++iter
+                    )
+                    {
+                        if( iter->second != 2 && nPrintedBadEdges < 20 )
+                        {
+                            ++nPrintedBadEdges;
+                            Info << "NORMAL_CANON_TRI_BAD_EDGE"
+                                 << " bfI=" << bfI
+                                 << " a=" << iter->first.first
+                                 << " b=" << iter->first.second
+                                 << " use=" << iter->second
+                                 << endl;
+                        }
+                    }
+                }
+            }
 
             cellsToAdd.appendGraph(cellFaces);
         }
@@ -1610,7 +1918,303 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     }
 
     //- create mesh modifier
+    if( !globalNormalTopSubst.empty() )
+    {
+        Info << "GLOBAL_NORMAL_TOP_SUBST_BEGIN"
+             << " nRules=" << globalNormalTopSubst.size()
+             << endl;
+
+        auto substituteAndCleanQueuedFace =
+        [&](const VRWGraph& g, const label rowI, DynList<label>& outF) -> bool
+        {
+            outF.clear();
+
+            for(label pI=0; pI<g.sizeOfRow(rowI); ++pI)
+            {
+                label v = g(rowI, pI);
+                std::map<label,label>::const_iterator sit = globalNormalTopSubst.find(v);
+                if( sit != globalNormalTopSubst.end() ) v = sit->second;
+
+                bool already = false;
+                forAll(outF, oi)
+                {
+                    if( outF[oi] == v )
+                    {
+                        already = true;
+                        break;
+                    }
+                }
+
+                if( !already ) outF.append(v);
+            }
+
+            return outF.size() >= 3;
+        };
+
+        label nCellRowsChanged = 0;
+        label nCellRowsDropped = 0;
+
+        VRWGraphList cleanedCellsToAdd;
+
+        for(label cellI=0; cellI<cellsToAdd.size(); ++cellI)
+        {
+            DynList<DynList<label> > cleanedCellFaces;
+
+            for(label faceI=0; faceI<cellsToAdd.sizeOfGraph(cellI); ++faceI)
+            {
+                DynList<label> cleanedF;
+
+                for(label pI=0; pI<cellsToAdd.sizeOfRow(cellI, faceI); ++pI)
+                {
+                    label v = cellsToAdd(cellI, faceI, pI);
+                    std::map<label,label>::const_iterator sit = globalNormalTopSubst.find(v);
+                    if( sit != globalNormalTopSubst.end() ) v = sit->second;
+
+                    bool already = false;
+                    forAll(cleanedF, oi)
+                    {
+                        if( cleanedF[oi] == v )
+                        {
+                            already = true;
+                            break;
+                        }
+                    }
+
+                    if( !already ) cleanedF.append(v);
+                }
+
+                if( cleanedF.size() >= 3 )
+                {
+                    bool changed = cleanedF.size() != cellsToAdd.sizeOfRow(cellI, faceI);
+                    if( !changed )
+                    {
+                        for(label pI=0; pI<cleanedF.size(); ++pI)
+                        {
+                            if( cleanedF[pI] != cellsToAdd(cellI, faceI, pI) )
+                            {
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if( changed ) ++nCellRowsChanged;
+                    cleanedCellFaces.append(cleanedF);
+                }
+                else
+                {
+                    ++nCellRowsDropped;
+                    Info << "GLOBAL_NORMAL_TOP_SUBST_BAD_CELL_ROW"
+                         << " cell=" << cellI
+                         << " face=" << faceI
+                         << endl;
+                }
+            }
+
+            cleanedCellsToAdd.appendGraph(cleanedCellFaces);
+        }
+
+        cellsToAdd = cleanedCellsToAdd;
+
+        label nBndRowsChanged = 0;
+        label nBndRowsDropped = 0;
+
+        for(label rowI=0; rowI<newBoundaryFaces.size(); ++rowI)
+        {
+            DynList<label> cleanedF;
+            if( substituteAndCleanQueuedFace(newBoundaryFaces, rowI, cleanedF) )
+            {
+                bool changed = cleanedF.size() != newBoundaryFaces.sizeOfRow(rowI);
+                if( !changed )
+                {
+                    for(label pI=0; pI<cleanedF.size(); ++pI)
+                    {
+                        if( cleanedF[pI] != newBoundaryFaces(rowI, pI) )
+                        {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if( changed ) ++nBndRowsChanged;
+                newBoundaryFaces.setRow(rowI, cleanedF);
+            }
+            else
+            {
+                ++nBndRowsDropped;
+                Info << "GLOBAL_NORMAL_TOP_SUBST_BAD_BND_ROW"
+                     << " row=" << rowI
+                     << endl;
+            }
+        }
+
+        Info << "GLOBAL_NORMAL_TOP_SUBST_DONE"
+             << " nRules=" << globalNormalTopSubst.size()
+             << " cellRowsChanged=" << nCellRowsChanged
+             << " cellRowsDropped=" << nCellRowsDropped
+             << " bndRowsChanged=" << nBndRowsChanged
+             << " bndRowsDropped=" << nBndRowsDropped
+             << endl;
+    }
+
     polyMeshGenModifier meshModifier(mesh_);
+
+    //- Diagnostic only: audit the addCells() face-pairing contract.
+    //  A queued face is valid if:
+    //   (a) it appears twice across cellsToAdd: internal face between new cells;
+    //   (b) it appears once in cellsToAdd and once in newBoundaryFaces: new boundary;
+    //   (c) it appears once in cellsToAdd and already exists in mesh_.faces():
+    //       old surface/base face being converted into an internal face.
+    //  Anything else is a true suspicious orphan/mismatch candidate.
+    {
+        typedef std::vector<label> FaceKey;
+
+        struct FaceKeyHash
+        {
+            std::size_t operator()(const FaceKey& k) const
+            {
+                std::size_t h = 1469598103934665603ULL;
+                for(std::size_t i=0; i<k.size(); ++i)
+                {
+                    h ^= std::size_t(k[i]);
+                    h *= 1099511628211ULL;
+                }
+                return h;
+            }
+        };
+
+        std::unordered_map<FaceKey, label, FaceKeyHash> queuedUse;
+        std::unordered_map<FaceKey, label, FaceKeyHash> boundaryUse;
+        std::unordered_map<FaceKey, label, FaceKeyHash> existingUse;
+
+        forAll(cellsToAdd, cI)
+        {
+            for(label fI=0; fI<cellsToAdd.sizeOfGraph(cI); ++fI)
+            {
+                FaceKey k;
+                k.reserve(cellsToAdd.sizeOfRow(cI, fI));
+
+                for(label pI=0; pI<cellsToAdd.sizeOfRow(cI, fI); ++pI)
+                {
+                    k.push_back(cellsToAdd(cI, fI, pI));
+                }
+
+                std::sort(k.begin(), k.end());
+                ++queuedUse[k];
+            }
+        }
+
+        for(label fI=0; fI<newBoundaryFaces.size(); ++fI)
+        {
+            FaceKey k;
+            k.reserve(newBoundaryFaces.sizeOfRow(fI));
+
+            for(label pI=0; pI<newBoundaryFaces.sizeOfRow(fI); ++pI)
+            {
+                k.push_back(newBoundaryFaces(fI, pI));
+            }
+
+            std::sort(k.begin(), k.end());
+            ++boundaryUse[k];
+        }
+
+        const faceListPMG& oldFaces = mesh_.faces();
+
+        forAll(oldFaces, fI)
+        {
+            const face& f = oldFaces[fI];
+
+            FaceKey k;
+            k.reserve(f.size());
+
+            forAll(f, pI)
+            {
+                k.push_back(f[pI]);
+            }
+
+            std::sort(k.begin(), k.end());
+            ++existingUse[k];
+        }
+
+        label nAuditBad = 0;
+        label nAuditInternalOK = 0;
+        label nAuditBoundaryOK = 0;
+        label nAuditExistingOK = 0;
+
+        for
+        (
+            std::unordered_map<FaceKey, label, FaceKeyHash>::const_iterator
+                iter = queuedUse.begin();
+            iter != queuedUse.end();
+            ++iter
+        )
+        {
+            const FaceKey& k = iter->first;
+            const label q = iter->second;
+
+            std::unordered_map<FaceKey, label, FaceKeyHash>::const_iterator
+                bIter = boundaryUse.find(k);
+
+            std::unordered_map<FaceKey, label, FaceKeyHash>::const_iterator
+                eIter = existingUse.find(k);
+
+            const label b =
+                (bIter == boundaryUse.end()) ? label(0) : bIter->second;
+
+            const label e =
+                (eIter == existingUse.end()) ? label(0) : eIter->second;
+
+            const bool okInternal = (q == 2 && b == 0 && e == 0);
+            const bool okBoundary = (q == 1 && b == 1 && e == 0);
+            const bool okExisting = (q == 1 && b == 0 && e > 0);
+
+            if( okInternal )
+            {
+                ++nAuditInternalOK;
+            }
+            else if( okBoundary )
+            {
+                ++nAuditBoundaryOK;
+            }
+            else if( okExisting )
+            {
+                ++nAuditExistingOK;
+            }
+            else
+            {
+                ++nAuditBad;
+
+                if( nAuditBad <= 100 )
+                {
+                    Info << "INTERFACEAUDIT_ORPHAN"
+                         << " q=" << q
+                         << " b=" << b
+                         << " e=" << e
+                         << " size=" << label(k.size())
+                         << " labels=(";
+
+                    for(label i=0; i<label(k.size()); ++i)
+                    {
+                        if( i ) Info << ',';
+                        Info << k[i];
+                    }
+
+                    Info << ')' << endl;
+                }
+            }
+        }
+
+        Info << "INTERFACEAUDIT summary"
+             << " queuedKeys=" << label(queuedUse.size())
+             << " boundaryKeys=" << label(boundaryUse.size())
+             << " existingKeys=" << label(existingUse.size())
+             << " internalOK=" << nAuditInternalOK
+             << " boundaryOK=" << nAuditBoundaryOK
+             << " existingOK=" << nAuditExistingOK
+             << " bad=" << nAuditBad
+             << endl;
+    }
 
     meshModifier.addCells(cellsToAdd);
 
