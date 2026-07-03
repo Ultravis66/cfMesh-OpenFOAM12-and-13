@@ -1336,6 +1336,103 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
             if( normalCellUsedCanonicalTri )
             {
+                // Orient faces of the transition cell consistently.
+                // Topological closure only requires every undirected
+                // edge to appear twice. Geometric closure additionally
+                // requires each shared edge to be traversed in opposite
+                // directions by the two incident faces. Canonical side
+                // triangles copied from the reduced neighbor can have
+                // the correct labels but the wrong orientation for this
+                // normal-side transition cell.
+                auto reverseDynFace = [](DynList<label>& cf)
+                {
+                    for(label lo=0, hi=cf.size()-1; lo<hi; ++lo, --hi)
+                    {
+                        const label tmp = cf[lo];
+                        cf[lo] = cf[hi];
+                        cf[hi] = tmp;
+                    }
+                };
+
+                auto sharedEdgeSameDirection =
+                [&](const DynList<label>& aF, const DynList<label>& bF,
+                    bool& sameDir) -> bool
+                {
+                    forAll(aF, ai)
+                    {
+                        const label a0 = aF[ai];
+                        const label a1 = aF[(ai+1)%aF.size()];
+
+                        forAll(bF, bi)
+                        {
+                            const label b0 = bF[bi];
+                            const label b1 = bF[(bi+1)%bF.size()];
+
+                            if
+                            (
+                                (a0 == b0 && a1 == b1)
+                             || (a0 == b1 && a1 == b0)
+                            )
+                            {
+                                sameDir = (a0 == b0 && a1 == b1);
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                };
+
+                boolList faceOriented(cellFaces.size(), false);
+                if( cellFaces.size() ) faceOriented[0] = true;
+
+                bool changedOrient = true;
+                label nOrientFlips = 0;
+                while( changedOrient )
+                {
+                    changedOrient = false;
+
+                    forAll(cellFaces, fi)
+                    {
+                        if( !faceOriented[fi] ) continue;
+
+                        forAll(cellFaces, fj)
+                        {
+                            if( faceOriented[fj] ) continue;
+
+                            bool sameDir = false;
+                            if( sharedEdgeSameDirection(cellFaces[fi], cellFaces[fj], sameDir) )
+                            {
+                                if( sameDir )
+                                {
+                                    reverseDynFace(cellFaces[fj]);
+                                    ++nOrientFlips;
+                                    Info << "NORMAL_CANON_TRI_ORIENT_FLIP"
+                                         << " bfI=" << bfI
+                                         << " fi=" << fj
+                                         << endl;
+                                }
+
+                                faceOriented[fj] = true;
+                                changedOrient = true;
+                            }
+                        }
+                    }
+                }
+
+                label nUnorientedFaces = 0;
+                forAll(faceOriented, fi)
+                    if( !faceOriented[fi] ) ++nUnorientedFaces;
+
+                if( nOrientFlips || nUnorientedFaces )
+                {
+                    Info << "NORMAL_CANON_TRI_ORIENT_SUMMARY"
+                         << " bfI=" << bfI
+                         << " flips=" << nOrientFlips
+                         << " unoriented=" << nUnorientedFaces
+                         << endl;
+                }
+
                 bool topoOK = true;
                 std::map<std::pair<label,label>, label> edgeUse;
 
@@ -1407,7 +1504,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                      << " count=" << nNormalCanonTriCellClosureDiag
                      << endl;
 
-                if( !topoOK && nNormalCanonTriCellClosureDiag <= 5 )
+                if( (!topoOK || !geomOK) && nNormalCanonTriCellClosureDiag <= 20 )
                 {
                     forAll(cellFaces, fi)
                     {
