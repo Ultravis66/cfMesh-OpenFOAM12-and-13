@@ -395,8 +395,42 @@ point boundaryLayers::createNewVertex
                     (neighProj < VGREAT) ? neighProj : neighLen;
 
                 const scalar distBeforeClamp = dist;
-                if( neighDist < VGREAT )
+                // Flow-termination seam guard:
+                // If projected clearance is tiny relative to the local edge length,
+                // a finite epsilon-height layer can create near-zero tetra/sliver
+                // cells at inlet/outlet termination seams. Treat that as true local
+                // termination instead.
+                const bool tinyFlowTermClearance =
+                    neighProj < VGREAT
+                 && neighLen  < VGREAT
+                 && neighProj < scalar(5e-6)
+                 && neighProj < scalar(0.05) * neighLen;
+                
+                if( tinyFlowTermClearance )
+                {
+                    dist = 0.0;
+                    static label nFlowTermTinyClearanceSuppress = 0;
+                    if( nFlowTermTinyClearanceSuppress < 200 )
+                    {
+                        ++nFlowTermTinyClearanceSuppress;
+                        const scalar lsThis =
+                            (layerScale_.size() > bpI) ? layerScale_[bpI] : scalar(1.0);
+                        Info << "FLOWTERM_TINY_CLEARANCE_SUPPRESS"
+                             << " bpI=" << bpI
+                             << " x=" << p.x()
+                             << " y=" << p.y()
+                             << " z=" << p.z()
+                             << " layerScale=" << lsThis
+                             << " neighProj=" << neighProj
+                             << " neighLen=" << neighLen
+                             << " ratio=" << (neighProj/(neighLen + VSMALL))
+                             << endl;
+                    }
+                }
+                else if( neighDist < VGREAT )
+                {
                     dist = Foam::min(dist, neighDist);
+                }
 
                 // RAMPCLAMPDIAG: confirm ramp points get finite baseline.
                 {
