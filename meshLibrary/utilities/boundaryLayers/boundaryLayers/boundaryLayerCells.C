@@ -478,7 +478,10 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     if( es==EDGE_TRIANGLE && !faceReducible[neiFaceIA] )
                     {
                         static label nTriangleBypassFaces = 0;
-                        const label triangleBypassFaceLimit = 1;
+                        // Controlled transition-stencil scale test.
+                        // v1 proof used 1.  Try 3 before replacing this
+                        // with a true connected-component selector.
+                        const label triangleBypassFaceLimit = 3;
 
                         if( !triangleBypassFace[bfI]
                          && nTriangleBypassFaces < triangleBypassFaceLimit )
