@@ -2214,6 +2214,16 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << " existingOK=" << nAuditExistingOK
              << " bad=" << nAuditBad
              << endl;
+
+        if( nAuditBad != 0 )
+        {
+            FatalErrorInFunction
+                << "INTERFACEAUDIT_FATAL_BAD_TOPOLOGY"
+                << " bad=" << nAuditBad
+                << " -- refusing meshModifier.addCells(cellsToAdd) because queued transition topology is not pair-consistent."
+                << exit(FatalError);
+        }
+
     }
 
     meshModifier.addCells(cellsToAdd);
