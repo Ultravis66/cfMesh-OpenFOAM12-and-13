@@ -38,6 +38,7 @@ Description
 
 #include <map>
 #include <unordered_map>
+#include <set>
 
 //#define DEBUGLayer
 
@@ -99,6 +100,12 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     // collapses top T -> base B, every queued cell/boundary face
     // touching T must use B before addCells().
     std::map<label,label> globalNormalTopSubst;
+    // Demand collector: for non-base (shared) substitution candidates,
+    // track EVERY distinct target requested for a given raw vertex
+    // across the whole construction pass. A raw vertex is only safe
+    // to substitute globally if ALL demands agree on one target.
+    // Conflicting demands must fall back to base-collapse instead.
+    std::map<label, std::set<label>> normalTopSubstDemands;
     labelLongList newBoundaryOwners;
     labelLongList newBoundaryPatches;
 
@@ -134,6 +141,18 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
     enum EdgeState { EDGE_QUAD=0, EDGE_DROP=1, EDGE_TRIANGLE=2, EDGE_UNSAFE=3, EDGE_ASYM_STITCH=4 };
     Map<label> edgeStateMap;
     Map<DynList<label>> edgeCanonicalFace;
+    // Per-edge shared top-vertex substitution, computed ONCE during
+    // classification (not independently per-cell during construction).
+    // Maps: for a given EDGE_TRIANGLE edgeIA, (rawTopLabel -> canonTopLabel)
+    // for whichever side's raw top vertex was dropped from the canonical
+    // triangle. Both sides look up the SAME entry, guaranteeing identical
+    // substitution regardless of which side computes first.
+    // Keyed by (edgeIA, rawTopLabel) -- NOT raw label alone, since the
+    // same vertex label can appear across multiple different edges,
+    // and raw-label-only keying lets one edge's substitution silently
+    // overwrite/alias another edge's intended substitution.
+    std::map<std::pair<label,label>, label> edgeTopSubst;
+    std::map<std::pair<label,label>, std::set<label>> edgeTopSubstDemands;
     // Diagnostic/staging storage for EDGE_ASYM_STITCH candidates.
     // Not used by downstream topology until the activation patch.
     Map<DynList<label>> edgeStitchTriA;
@@ -146,6 +165,11 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
     const bool enableReducedCellTopology =
         useHardBLBLReducedCells_ && !capSideVrtMap_.empty();
+    Info << "PAIRKEY_BUILD_MARKER edgeTopSubst_pairkey_v2 active"
+         << " enableReducedCellTopology=" << enableReducedCellTopology
+         << " useHardBLBLReducedCells=" << useHardBLBLReducedCells_
+         << " capSideVrtMapSize=" << capSideVrtMap_.size()
+         << endl;
 
     auto buildTopFaceTP =
     [&](const face& bf, const label bfPatch, DynList<label>& topOut)
@@ -270,11 +294,13 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 DynList<label> topNei;
                 buildTopFaceTP(fNei, neiPatchIA, topNei);
                 DynList<label> sfNei;
+                label nt0Outer = -1, nt1Outer = -1;
                 forAll(fNei, pN)
                 {
                     const label nb0=fNei[pN], nb1=fNei.nextLabel(pN);
                     if(!((nb0==b0&&nb1==b1)||(nb0==b1&&nb1==b0))) continue;
                     const label nt0=topNei[pN], nt1=topNei[(pN+1)%fNei.size()];
+                    nt0Outer = nt0; nt1Outer = nt1;
                     buildSideFaceTP(nb0,nb1,nt0,nt1,sfNei);
                     break;
                 }
@@ -289,6 +315,67 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     {
                         estate=EDGE_TRIANGLE; ++nEdgeTriangle;
                         edgeCanonicalFace.insert(edgeIA, sfThis);
+                        // Precompute the shared top-vertex substitution
+                        // ONCE here, using this side's real t0/t1 and the
+                        // neighbor's real nt0/nt1. Both sides will look up
+                        // the SAME edgeTopSubst entries later during
+                        // construction, instead of each independently
+                        // computing findCanonTop from their own local view.
+                        auto inCanon = [&](const label v) -> bool
+                        {
+                            forAll(sfThis, ci)
+                            {
+                                if( sfThis[ci] == v ) return true;
+                            }
+                            return false;
+                        };
+                        label realTop = -1;
+                        forAll(sfThis, ci)
+                        {
+                            if( sfThis[ci] != b0 && sfThis[ci] != b1 )
+                            {
+                                realTop = sfThis[ci];
+                                break;
+                            }
+                        }
+                        if( realTop >= 0 )
+                        {
+                            const label pKeyCls = patchKey_[bfIPatch];
+                            const label freshT0 = findNewNodeLabelForPatch(b0, bfIPatch, pKeyCls);
+                            const label freshT1 = findNewNodeLabelForPatch(b1, bfIPatch, pKeyCls);
+                            const label pKeyNei = patchKey_[neiPatchIA];
+                            const label freshNt0 = findNewNodeLabelForPatch(b0, neiPatchIA, pKeyNei);
+                            const label freshNt1 = findNewNodeLabelForPatch(b1, neiPatchIA, pKeyNei);
+
+                            if( !inCanon(freshT0) )
+                            {
+                                edgeTopSubstDemands[std::make_pair(edgeIA, freshT0)].insert(realTop);
+                                Info << "EDGETOPSUBST_DEMAND edgeIA=" << edgeIA
+                                     << " raw=" << freshT0 << " realTop=" << realTop
+                                     << " side=this0" << endl;
+                            }
+                            if( !inCanon(freshT1) )
+                            {
+                                edgeTopSubstDemands[std::make_pair(edgeIA, freshT1)].insert(realTop);
+                                Info << "EDGETOPSUBST_DEMAND edgeIA=" << edgeIA
+                                     << " raw=" << freshT1 << " realTop=" << realTop
+                                     << " side=this1" << endl;
+                            }
+                            if( !inCanon(freshNt0) )
+                            {
+                                edgeTopSubstDemands[std::make_pair(edgeIA, freshNt0)].insert(realTop);
+                                Info << "EDGETOPSUBST_DEMAND edgeIA=" << edgeIA
+                                     << " raw=" << freshNt0 << " realTop=" << realTop
+                                     << " side=nei0" << endl;
+                            }
+                            if( !inCanon(freshNt1) )
+                            {
+                                edgeTopSubstDemands[std::make_pair(edgeIA, freshNt1)].insert(realTop);
+                                Info << "EDGETOPSUBST_DEMAND edgeIA=" << edgeIA
+                                     << " raw=" << freshNt1 << " realTop=" << realTop
+                                     << " side=nei1" << endl;
+                            }
+                        }
                     }
                     else { estate=EDGE_UNSAFE; ++nEdgeUnsafe; }
                 }
@@ -534,6 +621,49 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             << "this0,this1,this2,this3,"
             << "nei0,nei1,nei2,nei3" << nl;
 
+
+    // Resolve per-edge substitution demands before construction.
+    {
+        label nEdgeDemandUnanimous = 0;
+        label nEdgeDemandConflict = 0;
+
+        for
+        (
+            std::map<std::pair<label,label>, std::set<label>>::const_iterator dIt =
+                edgeTopSubstDemands.begin();
+            dIt != edgeTopSubstDemands.end();
+            ++dIt
+        )
+        {
+            const std::pair<label,label>& key = dIt->first;
+            const std::set<label>& targets = dIt->second;
+
+            if( targets.size() == 1 )
+            {
+                edgeTopSubst[key] = *targets.begin();
+                ++nEdgeDemandUnanimous;
+                Info << "EDGETOPSUBST_RESOLVED"
+                     << " edgeIA=" << key.first
+                     << " raw=" << key.second
+                     << " subst=" << *targets.begin()
+                     << endl;
+            }
+            else
+            {
+                ++nEdgeDemandConflict;
+                Info << "EDGETOPSUBST_CONFLICT"
+                     << " edgeIA=" << key.first
+                     << " raw=" << key.second
+                     << " nTargets=" << label(targets.size())
+                     << endl;
+            }
+        }
+
+        Info << "EDGETOPSUBST_RESOLUTION"
+             << " unanimous=" << nEdgeDemandUnanimous
+             << " conflict=" << nEdgeDemandConflict
+             << endl;
+    }
 
     forAll(bFaces, bfI)
     {
@@ -1171,6 +1301,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     if( treatPatches[boundaryFacePatches[neiFaceIA]]
                      && faceReducible[neiFaceIA] )
                     {
+                        // edgeTopSubst is now pre-resolved before construction.
+                        // Do not populate it here; construction only reads it.
                         static label nNormalSideCanonTri = 0;
                         ++nNormalSideCanonTri;
                         if( nNormalSideCanonTri <= 20
@@ -1198,27 +1330,90 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                         };
 
                         // Raw side quad convention here is [b0,b1,t1,t0].
-                        // If the canonical triangle dropped t1, collapse it
-                        // to b1. If it dropped t0, collapse it to b0.
+                        // canonF is a verified 3-vertex triangle. If our
+                        // raw top vertex isn't in canonF, substitute to
+                        // the ACTUAL correct top vertex in canonF (not
+                        // base), guarded by verifying canonF genuinely
+                        // contains our two base labels plus one top.
+                        auto findCanonTop = [&](const label b0v, const label b1v) -> label
+                        {
+                            forAll(canonF, ci)
+                            {
+                                if( canonF[ci] != b0v && canonF[ci] != b1v )
+                                    return canonF[ci];
+                            }
+                            return label(-1);
+                        };
+                        {
+                            label nBaseInCanon = 0;
+                            forAll(canonF, ci)
+                            {
+                                if( canonF[ci] == newF[0] || canonF[ci] == newF[1] )
+                                    ++nBaseInCanon;
+                            }
+                            const label probeCanonTop =
+                                findCanonTop(newF[0], newF[1]);
+                            if( nBaseInCanon != 2 || probeCanonTop < 0 )
+                            {
+                                Info << "NORMAL_CANON_TRI_SUBST_NO_CANONTOP"
+                                     << " bfI=" << bfI
+                                     << " edgeIA=" << edgeIA
+                                     << " b0=" << newF[0]
+                                     << " b1=" << newF[1]
+                                     << " t1=" << newF[2]
+                                     << " t0=" << newF[3]
+                                     << " canonSize=" << canonF.size()
+                                     << " nBaseInCanon=" << nBaseInCanon
+                                     << endl;
+                            }
+                        }
+                        // Use SHARED, once-computed edgeTopSubst (built once at
+                        // classification, keyed by (edgeIA, rawTopLabel))
+                        // instead of independently recomputing per-cell,
+                        // guaranteeing both sides substitute identically.
+                        // SAFETY: only base-collapse fallback (OLD, proven-safe
+                        // behavior) propagates GLOBALLY. Non-base (shared)
+                        // substitution stays LOCAL to this cell only --
+                        // CLUSTER_TRACE confirmed global non-base
+                        // substitution creates NEW orphaned faces elsewhere.
                         if( !canonContains(newF[2]) )
                         {
-                            normalTopSubst[newF[2]] = newF[1];
-                            globalNormalTopSubst[newF[2]] = newF[1];
+                            std::map<std::pair<label,label>,label>::const_iterator sIt =
+                                edgeTopSubst.find(std::make_pair(edgeIA, newF[2]));
+                            const bool haveShared = (sIt != edgeTopSubst.end());
+                            const label subst =
+                                haveShared ? sIt->second : newF[1];
+                            normalTopSubst[newF[2]] = subst;
+                            if( haveShared )
+                                normalTopSubstDemands[newF[2]].insert(subst);
+                            else
+                                globalNormalTopSubst[newF[2]] = subst;
                             Info << "NORMAL_CANON_TRI_TOP_SUBST"
                                  << " bfI=" << bfI
+                                 << " edgeIA=" << edgeIA
                                  << " top=" << newF[2]
-                                 << " base=" << newF[1]
+                                 << " subst=" << subst
+                                 << " usedShared=" << (haveShared ? 1 : 0)
                                  << endl;
                         }
 
                         if( !canonContains(newF[3]) )
                         {
-                            normalTopSubst[newF[3]] = newF[0];
-                            globalNormalTopSubst[newF[3]] = newF[0];
+                            std::map<std::pair<label,label>,label>::const_iterator sIt =
+                                edgeTopSubst.find(std::make_pair(edgeIA, newF[3]));
+                            const bool haveShared = (sIt != edgeTopSubst.end());
+                            const label subst =
+                                haveShared ? sIt->second : newF[0];
+                            normalTopSubst[newF[3]] = subst;
+                            if( haveShared )
+                                normalTopSubstDemands[newF[3]].insert(subst);
+                            else
+                                globalNormalTopSubst[newF[3]] = subst;
                             Info << "NORMAL_CANON_TRI_TOP_SUBST"
                                  << " bfI=" << bfI
                                  << " top=" << newF[3]
-                                 << " base=" << newF[0]
+                                 << " subst=" << subst
+                                 << " usedShared=" << (haveShared ? 1 : 0)
                                  << endl;
                         }
 
@@ -2017,6 +2212,115 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         );
     }
 
+    // CLUSTER_TRACE: forensic tracer for hardcoded label set,
+    // temporary diagnostic only, not a fix.
+    auto debugHitLabel = [&](const label v) -> bool
+    {
+        return v == 1706262 || v == 1706257 || v == 1706265
+            || v == 1376401 || v == 1376402 || v == 1706263;
+    };
+
+    auto debugContainsLabelDyn = [&](const DynList<label>& ff) -> bool
+    {
+        forAll(ff, i)
+        {
+            if( debugHitLabel(ff[i]) ) return true;
+        }
+        return false;
+    };
+
+    auto debugPrintFaceDyn =
+    [&](const char* tag, const label cellI, const label faceI, const DynList<label>& ff)
+    {
+        if( debugContainsLabelDyn(ff) )
+        {
+            Info << "CLUSTER_TRACE " << tag
+                 << " cell=" << cellI
+                 << " face=" << faceI
+                 << " size=" << ff.size()
+                 << " labels=(";
+            forAll(ff, i)
+            {
+                Info << ff[i];
+                if( i+1 < ff.size() ) Info << ",";
+            }
+            Info << ")" << endl;
+        }
+    };
+
+    auto debugPrintFaceKey =
+    [&](const char* tag, const label q, const label b, const label e, const std::vector<label>& k)
+    {
+        bool hit = false;
+        for(size_t i=0; i<k.size(); ++i)
+        {
+            if( debugHitLabel(k[i]) ) { hit = true; break; }
+        }
+        if( hit )
+        {
+            Info << "CLUSTER_TRACE " << tag
+                 << " q=" << q
+                 << " b=" << b
+                 << " e=" << e
+                 << " size=" << label(k.size())
+                 << " labels=(";
+            for(size_t i=0; i<k.size(); ++i)
+            {
+                Info << k[i];
+                if( i+1 < k.size() ) Info << ",";
+            }
+            Info << ")" << endl;
+        }
+    };
+
+    // Resolve substitution demands: a raw vertex is only safe to
+    // substitute GLOBALLY if every demand for it agreed on the SAME
+    // target. Conflicting demands are dropped for global purposes;
+    // the per-cell normalTopSubst still applies locally regardless.
+    {
+        label nDemandUnanimous = 0;
+        label nDemandConflict = 0;
+        for
+        (
+            std::map<label, std::set<label>>::const_iterator dIt =
+                normalTopSubstDemands.begin();
+            dIt != normalTopSubstDemands.end();
+            ++dIt
+        )
+        {
+            const label rawV = dIt->first;
+            const std::set<label>& targets = dIt->second;
+            if( targets.size() == 1 )
+            {
+                ++nDemandUnanimous;
+                globalNormalTopSubst[rawV] = *targets.begin();
+            }
+            else
+            {
+                ++nDemandConflict;
+                Info << "NORMALTOPSUBST_DEMAND_CONFLICT rawV=" << rawV
+                     << " nTargets=" << label(targets.size())
+                     << " targets=(";
+                label ti = 0;
+                for
+                (
+                    std::set<label>::const_iterator tIt = targets.begin();
+                    tIt != targets.end();
+                    ++tIt, ++ti
+                )
+                {
+                    if( ti ) Info << ",";
+                    Info << *tIt;
+                }
+                Info << ") -- rejected, no global substitution applied" << endl;
+            }
+        }
+        Info << "NORMALTOPSUBST_DEMAND_RESOLUTION"
+             << " unanimous=" << nDemandUnanimous
+             << " conflict=" << nDemandConflict
+             << endl;
+    }
+
     //- create mesh modifier
     if( !globalNormalTopSubst.empty() )
     {
@@ -2062,6 +2366,12 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
             for(label faceI=0; faceI<cellsToAdd.sizeOfGraph(cellI); ++faceI)
             {
+                {
+                    DynList<label> rawF;
+                    for(label pI2=0; pI2<cellsToAdd.sizeOfRow(cellI, faceI); ++pI2)
+                        rawF.append(cellsToAdd(cellI, faceI, pI2));
+                    debugPrintFaceDyn("queued_before", cellI, faceI, rawF);
+                }
                 DynList<label> cleanedF;
 
                 for(label pI=0; pI<cellsToAdd.sizeOfRow(cellI, faceI); ++pI)
@@ -2082,6 +2392,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
                     if( !already ) cleanedF.append(v);
                 }
+                debugPrintFaceDyn("queued_after", cellI, faceI, cleanedF);
 
                 if( cleanedF.size() >= 3 )
                 {
@@ -2121,9 +2432,16 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
         for(label rowI=0; rowI<newBoundaryFaces.size(); ++rowI)
         {
+            {
+                DynList<label> rawBndF;
+                for(label pI2=0; pI2<newBoundaryFaces.sizeOfRow(rowI); ++pI2)
+                    rawBndF.append(newBoundaryFaces(rowI, pI2));
+                debugPrintFaceDyn("boundary_before", -1, rowI, rawBndF);
+            }
             DynList<label> cleanedF;
             if( substituteAndCleanQueuedFace(newBoundaryFaces, rowI, cleanedF) )
             {
+                debugPrintFaceDyn("boundary_after", -1, rowI, cleanedF);
                 bool changed = cleanedF.size() != newBoundaryFaces.sizeOfRow(rowI);
                 if( !changed )
                 {
@@ -2287,6 +2605,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
                 if( nAuditBad <= 100 )
                 {
+                    debugPrintFaceKey("audit_orphan_key", q, b, e, k);
                     Info << "INTERFACEAUDIT_ORPHAN"
                          << " q=" << q
                          << " b=" << b
