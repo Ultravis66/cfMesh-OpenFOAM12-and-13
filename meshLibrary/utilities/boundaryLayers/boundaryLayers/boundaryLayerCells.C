@@ -663,6 +663,17 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << " unanimous=" << nEdgeDemandUnanimous
              << " conflict=" << nEdgeDemandConflict
              << endl;
+
+        // Conservative default: collect/diagnose non-base substitutions,
+        // but do not activate them until multi-way junction propagation
+        // is solved. The old base-collapse fallback is topology-clean.
+        const bool activateSharedEdgeTopSubst = false;
+        if( !activateSharedEdgeTopSubst )
+        {
+            Info << "EDGETOPSUBST_SHARED_DISABLED clearing="
+                 << edgeTopSubst.size() << endl;
+            edgeTopSubst.clear();
+        }
     }
 
     forAll(bFaces, bfI)
