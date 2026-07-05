@@ -664,16 +664,71 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << " conflict=" << nEdgeDemandConflict
              << endl;
 
-        // Conservative default: collect/diagnose non-base substitutions,
-        // but do not activate them until multi-way junction propagation
-        // is solved. The old base-collapse fallback is topology-clean.
-        const bool activateSharedEdgeTopSubst = false;
-        if( !activateSharedEdgeTopSubst )
+        // CLUSTER-LOCAL ACTIVATION: group resolved edge demands by raw
+        // vertex label. A raw vertex is only activated for substitution
+        // if EVERY edge referencing it (within edgeTopSubst) resolved to
+        // the SAME target -- i.e. it behaves as an isolated 2-sided
+        // relationship, not a true multi-way junction. Raw vertices
+        // touched by more than one DISTINCT target across their edges
+        // are true multi-way junctions and get suppressed entirely
+        // (fall back to base-collapse), rather than trying a partial
+        // pairwise fix that creates cross-face inconsistency.
+        std::map<label, std::set<label>> rawVertexTargets;
+        for
+        (
+            std::map<std::pair<label,label>, label>::const_iterator eIt =
+                edgeTopSubst.begin();
+            eIt != edgeTopSubst.end();
+            ++eIt
+        )
         {
-            Info << "EDGETOPSUBST_SHARED_DISABLED clearing="
-                 << edgeTopSubst.size() << endl;
-            edgeTopSubst.clear();
+            rawVertexTargets[eIt->first.second].insert(eIt->second);
         }
+        std::set<label> rawVertexClusterSuppressed;
+        label nClusterSafe = 0;
+        label nClusterSuppressed = 0;
+        for
+        (
+            std::map<label, std::set<label>>::const_iterator cIt =
+                rawVertexTargets.begin();
+            cIt != rawVertexTargets.end();
+            ++cIt
+        )
+        {
+            if( cIt->second.size() == 1 )
+            {
+                ++nClusterSafe;
+            }
+            else
+            {
+                ++nClusterSuppressed;
+                rawVertexClusterSuppressed.insert(cIt->first);
+                Info << "EDGETOPSUBST_CLUSTER_SUPPRESSED raw=" << cIt->first
+                     << " nTargets=" << label(cIt->second.size())
+                     << endl;
+            }
+        }
+        // Remove suppressed raw-vertex entries from edgeTopSubst so
+        // construction's lookup naturally falls back to base-collapse
+        // for them, while safe (isolated, unanimous) entries remain
+        // active and get applied.
+        for
+        (
+            std::map<std::pair<label,label>, label>::iterator eIt2 =
+                edgeTopSubst.begin();
+            eIt2 != edgeTopSubst.end();
+        )
+        {
+            if( rawVertexClusterSuppressed.count(eIt2->first.second) > 0 )
+                eIt2 = edgeTopSubst.erase(eIt2);
+            else
+                ++eIt2;
+        }
+        Info << "EDGETOPSUBST_CLUSTER_RESOLUTION"
+             << " safe=" << nClusterSafe
+             << " suppressed=" << nClusterSuppressed
+             << " remainingActive=" << edgeTopSubst.size()
+             << endl;
     }
 
     forAll(bFaces, bfI)
@@ -1257,6 +1312,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             }
 
             bool normalCellUsedCanonicalTri = false;
+            bool normalCanonTriTopoOK = true;
+            bool normalCanonTriGeomOK = true;
             std::map<label,label> normalTopSubst;
             label normalTopCellFaceI = -1;
             label normalTopBoundaryRow = -1;
@@ -1639,19 +1696,19 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                          << endl;
                 }
 
-                bool topoOK = true;
+                normalCanonTriTopoOK = true;
                 std::map<std::pair<label,label>, label> edgeUse;
 
                 forAll(cellFaces, fi)
                 {
                     const DynList<label>& cf = cellFaces[fi];
-                    if( cf.size() < 3 ) topoOK = false;
+                    if( cf.size() < 3 ) normalCanonTriTopoOK = false;
 
                     forAll(cf, i)
                     {
                         const label a = cf[i];
                         const label b = cf[(i+1)%cf.size()];
-                        if( a == b ) topoOK = false;
+                        if( a == b ) normalCanonTriTopoOK = false;
                         ++edgeUse[std::make_pair(Foam::min(a,b), Foam::max(a,b))];
                     }
                 }
@@ -1667,7 +1724,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 {
                     if( iter->second != 2 )
                     {
-                        topoOK = false;
+                        normalCanonTriTopoOK = false;
                         ++nBadEdgeUse;
                     }
                 }
@@ -1691,7 +1748,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     areaMagSum += mag(fArea);
                 }
 
-                const bool geomOK =
+                normalCanonTriGeomOK =
                     areaMagSum >= VSMALL
                  && mag(areaSum)/areaMagSum < scalar(1e-4);
 
@@ -1702,15 +1759,15 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                      << " bfI=" << bfI
                      << " bfPatch=" << boundaryFacePatches[bfI]
                      << " nFaces=" << cellFaces.size()
-                     << " topoOK=" << (topoOK ? 1 : 0)
-                     << " geomOK=" << (geomOK ? 1 : 0)
+                     << " normalCanonTriTopoOK=" << (normalCanonTriTopoOK ? 1 : 0)
+                     << " normalCanonTriGeomOK=" << (normalCanonTriGeomOK ? 1 : 0)
                      << " badEdgeUse=" << nBadEdgeUse
                      << " openness="
                      << (areaMagSum > VSMALL ? mag(areaSum)/areaMagSum : GREAT)
                      << " count=" << nNormalCanonTriCellClosureDiag
                      << endl;
 
-                if( (!topoOK || !geomOK) && nNormalCanonTriCellClosureDiag <= 20 )
+                if( (!normalCanonTriTopoOK || !normalCanonTriGeomOK) && nNormalCanonTriCellClosureDiag <= 20 )
                 {
                     forAll(cellFaces, fi)
                     {
@@ -1751,7 +1808,24 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 }
             }
 
-            cellsToAdd.appendGraph(cellFaces);
+            // ACCEPT/REJECT GATE: topoOK/geomOK were computed above but
+            // never actually gated cellsToAdd.appendGraph() -- meaning
+            // internally non-manifold cells (badEdgeUse>0, e.g. an edge
+            // used 3 times instead of exactly 2) were queued anyway,
+            // creating orphaned faces downstream. Reject here instead.
+            if( normalCanonTriTopoOK && normalCanonTriGeomOK )
+            {
+                cellsToAdd.appendGraph(cellFaces);
+            }
+            else
+            {
+                Info << "NORMAL_CANON_TRI_CELL_REJECTED bfI=" << bfI
+                     << " -- falling back to raw boundary face"
+                     << endl;
+                newBoundaryFaces.appendList(bFaces[bfI]);
+                newBoundaryOwners.append(faceOwners[bfI]);
+                newBoundaryPatches.append(boundaryFacePatches[bfI]);
+            }
         }
         else
         {
