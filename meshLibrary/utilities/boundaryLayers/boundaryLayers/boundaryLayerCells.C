@@ -708,6 +708,55 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                      << endl;
             }
         }
+
+        // Diagnostic export: suppressed multi-target raw vertices.
+        // These are the Q3 cases deliberately falling back to base-collapse.
+        // Load this CSV in ParaView and overlay it on the visible
+        // protrusions/pinches to test whether the remaining artifact is
+        // located at the suppressed multi-way clusters.
+        {
+            OFstream suppressedOs("suppressedClusterVertices.csv");
+            suppressedOs << "vertexLabel,x,y,z,nTargets,targetLabels" << nl;
+
+            for
+            (
+                std::set<label>::const_iterator sIt3 =
+                    rawVertexClusterSuppressed.begin();
+                sIt3 != rawVertexClusterSuppressed.end();
+                ++sIt3
+            )
+            {
+                const label v = *sIt3;
+                if( v >= 0 && v < label(mesh_.points().size()) )
+                {
+                    const point& p = mesh_.points()[v];
+                    const std::set<label>& tgts = rawVertexTargets[v];
+
+                    suppressedOs << v << ',' << p.x() << ',' << p.y()
+                                 << ',' << p.z() << ','
+                                 << label(tgts.size()) << ',' << '"';
+
+                    label ti = 0;
+                    for
+                    (
+                        std::set<label>::const_iterator tIt = tgts.begin();
+                        tIt != tgts.end();
+                        ++tIt
+                    )
+                    {
+                        if( ti++ ) suppressedOs << ';';
+                        suppressedOs << *tIt;
+                    }
+
+                    suppressedOs << '"' << nl;
+                }
+            }
+
+            Info << "Suppressed cluster vertex coordinates written to"
+                 << " suppressedClusterVertices.csv ("
+                 << rawVertexClusterSuppressed.size() << " vertices)"
+                 << endl;
+        }
         // Remove suppressed raw-vertex entries from edgeTopSubst so
         // construction's lookup naturally falls back to base-collapse
         // for them, while safe (isolated, unanimous) entries remain
@@ -2378,7 +2427,12 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             if( targets.size() == 1 )
             {
                 ++nDemandUnanimous;
-                globalNormalTopSubst[rawV] = *targets.begin();
+                // Do NOT promote shared/non-base canonical-triangle
+                // substitutions into the global row-rewrite map.
+                // They were already applied locally to the canonical
+                // transition face. Promoting them globally can rewrite
+                // unrelated queued/boundary rows and create orphan
+                // interface topology under different construction order.
             }
             else
             {
