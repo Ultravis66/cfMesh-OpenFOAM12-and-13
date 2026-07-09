@@ -1065,12 +1065,23 @@ bool edgeExtractor::distributeBoundaryFacesNormalAlignment()
                 distanceSq[i] = dSq;
             }
 
-            scalar maxAlignment(0.0);
+            //- CONTACT-ROBUSTNESS PATCH (oblique coincident junctions)
+            //- pick best normal-ALIGNED patch first; proximity only breaks ties
+            //- among patches that are essentially co-aligned. Fixes zigzag/noProj.
+            scalar bestAlign(0.0);
             forAll(normalAlignment, i)
+                bestAlign = Foam::max(bestAlign, normalAlignment[i]);
+
+            const scalar alignTol(0.05);   //- tune vs EDGEAUDIT zigzag/noProj
+            scalar maxAlignment(0.0);
+            forAll(allNeiPatches, i)
             {
+                if( normalAlignment[i] < (bestAlign - alignTol) )
+                    continue;
+
                 const scalar metric
                 (
-                    sqrt(maxDSq / (distanceSq[i] + VSMALL)) * normalAlignment[i]
+                    sqrt(maxDSq / (distanceSq[i] + VSMALL))
                 );
 
                 if( metric > maxAlignment )
