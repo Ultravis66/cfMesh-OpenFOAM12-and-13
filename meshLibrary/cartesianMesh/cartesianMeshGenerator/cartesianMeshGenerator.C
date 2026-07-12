@@ -331,6 +331,19 @@ void cartesianMeshGenerator::extractPatches()
 
 void cartesianMeshGenerator::mapEdgesAndCorners()
 {
+    bool skipMapEdgesAndCorners = false;
+    if( meshDict_.found("skipMapEdgesAndCorners") )
+    {
+        skipMapEdgesAndCorners =
+            Switch(meshDict_.lookup("skipMapEdgesAndCorners"));
+    }
+
+    if( skipMapEdgesAndCorners )
+    {
+        Info << "mapEdgesAndCorners skipped by meshDict" << endl;
+        return;
+    }
+
     if( !blNoBlEdgePoints_.empty() || !blNeutralEdgePoints_.empty() )
     {
         meshSurfaceEdgeExtractorNonTopo
@@ -349,8 +362,38 @@ void cartesianMeshGenerator::mapEdgesAndCorners()
 
 void cartesianMeshGenerator::optimiseMeshSurface()
 {
+    mesh_.clearAddressingData();
+    labelHashSet negBefore;
+    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+    const pointField pointsBefore(mesh_.points());
+
     meshSurfaceEngine mse(mesh_);
     meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
+
+    mesh_.clearAddressingData();
+    labelHashSet negAfter;
+    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+
+    if( negAfter.size() > negBefore.size() )
+    {
+        Info << "optimiseMeshSurface rollback: negVol "
+             << negBefore.size() << "->" << negAfter.size()
+             << " -- restoring pre-stage points" << endl;
+
+        pointField& pts = mesh_.points();
+        pts = pointsBefore;
+        mesh_.clearAddressingData();
+
+        labelHashSet negRestored;
+        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negRestored);
+        Info << "optimiseMeshSurface rollback check: negVol="
+             << negRestored.size() << endl;
+    }
+    else
+    {
+        Info << "optimiseMeshSurface accepted: negVol "
+             << negBefore.size() << "->" << negAfter.size() << endl;
+    }
 }
 
 void cartesianMeshGenerator::detectGapPoints
@@ -4073,14 +4116,103 @@ void cartesianMeshGenerator::generateMesh()
 {
     try
     {
+        auto earlyLineageCSV = [&](const std::string& stageName)
+        {
+            bool writeLineageDiagnostics = false;
+            if( meshDict_.found("writeLineageDiagnostics") )
+                writeLineageDiagnostics =
+                    Switch(meshDict_.lookup("writeLineageDiagnostics"));
+
+            if( !writeLineageDiagnostics ) return;
+
+            wordList enabledStages;
+            if( meshDict_.found("writeLineageStages") )
+            {
+                enabledStages = wordList(meshDict_.lookup("writeLineageStages"));
+            }
+            else
+            {
+                enabledStages.setSize(0);
+            }
+
+            bool stageEnabled = false;
+            forAll(enabledStages, si)
+            {
+                if( enabledStages[si] == word(stageName.c_str()) )
+                {
+                    stageEnabled = true;
+                    break;
+                }
+            }
+
+            if( !stageEnabled ) return;
+
+            mesh_.clearAddressingData();
+            labelHashSet stageCells;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &stageCells);
+
+            Info << "Lineage [" << stageName.c_str() << "]: "
+                 << stageCells.size() << " negVol cells" << endl;
+
+            if( stageCells.size() == 0 ) return;
+
+            const pointFieldPMG& pts  = mesh_.points();
+            const cellListPMG&   cells = mesh_.cells();
+            const faceListPMG&   faces = mesh_.faces();
+            const std::string fname =
+                "negVolCellCentres_" + stageName + ".csv";
+
+            OFstream stageFile(fname);
+            stageFile << "cellI,cx,cy,cz,nFaces,nUniquePoints" << nl;
+
+            forAllConstIter(labelHashSet, stageCells, it)
+            {
+                const label cellI = it.key();
+                if( cellI < 0 || cellI >= label(cells.size()) ) continue;
+
+                const cell& c = cells[cellI];
+                labelHashSet uniquePts;
+
+                forAll(c, cfI)
+                {
+                    const label faceI = c[cfI];
+                    if( faceI < 0 || faceI >= label(faces.size()) ) continue;
+                    const face& f = faces[faceI];
+                    forAll(f, fpI) uniquePts.insert(f[fpI]);
+                }
+
+                point cc = point::zero;
+                label nUnique = 0;
+
+                forAllConstIter(labelHashSet, uniquePts, pit)
+                {
+                    const label pI = pit.key();
+                    if( pI < 0 || pI >= label(pts.size()) ) continue;
+                    cc += pts[pI];
+                    ++nUnique;
+                }
+
+                if( nUnique > 0 ) cc /= scalar(nUnique);
+
+                stageFile << cellI << ","
+                          << cc.x() << "," << cc.y() << "," << cc.z() << ","
+                          << c.size() << "," << nUnique << nl;
+            }
+
+            Info << "Lineage [" << stageName.c_str() << "]: wrote "
+                 << fname.c_str() << endl;
+        };
+
         if( controller_.runCurrentStep("templateGeneration") )
         {
             createCartesianMesh();
+            earlyLineageCSV("postTemplateGeneration");
         }
 
         if( controller_.runCurrentStep("surfaceTopology") )
         {
             surfacePreparation();
+            earlyLineageCSV("postSurfaceTopology");
         }
 
         if( controller_.runCurrentStep("patchAssignment") )
@@ -4090,14 +4222,17 @@ void cartesianMeshGenerator::generateMesh()
             // edgeExtractor uses only mesh topology + octree -- no
             // dependency on projected surface positions.
             extractPatches();
+            earlyLineageCSV("postPatchAssignmentInitial");
         }
 
         if( controller_.runCurrentStep("surfaceProjection") )
         {
             mapMeshToSurface();
+            earlyLineageCSV("postSurfaceProjection");
             // Re-run patch assignment after projection to correct any
             // misassignments that occurred on the unprojected hex mesh.
             extractPatches();
+            earlyLineageCSV("postPatchAssignmentAfterProjection");
         }
 
         if( controller_.runCurrentStep("edgeExtraction") )
@@ -4150,8 +4285,10 @@ void cartesianMeshGenerator::generateMesh()
             }
 
             mapEdgesAndCorners();
+            earlyLineageCSV("postMapEdgesAndCorners");
 
             optimiseMeshSurface();
+            earlyLineageCSV("postOptimiseMeshSurface");
 
 
             // Step 1: snap corner points first (damped relaxation)
@@ -4191,6 +4328,7 @@ void cartesianMeshGenerator::generateMesh()
                      << " corner points (relax=" << cornerSnapRelax
                      << ")" << endl;
                 mapper.mapCorners(cornerPts);
+                earlyLineageCSV("postCornerSnap");
             }
 
             // Step 2: snap non-corner edge points after corners
@@ -4221,7 +4359,9 @@ void cartesianMeshGenerator::generateMesh()
                      << edgePts.size()
                      << " non-corner edge points" << endl;
                 mapper.mapEdgeNodes(edgePts);
+                earlyLineageCSV("postEdgeSnap");
             }
+            earlyLineageCSV("postEdgeExtraction");
         }
 
         // Stage-gated bad-cell lineage writer.
