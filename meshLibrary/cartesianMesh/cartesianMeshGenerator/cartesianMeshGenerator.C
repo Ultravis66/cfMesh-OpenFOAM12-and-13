@@ -362,38 +362,8 @@ void cartesianMeshGenerator::mapEdgesAndCorners()
 
 void cartesianMeshGenerator::optimiseMeshSurface()
 {
-    mesh_.clearAddressingData();
-    labelHashSet negBefore;
-    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
-    const pointField pointsBefore(mesh_.points());
-
     meshSurfaceEngine mse(mesh_);
     meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
-
-    mesh_.clearAddressingData();
-    labelHashSet negAfter;
-    polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
-
-    if( negAfter.size() > negBefore.size() )
-    {
-        Info << "optimiseMeshSurface rollback: negVol "
-             << negBefore.size() << "->" << negAfter.size()
-             << " -- restoring pre-stage points" << endl;
-
-        pointField& pts = mesh_.points();
-        pts = pointsBefore;
-        mesh_.clearAddressingData();
-
-        labelHashSet negRestored;
-        polyMeshGenChecks::checkCellVolumes(mesh_, false, &negRestored);
-        Info << "optimiseMeshSurface rollback check: negVol="
-             << negRestored.size() << endl;
-    }
-    else
-    {
-        Info << "optimiseMeshSurface accepted: negVol "
-             << negBefore.size() << "->" << negAfter.size() << endl;
-    }
 }
 
 void cartesianMeshGenerator::detectGapPoints
