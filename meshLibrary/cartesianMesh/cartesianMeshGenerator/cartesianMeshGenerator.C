@@ -1318,6 +1318,11 @@ void cartesianMeshGenerator::refBoundaryLayers()
         if( doPreRefBLSnapshot && !reprojUnsafe_ )
             takePreRefBLSnapshot(preRefBLSnap);
 
+        //- Function-scope mirror of the inner twoPassAccepted flag, so the
+        //- blPoints_ harvest below (two scopes shallower) can tell whether
+        //- the pass-2 point set is already in place.
+        bool blPointsFromPass2 = false;
+
         nPointsBeforeBL_ = mesh_.points().size();
         refLayers.refineLayers();
 
@@ -1593,6 +1598,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             {
                                 refLayers2.pointsInBndLayer(blPoints_);
                                 twoPassAccepted = true;
+                                blPointsFromPass2 = true;
                             }
                             else
                             {
@@ -1625,7 +1631,16 @@ void cartesianMeshGenerator::refBoundaryLayers()
             }
         }
 
-        refLayers.pointsInBndLayer(blPoints_);
+        //- Only harvest the pass-1 BL point set if pass 2 was NOT accepted.
+        //- On acceptance the mesh is the pass-2 mesh and blPoints_ was
+        //- already filled from refLayers2; overwriting it from refLayers
+        //- would describe the pass-1 layer point set against a pass-2 mesh,
+        //- and blPoints_ feeds mOpt.lockPoints() in optimiseFinalMesh().
+        if( !blPointsFromPass2 )
+            refLayers.pointsInBndLayer(blPoints_);
+        else
+            Info << "Two-pass BL repair: retaining pass2 BL point set ("
+                 << blPoints_.size() << " points)" << endl;
 
         {
             mesh_.clearAddressingData();
