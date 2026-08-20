@@ -4,3 +4,5 @@
 cfMesh.*
 **/lnInclude/*
 **/Make/**/*
+_archive/
+*.bak_*
