@@ -71,6 +71,81 @@ class meshSurfaceMapper
         //- relaxation factor for corner snapping (0=no move, 1=full)
         scalar cornerSnapRelaxation_ = 0.25;
 
+        // ------------------------------------------------------------
+        // v7 (2026-08-09): narrow blade+periodic+hub/shroud triple-
+        // junction fix, built after v3-v6 established that (a) a real
+        // findNearestCorner()-based fix mechanism works locally but
+        // (b) applying it to ANY 3+ patch corner (v5/v6) destabilizes
+        // the mesh, with damage traced to the surface-mapping stage
+        // BEFORE BL creation or the optimizer even run. SOL hypothesis:
+        // a triple junction is not a free point but the anchor of a
+        // constrained local feature-edge network; moving the corner
+        // without its incident edges creates a topological kink that
+        // mapEdgeNodes()'s independent accept/reject logic amplifies.
+        // v7 narrows the fix to EXACTLY blade+periodic+(hub OR shroud)
+        // corners (no 4+ patch, no inlet/outlet) and instruments what
+        // mapEdgeNodes() actually does to the corner's incident edge
+        // points afterward, using only production-computed values (no
+        // new octree queries, avoiding the v3 measurement-perturbation
+        // class of bug).
+        // ------------------------------------------------------------
+
+        //- EXPLICIT fix-enable gate, separate from any diagnostic tag.
+        //- Defaults false (v6 lesson: an unenabled call site must run
+        //- ORIGINAL frozen behavior, never the fix, by default).
+        bool tripleJunctionCornerFixEnabled_ = false;
+
+        //- tag for log-line labeling only, does not gate behavior.
+        word tripleJunctionDiagTag_;
+
+        //- patch-ID sets defining the narrow target junction type.
+        //- Populated via setTripleJunctionTargetPatches(). Empty by
+        //- default -- an empty set means "no patches of this role",
+        //- so an unpopulated mapper safely classifies zero corners as
+        //- target junctions (falls through to original frozen behavior
+        //- for everything, same fail-safe principle as the main gate).
+        labelHashSet tjBladePatchIds_;
+        labelHashSet tjPeriodicPatchIds_;
+        labelHashSet tjHubPatchIds_;
+        labelHashSet tjShroudPatchIds_;
+        labelHashSet tjInletOutletPatchIds_;
+
+        //- key/value label space made explicit after an
+        //- earlier ambiguous comment ("bPoints[bpI]-space") was flagged
+        //- as a correctness risk -- confirmed against actual call sites
+        //- in meshSurfaceMapperCornersAndEdges.C, both key and value are
+        //- BOUNDARY-POINT indices (bpI, into surfaceEngine_.boundaryPoints()),
+        //- NOT mesh-point labels (bPoints[bpI]).
+        //-   key:   boundary-point index (bpI) of an immediate neighbor
+        //-          of an accepted target-corner move
+        //-   value: boundary-point index (bpI) of the source triple
+        //-          corner that move originated from
+        //- Populated by the fix pass in THIS mapCorners() call, consumed
+        //- by mapEdgeNodes() in the SAME mapCornersAndEdges() sequence
+        //- to instrument what production edge logic does to them --
+        //- observe only, no behavior change. Cleared at the start of
+        //- each mapCorners() call, and again after mapEdgeNodes()
+        //- consumes it (one-shot, per SOL review) to avoid stale
+        //- diagnostic attribution if these functions are ever called
+        //- out of the expected corners-then-edges sequence.
+        Map<label> tjWatchedBoundaryPointToSourceCorner_;
+
+        //- v7: makes the watcher state one-shot. Only true between a
+        //- mapCorners() call that accepted >=1 target-corner move and
+        //- the immediately following mapEdgeNodes() call consuming it.
+        bool tjEdgeWatchArmed_ = false;
+
+        //- Code review finding: probeTriSurfJunction() (a heavy,
+        //- brute-force forensic scan over every surface point, built
+        //- for one-time investigation) was unconditionally embedded in
+        //- the v7 fix pass, meaning re-enabling corner-snapping via
+        //- tripleJunctionCornerFixEnabled_ would ALSO silently re-run
+        //- the full diagnostic scan on every target corner, every
+        //- run. Decoupled: this flag now independently gates the
+        //- expensive diagnostic probe. Defaults false -- corner
+        //- snapping can be enabled without the diagnostic overhead.
+        bool tripleJunctionDeepDiagnosticEnabled_ = false;
+
         //- mesh surface partitioner
         mutable const meshSurfacePartitioner* surfaceEnginePartitionerPtr_;
         const bool deletePartitioner_;
@@ -196,6 +271,80 @@ public:
         void setCornerSnapRelaxation(const scalar relax)
         {
             cornerSnapRelaxation_ = relax;
+        }
+
+        //- v7: EXPLICIT enable/disable for the narrow triple-junction
+        //- fix. Defaults false. Must be true only immediately around
+        //- the one intended call site.
+        void setTripleJunctionCornerFix
+        (
+            const bool enabled,
+            const word& tag = word("default")
+        )
+        {
+            tripleJunctionCornerFixEnabled_ = enabled;
+            tripleJunctionDiagTag_ = tag;
+        }
+
+        //- Code review addition: independently gates the expensive
+        //- probeTriSurfJunction() forensic scan. Separate from the
+        //- corner-fix-enable flag above -- see member comment.
+        void setTripleJunctionDeepDiagnostic(const bool enabled)
+        {
+            tripleJunctionDeepDiagnosticEnabled_ = enabled;
+        }
+
+        //- v7: define the narrow target junction type via explicit
+        //- patch-ID sets (resolved by the CALLER, e.g. via PatchRoleMap
+        //- in cartesianMeshGenerator -- NOT by threading PatchRoleMap
+        //- through this class, per SOL review: too much architecture
+        //- for this experiment). A corner is a "target" triple junction
+        //- iff it touches EXACTLY 3 patches: one from bladeIds, one from
+        //- periodicIds, one from (hubIds union shroudIds), and none
+        //- from inletOutletIds. Any set may be left empty if that role
+        //- is irrelevant to the current geometry.
+        void setTripleJunctionTargetPatches
+        (
+            const labelHashSet& bladeIds,
+            const labelHashSet& periodicIds,
+            const labelHashSet& hubIds,
+            const labelHashSet& shroudIds,
+            const labelHashSet& inletOutletIds
+        )
+        {
+            // Fail-closed disjointness check. A role-
+            // classification bug placing one patch ID in two role sets
+            // would otherwise silently misclassify junctions downstream
+            // -- this project has already hit at least one real role-
+            // ordering/classification bug this session, so this is not
+            // a hypothetical risk.
+            const List<const labelHashSet*> roleSets
+            {
+                &bladeIds, &periodicIds, &hubIds, &shroudIds, &inletOutletIds
+            };
+            for( label a = 0; a < roleSets.size(); ++a )
+            {
+                for( label b = a+1; b < roleSets.size(); ++b )
+                {
+                    forAllConstIter(labelHashSet, *roleSets[a], it)
+                    {
+                        if( roleSets[b]->found(it.key()) )
+                        {
+                            FatalErrorInFunction
+                                << "setTripleJunctionTargetPatches: patch ID "
+                                << it.key() << " appears in more than one"
+                                << " role set -- role sets must be disjoint."
+                                << exit(FatalError);
+                        }
+                    }
+                }
+            }
+
+            tjBladePatchIds_ = bladeIds;
+            tjPeriodicPatchIds_ = periodicIds;
+            tjHubPatchIds_ = hubIds;
+            tjShroudPatchIds_ = shroudIds;
+            tjInletOutletPatchIds_ = inletOutletIds;
         }
 
         //- set boundary-point indices that must not be moved
