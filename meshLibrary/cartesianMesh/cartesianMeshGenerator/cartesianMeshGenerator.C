@@ -68,6 +68,65 @@ namespace Foam
 
 // * * * * * * * * * * * * Private member functions  * * * * * * * * * * * * //
 
+//- Raw signed cell-volume statistics.
+//
+//  MUST NOT use mesh.addressingData().cellVolumes(): that cache stores
+//  CLAMPED (always positive) volumes for optimizer safety, so summing its
+//  negative entries always yields zero. This reproduces the signed volume
+//  computation performed inside polyMeshGenChecks::checkCellVolumes() so
+//  that severity metrics and the negVol count describe the same geometry.
+//
+//  negMag   -- sum of |volume| over cells with cellVol < 0 (true inversions)
+//  minVol   -- true signed minimum over all cells
+//  nNeg     -- count of cells with cellVol < 0
+//  nBelowVS -- count of cells with cellVol < VSMALL; this is the population
+//              checkCellVolumes() reports, i.e. inversions PLUS zero/
+//              near-zero slivers. Kept separate so the two can be compared.
+static void rawCellVolumeStats
+(
+    const polyMeshGen& mesh,
+    scalar& negMag,
+    scalar& minVol,
+    label& nNeg,
+    label& nBelowVS
+)
+{
+    negMag = 0.0;
+    minVol = GREAT;
+    nNeg = 0;
+    nBelowVS = 0;
+
+    const vectorField& fCtrs  = mesh.addressingData().faceCentres();
+    const vectorField& fAreas = mesh.addressingData().faceAreas();
+    const labelList&   own    = mesh.owner();
+    const cellListPMG& cells  = mesh.cells();
+
+    forAll(cells, cellI)
+    {
+        const cell& c = cells[cellI];
+        if( c.size() == 0 ) continue;
+
+        vector cEst(vector::zero);
+        forAll(c, fI)
+            cEst += fCtrs[c[fI]];
+        cEst /= c.size();
+
+        scalar cellVol(0.0);
+        forAll(c, fI)
+        {
+            scalar pyr3Vol = fAreas[c[fI]] & (fCtrs[c[fI]] - cEst);
+            if( own[c[fI]] != cellI )
+                pyr3Vol *= -1.0;
+            cellVol += pyr3Vol;
+        }
+        cellVol /= 3.0;
+
+        if( cellVol < minVol ) minVol = cellVol;
+        if( cellVol < 0 )      { ++nNeg; negMag -= cellVol; }
+        if( cellVol < VSMALL ) ++nBelowVS;
+    }
+}
+
 // Non-mutating scan for near-coincident vertices
 // Returns count of unique vertex pairs closer than tolerance
 static label scanNearCoincidentPoints
@@ -1314,9 +1373,53 @@ void cartesianMeshGenerator::refBoundaryLayers()
                     bool(Switch(bndL.lookup("preRefBLSnapshot")));
         }
 
+        //- Hoisted so the snapshot decision can see it: auto-repair
+        //- requires a recovery point, and must not depend on the user
+        //- separately remembering to set preRefBLSnapshot.
+        bool doAutoRepair = false;
+        if( meshDict_.isDict("boundaryLayers") )
+        {
+            const dictionary& bndLAR = meshDict_.subDict("boundaryLayers");
+            if( bndLAR.found("preRefBLAutoRepair") )
+                doAutoRepair =
+                    bool(Switch(bndLAR.lookup("preRefBLAutoRepair")));
+        }
+
+        //- Snapshot capability != repair eligibility. A dirty mesh is an
+        //- argument FOR holding a recovery point, not against it. Formerly
+        //- gated on !reprojUnsafe_, which meant "surface re-projection is
+        //- unsafe" -- a different capability, and one that also destroyed
+        //- the prerequisite state needed to consider repair at all.
         PreRefBLMeshSnapshot preRefBLSnap;
-        if( doPreRefBLSnapshot && !reprojUnsafe_ )
+        if( doPreRefBLSnapshot || doAutoRepair )
             takePreRefBLSnapshot(preRefBLSnap);
+
+        //- Q0: observational baseline before any refBL work. Logged only --
+        //- the transaction comparator is Q1 (see acceptance gate).
+        label  q0NegVol = 0, q0BadPyr = 0;
+        scalar q0MinCellVol = GREAT, q0NegMag = 0.0;
+        //- Declared at this scope (not inside the block below) because the
+        //- raw-population report in the acceptance gate is two scopes deeper.
+        label  q0NNeg = 0, q0NBelowVS = 0;
+        {
+            labelHashSet q0Neg, q0Bad;
+            polyMeshGenChecks::checkCellVolumes(mesh_, false, &q0Neg);
+            polyMeshGenChecks::checkFacePyramids
+                (mesh_, false, -SMALL, &q0Bad);
+            q0NegVol = label(q0Neg.size());
+            q0BadPyr = label(q0Bad.size());
+            rawCellVolumeStats
+                (mesh_, q0NegMag, q0MinCellVol, q0NNeg, q0NBelowVS);
+            Info << "PREREFBL Q0: negVol=" << q0NegVol
+                 << " badPyr=" << q0BadPyr
+                 << " minCellVol=" << q0MinCellVol
+                 << " negMag=" << q0NegMag
+                 << " rawNeg=" << q0NNeg
+                 << " rawBelowVSmall=" << q0NBelowVS
+                 << " autoRepair=" << (doAutoRepair ? "yes" : "no")
+                 << " snapshotValid="
+                 << (preRefBLSnap.valid ? "yes" : "no") << endl;
+        }
 
         //- Function-scope mirror of the inner twoPassAccepted flag, so the
         //- blPoints_ harvest below (two scopes shallower) can tell whether
@@ -1467,19 +1570,12 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 bool twoPassAttempted = false;
 
                 {
-                    bool doAutoRepair = false;
-                    if( meshDict_.isDict("boundaryLayers") )
-                    {
-                        const dictionary& bndL =
-                            meshDict_.subDict("boundaryLayers");
-                        if( bndL.found("preRefBLAutoRepair") )
-                            doAutoRepair =
-                                bool(Switch(bndL.lookup("preRefBLAutoRepair")));
-                    }
-
+                    //- doAutoRepair hoisted to function scope (see above).
+                    //- !reprojUnsafe_ removed with no replacement gate:
+                    //- refinementValid() below, snapshot validity here, and
+                    //- pass-1 restore on rejection cover the real conditions.
                     if( doAutoRepair
                      && preRefBLSnap.valid
-                     && !reprojUnsafe_
                      && postRefBLBadPyramids.size() > 0
                      && provenanceSeedBfI.size() > 0 )
                     {
@@ -1490,6 +1586,18 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             (mesh_, false, &pass1NegVol);
                         const label pass1BadPyr =
                             label(postRefBLBadPyramids.size());
+
+                        //- Q1 severity: the state pass 2 must beat.
+                        //- Count alone permits defect SUBSTITUTION
+                        //- ({A,B,C} -> {D,E,F} scores 3 <= 3) and lets mild
+                        //- inversions be replaced by severe ones.
+                        scalar q1MinCellVol = GREAT, q1NegMag = 0.0;
+                        label q1NNeg = 0, q1NBelowVS = 0;
+                        rawCellVolumeStats
+                        (
+                            mesh_, q1NegMag, q1MinCellVol,
+                            q1NNeg, q1NBelowVS
+                        );
 
                         Info << "Two-pass BL repair: pass1 badPyramids="
                              << pass1BadPyr
@@ -1584,14 +1692,83 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             polyMeshGenChecks::checkFacePyramids
                                 (mesh_, false, -SMALL, &pass2BadPyr);
 
+                            scalar q2MinCellVol = GREAT, q2NegMag = 0.0;
+                            label q2NNeg = 0, q2NBelowVS = 0;
+                            rawCellVolumeStats
+                            (
+                                mesh_, q2NegMag, q2MinCellVol,
+                                q2NNeg, q2NBelowVS
+                            );
+
+                            //- Phase 1: effectively zero tolerance. Deltas
+                            //- are logged below so a scale-aware floor can
+                            //- be chosen from measured data rather than
+                            //- guessed before this path has ever run.
+                            //- NOTE: no special case needed for
+                            //- q1NegMag == 0 -- the count term already
+                            //- forces q2NegVol == 0 when q1NegVol == 0.
+                            const scalar volTolAbs = 0.0;
+                            const scalar volTolRel = 0.0;
+                            const scalar negMagTol =
+                                volTolAbs + volTolRel*q1NegMag;
+
+                            const bool negCountOK =
+                                pass2NegVol.size() <= pass1NegVol.size();
+                            const bool badPyrBetter =
+                                label(pass2BadPyr.size()) < pass1BadPyr;
+                            const bool negMagOK =
+                                q2NegMag <= q1NegMag + negMagTol;
+                            const bool minVolOK =
+                                q2MinCellVol >= q1MinCellVol - volTolAbs;
+
                             const bool pass2Better =
-                                pass2NegVol.size() <= pass1NegVol.size()
-                             && label(pass2BadPyr.size()) < pass1BadPyr;
+                                negCountOK && badPyrBetter
+                             && negMagOK   && minVolOK;
 
                             Info << "Two-pass BL repair: pass2 badPyramids="
                                  << pass2BadPyr.size()
                                  << " negVol=" << pass2NegVol.size()
                                  << (pass2Better ? " -- ACCEPTED" : " -- REJECTED")
+                                 << endl;
+
+                            Info << "PREREFBL Q0/Q1/Q2"
+                                 << "  negVol " << q0NegVol
+                                 << "/" << pass1NegVol.size()
+                                 << "/" << pass2NegVol.size()
+                                 << "  badPyr " << q0BadPyr
+                                 << "/" << pass1BadPyr
+                                 << "/" << pass2BadPyr.size()
+                                 << "  negMag " << q0NegMag
+                                 << "/" << q1NegMag << "/" << q2NegMag
+                                 << "  minVol " << q0MinCellVol
+                                 << "/" << q1MinCellVol
+                                 << "/" << q2MinCellVol << endl;
+
+                            Info << "PREREFBL severity delta:"
+                                 << " dNegMag=" << (q2NegMag - q1NegMag)
+                                 << " dMinVol=" << (q2MinCellVol - q1MinCellVol)
+                                 << endl;
+
+                            //- rawNeg counts true inversions (vol < 0);
+                            //- rawBelowVSmall is the population
+                            //- checkCellVolumes() reports (vol < VSMALL),
+                            //- i.e. inversions plus zero/near-zero slivers.
+                            //- A gap between them means the count gate and
+                            //- the severity terms are seeing different sets.
+                            Info << "PREREFBL raw populations Q0/Q1/Q2:"
+                                 << " rawNeg " << q0NNeg << "/" << q1NNeg
+                                 << "/" << q2NNeg
+                                 << "  rawBelowVSmall " << q0NBelowVS
+                                 << "/" << q1NBelowVS << "/" << q2NBelowVS
+                                 << "  (checkCellVolumes count Q1/Q2 "
+                                 << pass1NegVol.size() << "/"
+                                 << pass2NegVol.size() << ")" << endl;
+
+                            Info << "PREREFBL decision terms:"
+                                 << " negCountOK="  << (negCountOK  ? "yes" : "no")
+                                 << " badPyrBetter="<< (badPyrBetter? "yes" : "no")
+                                 << " negMagOK="    << (negMagOK    ? "yes" : "no")
+                                 << " minVolOK="    << (minVolOK    ? "yes" : "no")
                                  << endl;
 
                             if( pass2Better )
