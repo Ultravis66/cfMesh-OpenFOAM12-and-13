@@ -104,27 +104,74 @@ void polyMeshGenAddressing::makeCellCentresAndVols
             if( own[c[fI]] != cellI )
                 pyr3Vol *= -1.0;
 
-            // Raw signed pyr3Vol for honest volume detection.
-            // Clamped value for centre accumulation to keep cEst stable.
-            const scalar pyr3VolClamped = Foam::max(pyr3Vol, VSMALL);
+            // Addressing deliberately uses the SAME positive surrogate
+            // weight for BOTH the centre numerator and its denominator.
+            //
+            // Splitting them (positive weights in the numerator, signed in
+            // the denominator) lets a mixed cell whose pyramids nearly
+            // cancel produce numerator ~2e-10 over denominator VSMALL
+            // (2.225e-308) -> cell centre ~1e+298. Downstream mag() then
+            // squares that and raises SIGFPE.
+            //
+            // For a mixed/inverted cell there is no useful physical
+            // centroid; this bounded surrogate is what stock cfMesh used so
+            // optimizer/addressing consumers receive a finite local centre.
+            //
+            // IMPORTANT: honest signed-volume validation is NOT performed
+            // through this cache. polyMeshGenChecks::checkCellVolumes()
+            // independently recomputes raw signed pyramid volumes.
+            pyr3Vol = Foam::max(pyr3Vol, VSMALL);
 
             // Calculate face-pyramid centre
             const vector pc = (3.0/4.0)*fCtrs[c[fI]] + (1.0/4.0)*cEst;
 
-            // Accumulate volume-weighted face-pyramid centre (clamped for stability)
-            cellCentre += pyr3VolClamped*pc;
-
-            // Accumulate face-pyramid volume
+            // Numerator and denominator use identical weights.
+            cellCentre += pyr3Vol*pc;
             cellVol += pyr3Vol;
         }
 
-        // cellVol accumulated with raw signed pyramids for centre stability,
-        // but cache stores clamped value -- optimizer consumers must not see negative.
-        // Validation uses a separate direct computation (see checkCellVolumes).
-        const scalar cellVolClamped = Foam::max(cellVol, VSMALL);
-        cellCtrs[cellI] = cellCentre / cellVolClamped;
-        cellVols[cellI] = cellVolClamped / 3.0;
+        cellCtrs[cellI] = cellCentre / cellVol;
+        cellVols[cellI] = cellVol / 3.0;
     }
+
+    // Temporary diagnostic for the 4167a0a centroid-overflow investigation.
+    //
+    // Do NOT use mag(cellCtrs[cellI]) here: vector mag() squares components
+    // and is exactly the arithmetic which SIGFPEs on an astronomical centre.
+    // Foam::mag(scalar) is fabs-like and does not square.
+    scalar maxCentreCmpt = 0.0;
+    label maxCentreCell = -1;
+    label nAbsurdCentreComponents = 0;
+
+    forAll(cellCtrs, cellI)
+    {
+        for(direction cmpt=0; cmpt<vector::nComponents; ++cmpt)
+        {
+            const scalar value = cellCtrs[cellI][cmpt];
+
+            if( value != value || Foam::mag(value) > VGREAT )
+            {
+                ++nAbsurdCentreComponents;
+                continue;
+            }
+
+            const scalar absValue = Foam::mag(value);
+            if( absValue > maxCentreCmpt )
+            {
+                maxCentreCmpt = absValue;
+                maxCentreCell = cellI;
+            }
+        }
+    }
+
+    Info << "CELLCTRDIAG maxComponent=" << maxCentreCmpt
+         << " cell=" << maxCentreCell
+         << " nAbsurdComponents=" << nAbsurdCentreComponents;
+
+    if( maxCentreCell >= 0 )
+        Info << " centre=" << cellCtrs[maxCentreCell];
+
+    Info << endl;
 }
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
