@@ -1974,6 +1974,70 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             ++q1NegAttrI;
                         }
 
+                        // Preserve Q1 bad-pyramid face attribution across
+                        // rollback.  Q1/Q2 face and cell IDs are not assumed
+                        // stable; owner/neighbour base bfI provenance is.
+                        labelList q1BadPyrFaceI(pass1BadPyr, -1);
+                        labelList q1BadPyrOwnerBfI(pass1BadPyr, -1);
+                        labelList q1BadPyrNeighbourBfI(pass1BadPyr, -1);
+
+                        const labelList& q1PyrOwn = mesh_.owner();
+                        const labelList& q1PyrNei = mesh_.neighbour();
+
+                        label q1PyrAttrI = 0;
+
+                        forAllConstIter
+                        (
+                            labelHashSet,
+                            postRefBLBadPyramids,
+                            q1PyrIt
+                        )
+                        {
+                            const label faceI = q1PyrIt.key();
+
+                            q1BadPyrFaceI[q1PyrAttrI] = faceI;
+
+                            if
+                            (
+                                faceI >= 0
+                             && faceI < label(q1PyrOwn.size())
+                            )
+                            {
+                                const label cellI = q1PyrOwn[faceI];
+
+                                if
+                                (
+                                    cellI >= 0
+                                 && cellI < label(prov.size())
+                                )
+                                {
+                                    q1BadPyrOwnerBfI[q1PyrAttrI] =
+                                        prov[cellI];
+                                }
+                            }
+
+                            if
+                            (
+                                faceI >= 0
+                             && faceI < label(q1PyrNei.size())
+                            )
+                            {
+                                const label cellI = q1PyrNei[faceI];
+
+                                if
+                                (
+                                    cellI >= 0
+                                 && cellI < label(prov.size())
+                                )
+                                {
+                                    q1BadPyrNeighbourBfI[q1PyrAttrI] =
+                                        prov[cellI];
+                                }
+                            }
+
+                            ++q1PyrAttrI;
+                        }
+
                         Info << "Two-pass BL repair: pass1 badPyramids="
                              << pass1BadPyr
                              << " negVol=" << pass1NegVol.size()
@@ -2037,6 +2101,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             labelList q1GroupNegCount;
                             scalarField q1GroupNegMag;
                             scalarField q1GroupMinVol;
+                            labelList q1GroupBadPyr;
 
                             // Populated from exploratory Q2.  Group IDs and
                             // plan IDs are runtime/topology-local bookkeeping;
@@ -2419,6 +2484,146 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                     (nRepairGroups, scalar(0.0));
                                 q1GroupMinVol.setSize
                                     (nRepairGroups, GREAT);
+                                q1GroupBadPyr.setSize(nRepairGroups, 0);
+
+                                // Attribute Q1 bad-pyramid faces through
+                                // owner/neighbour base-face provenance.
+                                //
+                                // A face is:
+                                //   unique       - exactly one distinct group
+                                //   ambiguous    - owner/neighbour map to
+                                //                  different groups
+                                //   unattributed - neither side maps to a group
+                                //
+                                // Ambiguous faces are deliberately NOT charged
+                                // to either group in this first diagnostic.
+                                label q1PyrUnique = 0;
+                                label q1PyrAmbiguous = 0;
+                                label q1PyrUnattributed = 0;
+
+                                forAll(q1BadPyrFaceI, q1PyrI)
+                                {
+                                    const label ownerBfI =
+                                        q1BadPyrOwnerBfI[q1PyrI];
+                                    const label neighbourBfI =
+                                        q1BadPyrNeighbourBfI[q1PyrI];
+
+                                    label ownerGroup = -1;
+                                    label neighbourGroup = -1;
+
+                                    if
+                                    (
+                                        ownerBfI >= 0
+                                     && ownerBfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        ownerGroup =
+                                            repairGroupAtBfI[ownerBfI];
+                                    }
+
+                                    if
+                                    (
+                                        neighbourBfI >= 0
+                                     && neighbourBfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        neighbourGroup =
+                                            repairGroupAtBfI[neighbourBfI];
+                                    }
+
+                                    if
+                                    (
+                                        ownerGroup >= 0
+                                     && neighbourGroup >= 0
+                                     && ownerGroup != neighbourGroup
+                                    )
+                                    {
+                                        ++q1PyrAmbiguous;
+
+                                        Info << "BLRepairPyrAttrib:"
+                                             << " pass=Q1"
+                                             << " face="
+                                             << q1BadPyrFaceI[q1PyrI]
+                                             << " ownerBfI=" << ownerBfI
+                                             << " neighbourBfI="
+                                             << neighbourBfI
+                                             << " ownerGroup="
+                                             << ownerGroup
+                                             << " neighbourGroup="
+                                             << neighbourGroup
+                                             << " class=ambiguous"
+                                             << endl;
+                                    }
+                                    else
+                                    {
+                                        const label groupI =
+                                            ownerGroup >= 0
+                                          ? ownerGroup
+                                          : neighbourGroup;
+
+                                        if
+                                        (
+                                            groupI >= 0
+                                         && groupI < nRepairGroups
+                                        )
+                                        {
+                                            ++q1GroupBadPyr[groupI];
+                                            ++q1PyrUnique;
+
+                                            Info << "BLRepairPyrAttrib:"
+                                                 << " pass=Q1"
+                                                 << " face="
+                                                 << q1BadPyrFaceI[q1PyrI]
+                                                 << " ownerBfI="
+                                                 << ownerBfI
+                                                 << " neighbourBfI="
+                                                 << neighbourBfI
+                                                 << " ownerGroup="
+                                                 << ownerGroup
+                                                 << " neighbourGroup="
+                                                 << neighbourGroup
+                                                 << " class=unique"
+                                                 << " group=" << groupI
+                                                 << endl;
+                                        }
+                                        else
+                                        {
+                                            ++q1PyrUnattributed;
+
+                                            Info << "BLRepairPyrAttrib:"
+                                                 << " pass=Q1"
+                                                 << " face="
+                                                 << q1BadPyrFaceI[q1PyrI]
+                                                 << " ownerBfI="
+                                                 << ownerBfI
+                                                 << " neighbourBfI="
+                                                 << neighbourBfI
+                                                 << " ownerGroup="
+                                                 << ownerGroup
+                                                 << " neighbourGroup="
+                                                 << neighbourGroup
+                                                 << " class=unattributed"
+                                                 << endl;
+                                        }
+                                    }
+                                }
+
+                                Info << "BLRepairPyrAccounting:"
+                                     << " pass=Q1"
+                                     << " total=" << pass1BadPyr
+                                     << " unique=" << q1PyrUnique
+                                     << " ambiguous=" << q1PyrAmbiguous
+                                     << " unattributed="
+                                     << q1PyrUnattributed
+                                     << " accounted="
+                                     << (
+                                            q1PyrUnique
+                                          + q1PyrAmbiguous
+                                          + q1PyrUnattributed
+                                        )
+                                     << endl;
 
                                 // Attribute stored Q1 bad-volume cells through
                                 // stable base-face provenance.
@@ -2634,6 +2839,184 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                     }
                                 }
 
+                                labelList q2GroupBadPyr
+                                    (nRepairGroups, 0);
+
+                                label q2PyrUnique = 0;
+                                label q2PyrAmbiguous = 0;
+                                label q2PyrUnattributed = 0;
+
+                                const labelList& q2PyrOwn =
+                                    mesh_.owner();
+                                const labelList& q2PyrNei =
+                                    mesh_.neighbour();
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    pass2BadPyr,
+                                    q2PyrIt
+                                )
+                                {
+                                    const label faceI = q2PyrIt.key();
+
+                                    label ownerBfI = -1;
+                                    label neighbourBfI = -1;
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(q2PyrOwn.size())
+                                    )
+                                    {
+                                        const label cellI =
+                                            q2PyrOwn[faceI];
+
+                                        if
+                                        (
+                                            cellI >= 0
+                                         && cellI < label(q2Prov.size())
+                                        )
+                                        {
+                                            ownerBfI =
+                                                q2Prov[cellI];
+                                        }
+                                    }
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(q2PyrNei.size())
+                                    )
+                                    {
+                                        const label cellI =
+                                            q2PyrNei[faceI];
+
+                                        if
+                                        (
+                                            cellI >= 0
+                                         && cellI < label(q2Prov.size())
+                                        )
+                                        {
+                                            neighbourBfI =
+                                                q2Prov[cellI];
+                                        }
+                                    }
+
+                                    label ownerGroup = -1;
+                                    label neighbourGroup = -1;
+
+                                    if
+                                    (
+                                        ownerBfI >= 0
+                                     && ownerBfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        ownerGroup =
+                                            repairGroupAtBfI[ownerBfI];
+                                    }
+
+                                    if
+                                    (
+                                        neighbourBfI >= 0
+                                     && neighbourBfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        neighbourGroup =
+                                            repairGroupAtBfI[neighbourBfI];
+                                    }
+
+                                    if
+                                    (
+                                        ownerGroup >= 0
+                                     && neighbourGroup >= 0
+                                     && ownerGroup != neighbourGroup
+                                    )
+                                    {
+                                        ++q2PyrAmbiguous;
+
+                                        Info << "BLRepairPyrAttrib:"
+                                             << " pass=Q2"
+                                             << " face=" << faceI
+                                             << " ownerBfI=" << ownerBfI
+                                             << " neighbourBfI="
+                                             << neighbourBfI
+                                             << " ownerGroup="
+                                             << ownerGroup
+                                             << " neighbourGroup="
+                                             << neighbourGroup
+                                             << " class=ambiguous"
+                                             << endl;
+                                    }
+                                    else
+                                    {
+                                        const label groupI =
+                                            ownerGroup >= 0
+                                          ? ownerGroup
+                                          : neighbourGroup;
+
+                                        if
+                                        (
+                                            groupI >= 0
+                                         && groupI < nRepairGroups
+                                        )
+                                        {
+                                            ++q2GroupBadPyr[groupI];
+                                            ++q2PyrUnique;
+
+                                            Info << "BLRepairPyrAttrib:"
+                                                 << " pass=Q2"
+                                                 << " face=" << faceI
+                                                 << " ownerBfI="
+                                                 << ownerBfI
+                                                 << " neighbourBfI="
+                                                 << neighbourBfI
+                                                 << " ownerGroup="
+                                                 << ownerGroup
+                                                 << " neighbourGroup="
+                                                 << neighbourGroup
+                                                 << " class=unique"
+                                                 << " group=" << groupI
+                                                 << endl;
+                                        }
+                                        else
+                                        {
+                                            ++q2PyrUnattributed;
+
+                                            Info << "BLRepairPyrAttrib:"
+                                                 << " pass=Q2"
+                                                 << " face=" << faceI
+                                                 << " ownerBfI="
+                                                 << ownerBfI
+                                                 << " neighbourBfI="
+                                                 << neighbourBfI
+                                                 << " ownerGroup="
+                                                 << ownerGroup
+                                                 << " neighbourGroup="
+                                                 << neighbourGroup
+                                                 << " class=unattributed"
+                                                 << endl;
+                                        }
+                                    }
+                                }
+
+                                Info << "BLRepairPyrAccounting:"
+                                     << " pass=Q2"
+                                     << " total=" << pass2BadPyr.size()
+                                     << " unique=" << q2PyrUnique
+                                     << " ambiguous=" << q2PyrAmbiguous
+                                     << " unattributed="
+                                     << q2PyrUnattributed
+                                     << " accounted="
+                                     << (
+                                            q2PyrUnique
+                                          + q2PyrAmbiguous
+                                          + q2PyrUnattributed
+                                        )
+                                     << endl;
+
                                 for
                                 (
                                     label groupI = 0;
@@ -2697,6 +3080,27 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                          << "->" << q2Mag
                                          << " minVol=" << q1Min
                                          << "->" << q2Min
+                                         << " negSafe="
+                                         << (negSafe ? "yes" : "no")
+                                         << endl;
+
+                                    const label q1Pyr =
+                                        q1GroupBadPyr[groupI];
+                                    const label q2Pyr =
+                                        q2GroupBadPyr[groupI];
+
+                                    Info << "BLRepairPyrGroup:"
+                                         << " group=" << groupI
+                                         << " plans=" << nPlans
+                                         << " footprint=" << nFootprint
+                                         << " q1=" << q1Pyr
+                                         << " q2=" << q2Pyr
+                                         << " delta=" << (q2Pyr - q1Pyr)
+                                         << " pyrBetter="
+                                         << (
+                                                q2Pyr < q1Pyr
+                                              ? "yes" : "no"
+                                            )
                                          << " negSafe="
                                          << (negSafe ? "yes" : "no")
                                          << endl;
