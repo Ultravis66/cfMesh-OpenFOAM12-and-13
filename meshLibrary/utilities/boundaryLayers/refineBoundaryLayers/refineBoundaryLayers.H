@@ -127,6 +127,18 @@ class refineBoundaryLayers
         //- logic so it always wins. Multiple calls only lower caps.
         Map<label> forcedMaxLayersAtFace_;
 
+        //- provenance of the winning forced cap at each boundary face.
+        //- The set contains every source plan that requested the SAME
+        //- minimum cap. A stricter later cap replaces earlier providers;
+        //- a weaker request contributes nothing.
+        Map<labelHashSet> forcedMaxLayerProviderPlansAtFace_;
+
+        //- subset of forcedMaxLayersAtFace_ that actually reduced
+        //- nLayersAtBndFace_ during analyseLayers(), plus the winning
+        //- provider plans for those effective interventions.
+        labelHashSet actuallyCappedFaces_;
+        Map<labelHashSet> actuallyCappedProviderPlansAtFace_;
+
         //- boundary faces with forced BL thickness scales (bfI -> scale).
         //- scale in [0,1]: 1.0 = full thickness, 0.5 = half thickness.
         //- Applied to firstLayerThickness[seI] for all split edges at bfI.
@@ -453,6 +465,14 @@ public:
         //- performs refinement based on the given settings
         void refineLayers();
 
+        //- True only when refineLayers() reached successful cell generation.
+        //- Kept separate from refinementValid(): a no-op/early return may
+        //- have coherent metadata but is not a completed refinement result.
+        inline bool refinementCompleted() const
+        {
+            return done_;
+        }
+
     // Post information
         //- provide the list of points in the boundary layer
         void pointsInBndLayer(labelLongList&);
@@ -463,6 +483,17 @@ public:
         //- provenance map accessor (newCellI -> original bfI, -1 if not a BL cell)
         const labelList& cellToBaseBndFace() const
         { return cellToBaseBndFace_; }
+
+        //- actual max-layer interventions from the completed analysis
+        const labelHashSet& actuallyCappedFaces() const
+        {
+            return actuallyCappedFaces_;
+        }
+
+        const Map<labelHashSet>& actuallyCappedProviderPlansAtFace() const
+        {
+            return actuallyCappedProviderPlansAtFace_;
+        }
 
     // Static member functions
         //- read the settings from dictionary
@@ -480,7 +511,8 @@ public:
             const label ring2MaxLayers,
             const scalar ring0ThicknessScale = 1.0,
             const scalar ring1ThicknessScale = 1.0,
-            const scalar ring2ThicknessScale = 1.0
+            const scalar ring2ThicknessScale = 1.0,
+            const label sourcePlanId = -1
         );
 
         //- set BL/BL junction points for wedge topology emission

@@ -2700,7 +2700,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                             plan.ring2_.maxLayers,
                                             plan.ring0_.thicknessScale,
                                             plan.ring1_.thicknessScale,
-                                            plan.ring2_.thicknessScale
+                                            plan.ring2_.thicknessScale,
+                                            pit.key()
                                         );
                                 }
                             }
@@ -2744,6 +2745,171 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             }
                             else
                             {
+                            // Actual effective-cap provenance from Q2.
+                            // Diagnostic only -- does not alter grouping,
+                            // Q3 selection, or any acceptance condition.
+                            const labelHashSet& q2ActuallyCappedFaces =
+                                refLayers2.actuallyCappedFaces();
+
+                            const Map<labelHashSet>& q2CapProviders =
+                                refLayers2.actuallyCappedProviderPlansAtFace();
+
+                            Map<labelHashSet> q2EffectiveFacesByPlan;
+
+                            label nQ2MultiRepairProviderFaces = 0;
+                            label nQ2NonRepairProviderFaces = 0;
+
+                            forAllConstIter
+                            (
+                                Map<labelHashSet>,
+                                q2CapProviders,
+                                efIt
+                            )
+                            {
+                                const label bfI = efIt.key();
+                                const labelHashSet& providers = efIt();
+
+                                label nRepairProviders = 0;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    providers,
+                                    epIt
+                                )
+                                {
+                                    const label planId = epIt.key();
+
+                                    if( planId < 0 )
+                                        continue;
+
+                                    ++nRepairProviders;
+
+                                    if
+                                    (
+                                        !q2EffectiveFacesByPlan.found(planId)
+                                    )
+                                    {
+                                        labelHashSet emptyFaces;
+                                        q2EffectiveFacesByPlan.insert
+                                            (planId, emptyFaces);
+                                    }
+
+                                    q2EffectiveFacesByPlan[planId].insert(bfI);
+
+                                    Info << "BLRepairEffectiveCapProvider:"
+                                         << " bfI=" << bfI
+                                         << " planId=" << planId
+                                         << endl;
+                                }
+
+                                if( nRepairProviders > 1 )
+                                    ++nQ2MultiRepairProviderFaces;
+                                else if( nRepairProviders == 0 )
+                                    ++nQ2NonRepairProviderFaces;
+                            }
+
+                            Info << "BLRepairEffectiveCapSummary:"
+                                 << " actualCappedFaces="
+                                 << q2ActuallyCappedFaces.size()
+                                 << " providerFaces="
+                                 << q2CapProviders.size()
+                                 << " effectiveRepairPlans="
+                                 << q2EffectiveFacesByPlan.size()
+                                 << " multiRepairProviderFaces="
+                                 << nQ2MultiRepairProviderFaces
+                                 << " nonRepairProviderFaces="
+                                 << nQ2NonRepairProviderFaces
+                                 << endl;
+
+                            if( haveClassifierPlans )
+                            {
+                                forAllConstIter
+                                (
+                                    Map<BLRepairPlan>,
+                                    plans,
+                                    epPlanIt
+                                )
+                                {
+                                    const label planId = epPlanIt.key();
+                                    const BLRepairPlan& plan = epPlanIt();
+
+                                    const label nEffective =
+                                        q2EffectiveFacesByPlan.found(planId)
+                                      ? q2EffectiveFacesByPlan[planId].size()
+                                      : 0;
+
+                                    Info << "BLRepairEffectivePlan:"
+                                         << " planId=" << planId
+                                         << " type="
+                                         << BLRepairPlan::junctionTypeName
+                                            (plan.sourceType_)
+                                         << " seeds=" << plan.seedBfI_.size()
+                                         << " effectiveFaces=" << nEffective
+                                         << endl;
+                                }
+
+                                forAllConstIter
+                                (
+                                    Map<labelHashSet>,
+                                    repairGroupPlans,
+                                    egIt
+                                )
+                                {
+                                    const label groupI = egIt.key();
+                                    const labelHashSet& groupPlans = egIt();
+
+                                    labelHashSet effectiveFaces;
+                                    label nEffectivePlans = 0;
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        groupPlans,
+                                        egpIt
+                                    )
+                                    {
+                                        const label planId = egpIt.key();
+
+                                        if
+                                        (
+                                            !q2EffectiveFacesByPlan.found
+                                            (planId)
+                                        )
+                                            continue;
+
+                                        const labelHashSet& planFaces =
+                                            q2EffectiveFacesByPlan[planId];
+
+                                        if( planFaces.size() == 0 )
+                                            continue;
+
+                                        ++nEffectivePlans;
+
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            planFaces,
+                                            pFaceIt
+                                        )
+                                        {
+                                            effectiveFaces.insert
+                                                (pFaceIt.key());
+                                        }
+                                    }
+
+                                    Info << "BLRepairEffectiveGroup:"
+                                         << " nominalGroup=" << groupI
+                                         << " nominalPlans="
+                                         << groupPlans.size()
+                                         << " effectivePlans="
+                                         << nEffectivePlans
+                                         << " effectiveFaces="
+                                         << effectiveFaces.size()
+                                         << endl;
+                                }
+                            }
+
                             labelHashSet pass2NegVol;
                             polyMeshGenChecks::checkCellVolumes
                                 (mesh_, false, &pass2NegVol);
@@ -3367,7 +3533,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                             plan.ring2_.maxLayers,
                                             plan.ring0_.thicknessScale,
                                             plan.ring1_.thicknessScale,
-                                            plan.ring2_.thicknessScale
+                                            plan.ring2_.thicknessScale,
+                                            planId
                                         );
                                     }
 

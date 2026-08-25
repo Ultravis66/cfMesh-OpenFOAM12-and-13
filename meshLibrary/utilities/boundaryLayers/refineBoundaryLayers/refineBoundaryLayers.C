@@ -554,7 +554,8 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
     const label ring2MaxLayers,
     const scalar ring0ThicknessScale,
     const scalar ring1ThicknessScale,
-    const scalar ring2ThicknessScale
+    const scalar ring2ThicknessScale,
+    const label sourcePlanId
 )
 {
     const meshSurfaceEngine& mse = surfaceEngine();
@@ -607,6 +608,47 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
     label nThicknessAdded = 0;
     label nThicknessLowered = 0;
 
+    // Track which source plan supplied the final minimum cap.
+    // sourcePlanId==-1 identifies a non-BLRepairPlan caller.
+    auto updateCapProviders =
+    [&](const label bfI, const bool existed,
+        const label oldCap, const label requestedCap)
+    {
+        // Provider provenance follows the REQUEST that supplied the
+        // winning minimum cap, not min(oldCap, requestedCap).
+        //
+        // requested < old: stricter request becomes sole winner
+        // requested == old: equal winning request shares provenance
+        // requested > old: weaker request contributes nothing
+        if( !existed || requestedCap < oldCap )
+        {
+            if( forcedMaxLayerProviderPlansAtFace_.found(bfI) )
+            {
+                forcedMaxLayerProviderPlansAtFace_[bfI].clear();
+                forcedMaxLayerProviderPlansAtFace_[bfI].insert(sourcePlanId);
+            }
+            else
+            {
+                labelHashSet providers;
+                providers.insert(sourcePlanId);
+                forcedMaxLayerProviderPlansAtFace_.insert(bfI, providers);
+            }
+        }
+        else if( requestedCap == oldCap )
+        {
+            if( !forcedMaxLayerProviderPlansAtFace_.found(bfI) )
+            {
+                labelHashSet providers;
+                providers.insert(sourcePlanId);
+                forcedMaxLayerProviderPlansAtFace_.insert(bfI, providers);
+            }
+            else
+            {
+                forcedMaxLayerProviderPlansAtFace_[bfI].insert(sourcePlanId);
+            }
+        }
+    };
+
     auto applyThicknessScale =
     [&](const labelHashSet& ringFaces, const scalar scale)
     {
@@ -647,11 +689,19 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
             const label oldCap = forcedMaxLayersAtFace_[bfI];
             const label newCap = Foam::min(oldCap, ring0MaxLayers);
             if( newCap < oldCap ) ++nLowered;
+            updateCapProviders(bfI, true, oldCap, ring0MaxLayers);
             forcedMaxLayersAtFace_[bfI] = newCap;
         }
         else
         {
             forcedMaxLayersAtFace_.insert(bfI, ring0MaxLayers);
+            updateCapProviders
+            (
+                bfI,
+                false,
+                ring0MaxLayers,
+                ring0MaxLayers
+            );
             ++nAdded;
         }
     }
@@ -665,11 +715,19 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
             const label oldCap = forcedMaxLayersAtFace_[bfI];
             const label newCap = Foam::min(oldCap, ring1MaxLayers);
             if( newCap < oldCap ) ++nLowered;
+            updateCapProviders(bfI, true, oldCap, ring1MaxLayers);
             forcedMaxLayersAtFace_[bfI] = newCap;
         }
         else
         {
             forcedMaxLayersAtFace_.insert(bfI, ring1MaxLayers);
+            updateCapProviders
+            (
+                bfI,
+                false,
+                ring1MaxLayers,
+                ring1MaxLayers
+            );
             ++nAdded;
         }
     }
@@ -683,11 +741,19 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
             const label oldCap = forcedMaxLayersAtFace_[bfI];
             const label newCap = Foam::min(oldCap, ring2MaxLayers);
             if( newCap < oldCap ) ++nLowered;
+            updateCapProviders(bfI, true, oldCap, ring2MaxLayers);
             forcedMaxLayersAtFace_[bfI] = newCap;
         }
         else
         {
             forcedMaxLayersAtFace_.insert(bfI, ring2MaxLayers);
+            updateCapProviders
+            (
+                bfI,
+                false,
+                ring2MaxLayers,
+                ring2MaxLayers
+            );
             ++nAdded;
         }
     }

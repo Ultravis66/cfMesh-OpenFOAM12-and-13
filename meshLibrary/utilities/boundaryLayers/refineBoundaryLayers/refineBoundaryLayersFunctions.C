@@ -578,12 +578,16 @@ bool refineBoundaryLayers::analyseLayers()
     // a maximum layer count. Generalizes the old binary
     // forceSingleLayerFaces_ logic into a tapered ring cap.
     // Applied after all global/patch layer-count logic so it always wins.
+    actuallyCappedFaces_.clear();
+    actuallyCappedProviderPlansAtFace_.clear();
+
     if( forcedMaxLayersAtFace_.size() )
     {
         label nCapped = 0;
         label nAlreadyAtOrBelow = 0;
         label nOutOfRange = 0;
         label nInvalidCap = 0;
+        label nCappedNoProvider = 0;
 
         forAllConstIter(Map<label>, forcedMaxLayersAtFace_, it)
         {
@@ -606,6 +610,21 @@ bool refineBoundaryLayers::analyseLayers()
             {
                 nLayersAtBndFace_[bfI] = maxLayers;
                 ++nCapped;
+
+                actuallyCappedFaces_.insert(bfI);
+
+                if( forcedMaxLayerProviderPlansAtFace_.found(bfI) )
+                {
+                    actuallyCappedProviderPlansAtFace_.insert
+                    (
+                        bfI,
+                        forcedMaxLayerProviderPlansAtFace_[bfI]
+                    );
+                }
+                else
+                {
+                    ++nCappedNoProvider;
+                }
             }
             else
             {
@@ -619,6 +638,10 @@ bool refineBoundaryLayers::analyseLayers()
              << " outOfRange=" << nOutOfRange
              << " invalidCap=" << nInvalidCap
              << " requested=" << forcedMaxLayersAtFace_.size()
+             << " effectiveFaces=" << actuallyCappedFaces_.size()
+             << " providerFaces="
+             << actuallyCappedProviderPlansAtFace_.size()
+             << " cappedNoProvider=" << nCappedNoProvider
              << endl;
     }
 
