@@ -1350,6 +1350,12 @@ void cartesianMeshGenerator::refBoundaryLayers()
             labelList    patchStart;
             labelList    patchSize;
 
+            // Mesh subsets are topology-indexed state and must participate
+            // in rollback together with points/faces/cells.
+            std::map<label, meshSubset> pointSubsets;
+            std::map<label, meshSubset> faceSubsets;
+            std::map<label, meshSubset> cellSubsets;
+
             // BL detection metadata. These contain point/face indices
             // and must match the mesh state restored by this snapshot.
             labelHashSet blblJunctionPoints;
@@ -1388,6 +1394,17 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 snap.patchStart[patchI] = bnd[patchI].patchStart();
                 snap.patchSize[patchI]  = bnd[patchI].patchSize();
             }
+
+            polyMeshGenModifier subsetModifier(mesh_);
+            snap.pointSubsets = subsetModifier.pointSubsetsAccess();
+            snap.faceSubsets  = subsetModifier.faceSubsetsAccess();
+            snap.cellSubsets  = subsetModifier.cellSubsetsAccess();
+
+            Info << "Pre-refBL snapshot: saved subsets point="
+                 << snap.pointSubsets.size()
+                 << " face=" << snap.faceSubsets.size()
+                 << " cell=" << snap.cellSubsets.size() << endl;
+
             snap.blblJunctionPoints = blblJunctionPoints_;
             snap.blblAcuteCornerPoints = blblAcuteCornerPoints_;
             snap.rampSeedPoints = blRampSeedPoints_;
@@ -1412,6 +1429,103 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 return false;
             }
 
+            // Validate topology-indexed subset state before changing
+            // the current mesh. updateSubset() assumes every stored label
+            // is a valid row in its supplied topology map.
+            label maxPointSubsetLabel = -1;
+            label maxFaceSubsetLabel  = -1;
+            label maxCellSubsetLabel  = -1;
+            label invalidPointSubsetLabels = 0;
+            label invalidFaceSubsetLabels  = 0;
+            label invalidCellSubsetLabels  = 0;
+
+            for
+            (
+                std::map<label, meshSubset>::const_iterator it =
+                    snap.pointSubsets.begin();
+                it != snap.pointSubsets.end();
+                ++it
+            )
+            {
+                labelList labels;
+                it->second.containedElements(labels);
+                forAll(labels, i)
+                {
+                    if( labels[i] > maxPointSubsetLabel )
+                        maxPointSubsetLabel = labels[i];
+
+                    if( labels[i] < 0 || labels[i] >= snap.points.size() )
+                        ++invalidPointSubsetLabels;
+                }
+            }
+
+            for
+            (
+                std::map<label, meshSubset>::const_iterator it =
+                    snap.faceSubsets.begin();
+                it != snap.faceSubsets.end();
+                ++it
+            )
+            {
+                labelList labels;
+                it->second.containedElements(labels);
+                forAll(labels, i)
+                {
+                    if( labels[i] > maxFaceSubsetLabel )
+                        maxFaceSubsetLabel = labels[i];
+
+                    if( labels[i] < 0 || labels[i] >= snap.faces.size() )
+                        ++invalidFaceSubsetLabels;
+                }
+            }
+
+            for
+            (
+                std::map<label, meshSubset>::const_iterator it =
+                    snap.cellSubsets.begin();
+                it != snap.cellSubsets.end();
+                ++it
+            )
+            {
+                labelList labels;
+                it->second.containedElements(labels);
+                forAll(labels, i)
+                {
+                    if( labels[i] > maxCellSubsetLabel )
+                        maxCellSubsetLabel = labels[i];
+
+                    if( labels[i] < 0 || labels[i] >= snap.cells.size() )
+                        ++invalidCellSubsetLabels;
+                }
+            }
+
+            Info << "PREREFBL_SUBSET_RESTORE"
+                 << " pointSubsets=" << snap.pointSubsets.size()
+                 << " faceSubsets=" << snap.faceSubsets.size()
+                 << " cellSubsets=" << snap.cellSubsets.size()
+                 << " maxLabels=("
+                 << maxPointSubsetLabel << ","
+                 << maxFaceSubsetLabel << ","
+                 << maxCellSubsetLabel << ")"
+                 << " invalid=("
+                 << invalidPointSubsetLabels << ","
+                 << invalidFaceSubsetLabels << ","
+                 << invalidCellSubsetLabels << ")"
+                 << endl;
+
+            if
+            (
+                invalidPointSubsetLabels
+             || invalidFaceSubsetLabels
+             || invalidCellSubsetLabels
+            )
+            {
+                Info << "Pre-refBL snapshot: restore rejected -- "
+                     << "snapshot contains out-of-range subset labels"
+                     << endl;
+                return false;
+            }
+
             Info << "Pre-refBL snapshot: restoring mesh state" << endl;
 
             polyMeshGenModifier meshModifier(mesh_);
@@ -1433,12 +1547,29 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 bnd[patchI].patchStart() = snap.patchStart[patchI];
                 bnd[patchI].patchSize()  = snap.patchSize[patchI];
             }
+
+            meshModifier.pointSubsetsAccess() = snap.pointSubsets;
+            meshModifier.faceSubsetsAccess()  = snap.faceSubsets;
+            meshModifier.cellSubsetsAccess()  = snap.cellSubsets;
+
+            Info << "PREREFBL_SUBSET_RESTORE restored point="
+                 << snap.pointSubsets.size()
+                 << " face=" << snap.faceSubsets.size()
+                 << " cell=" << snap.cellSubsets.size() << endl;
+
             blblJunctionPoints_ = snap.blblJunctionPoints;
             blblAcuteCornerPoints_ = snap.blblAcuteCornerPoints;
             blRampSeedPoints_ = snap.rampSeedPoints;
             vtFaceRing_ = snap.vtFaceRing;
 
-            mesh_.clearAddressingData();
+            //- Topology has been replaced wholesale. The ordinary
+            //- clearAddressingData() deletes polyMeshGenAddressing but leaves
+            //- ownerPtr_/neighbourPtr_ alive. Those arrays describe the
+            //- pass-1 mesh and must be discarded before pass 2.
+            meshModifier.clearTopologyAddressing();
+
+            Info << "PREREFBL_RESTORE cleared owner/neighbour + derived addressing"
+                 << endl;
 
             Info << "Pre-refBL snapshot: restored "
                  << snap.points.size() << " points, "
@@ -1787,19 +1918,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             haveClassifierPlans = plans.size() > 0;
                         }
 
-                        // TEMP: isolate the pass-1 partial-patch result.
-                        // Pass 2 currently restores an incomplete pre-refBL
-                        // detection state and is a separate known defect.
-                        const bool attemptTwoPassBLRepair = false;
-
-                        Info << "TWOPASS_BYPASS: retaining pass1 BL mesh"
-                             << " without restoring Q0" << endl;
-
-                        if
-                        (
-                            attemptTwoPassBLRepair
-                         && restorePreRefBLSnapshot(preRefBLSnap)
-                        )
+                        // Now restore pre-refBL mesh for pass 2.
+                        if( restorePreRefBLSnapshot(preRefBLSnap) )
                         {
                             refineBoundaryLayers refLayers2(mesh_);
                             refineBoundaryLayers::readSettings
@@ -1972,16 +2092,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         }
                         else
                         {
-                            if( !attemptTwoPassBLRepair )
-                            {
-                                Info << "TWOPASS_BYPASS: pass2 disabled"
-                                     << " -- keeping pass1 result" << endl;
-                            }
-                            else
-                            {
-                                Info << "Two-pass BL repair: pre-refBL restore "
-                                     << "failed -- keeping pass1 result" << endl;
-                            }
+                            Info << "Two-pass BL repair: pre-refBL restore "
+                                 << "failed -- keeping pass1 result" << endl;
                         }
                     }
                     else if( doAutoRepair )

@@ -134,6 +134,31 @@ public:
             return mesh_.boundaries_;
         }
 
+        //- Direct subset access for complete topology transactions.
+        inline std::map<label, meshSubset>& pointSubsetsAccess()
+        {
+            return mesh_.pointSubsets_;
+        }
+
+        inline std::map<label, meshSubset>& faceSubsetsAccess()
+        {
+            return mesh_.faceSubsets_;
+        }
+
+        inline std::map<label, meshSubset>& cellSubsetsAccess()
+        {
+            return mesh_.cellSubsets_;
+        }
+
+        //- Invalidate all topology-derived addressing after direct
+        //- replacement of points/faces/cells. Unlike
+        //- polyMeshGen::clearAddressingData(), this also clears the
+        //- cached owner/neighbour arrays.
+        inline void clearTopologyAddressing()
+        {
+            mesh_.clearOut();
+        }
+
         //- functions which change the mesh
         //- reorder boundary faces
         void reorderBoundaryFaces();
