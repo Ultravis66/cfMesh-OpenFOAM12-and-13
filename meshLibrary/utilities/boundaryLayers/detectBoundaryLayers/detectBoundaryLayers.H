@@ -44,6 +44,7 @@ SourceFiles
 #include "labelLongList.H"
 #include "labelPair.H"
 #include "edgeLongList.H"
+#include "boolList.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -83,7 +84,9 @@ class detectBoundaryLayers
 
     // Private member functions
         //- analyse layers to check their topology
-        void analyseLayers();
+        //- allowPartialPatch is optional; NULL preserves legacy
+        //- all-or-nothing patch semantics.
+        void analyseLayers(const boolList* allowPartialPatch);
 
         //- provide hair edges in a cell above a boundary face
         bool findHairsForFace(const label, DynList<edge>& hairEdges) const;
@@ -107,6 +110,16 @@ public:
         (
             const meshSurfacePartitioner& meshSurface,
             const bool is2DMesh = false
+        );
+
+        //- Construct with an optional per-patch partial-layer policy.
+        //- true means locally unsupported faces may remain outside the
+        //- detected layer without invalidating all other faces on that patch.
+        detectBoundaryLayers
+        (
+            const meshSurfacePartitioner& meshSurface,
+            const bool is2DMesh,
+            const boolList& allowPartialPatch
         );
 
     // Destructor

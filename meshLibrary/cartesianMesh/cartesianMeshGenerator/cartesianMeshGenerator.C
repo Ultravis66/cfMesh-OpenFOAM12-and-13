@@ -43,6 +43,8 @@ Description
 #include "topologicalCleaner.H"
 #include "boundaryLayers.H"
 #include "refineBoundaryLayers.H"
+#include "detectBoundaryLayers.H"
+#include "meshSurfacePartitioner.H"
 #include "BLJunctionClassifier.H"
 #include "PatchRoleMap.H"
 #include "renameBoundaryPatches.H"
@@ -935,6 +937,86 @@ labelHashSet cartesianMeshGenerator::traceToSeedFaces
     return seedBfI;
 }
 
+static void blTopoAudit(polyMeshGen& auditMesh, const word& stage)
+{
+    try
+    {
+        auditMesh.clearAddressingData();
+        const meshSurfaceEngine mse(auditMesh);
+        meshSurfacePartitioner mPart(mse);
+        detectBoundaryLayers dbl(mPart, false);
+        const labelList& fInLayer = dbl.faceInLayer();
+        const labelList& fPatch   = mse.boundaryFacePatches();
+        const PtrList<boundaryPatch>& bnd = auditMesh.boundaries();
+        const label nP = bnd.size();
+        const label nBF = fPatch.size();
+
+        if( fInLayer.size() != nBF )
+        {
+            Info << "BLTOPO_AUDIT stage=" << stage
+                 << " SIZE_MISMATCH faceInLayer=" << fInLayer.size()
+                 << " boundaryFaces=" << nBF
+                 << " -- skipping per-patch (index spaces differ)" << endl;
+            return;
+        }
+
+        // meshSurfaceEngine has no faceAreas() accessor in this fork.
+        // Map boundary-local bfI explicitly to the global mesh face.
+        const vectorField& allFaceAreas =
+            auditMesh.addressingData().faceAreas();
+        const label nInternal = auditMesh.nInternalFaces();
+
+        if
+        (
+            nInternal < 0
+         || nInternal + nBF > label(allFaceAreas.size())
+        )
+        {
+            Info << "BLTOPO_AUDIT stage=" << stage
+                 << " AREA_SIZE_MISMATCH"
+                 << " nInternal=" << nInternal
+                 << " boundaryFaces=" << nBF
+                 << " faceAreasSize=" << allFaceAreas.size()
+                 << " -- skipping per-patch" << endl;
+            return;
+        }
+
+        labelList totF(nP,0), layF(nP,0);
+        scalarField totA(nP,0.0), layA(nP,0.0);
+        for(label bfI=0; bfI<nBF; ++bfI)
+        {
+            const label p = fPatch[bfI];
+            if( p<0 || p>=nP ) continue;
+
+            const label faceI = nInternal + bfI;
+            const scalar a = mag(allFaceAreas[faceI]);
+
+            ++totF[p]; totA[p]+=a;
+            if( fInLayer[bfI] >= 0 )
+            { ++layF[p]; layA[p]+=a; }
+        }
+        Info << "BLTOPO_AUDIT stage=" << stage
+             << " nDistinctLayers=" << dbl.nDistinctLayers()
+             << " hairEdges=" << dbl.hairEdges().size()
+             << " boundaryFaces=" << nBF
+             << " faceInLayerSize=" << fInLayer.size() << endl;
+        forAll(bnd, p)
+        {
+            const scalar fp = totF[p]>0 ? 100.0*layF[p]/totF[p] : 0.0;
+            const scalar ap = totA[p]>VSMALL ? 100.0*layA[p]/totA[p] : 0.0;
+            Info << "  " << bnd[p].patchName()
+                 << ": layerFaces=" << layF[p] << "/" << totF[p]
+                 << " (" << fp << "%) area=" << ap << "%" << endl;
+        }
+    }
+    catch( ... )
+    {
+        Info << "BLTOPO_AUDIT stage=" << stage
+             << " FAILED (partitioner/detector threw)" << endl;
+    }
+}
+
+
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
     //- add boundary layers
@@ -951,6 +1033,7 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.addLayerForAllPatches();
     // Capture layerScale for post-replaceBoundaries coverage report
     blLayerScale_ = bl.layerScale();
+    blTopoAudit(mesh_, "POST_ADDLAYER");
 
     // Capture junction points for handoff to refineBoundaryLayers
     blblJunctionPoints_ = bl.junctionEdgePoints();
@@ -1426,8 +1509,43 @@ void cartesianMeshGenerator::refBoundaryLayers()
         //- the pass-2 point set is already in place.
         bool blPointsFromPass2 = false;
 
+        // ---- BLCOVERAGE base-face snapshot (pre-refBL, report-only) ----
+        labelList  blcovBaseFacePatch;
+        scalarField blcovBaseFaceArea;
+        labelList  blcovBasePatchTotF;
+        scalarField blcovBasePatchTotA;
+        {
+            const meshSurfaceEngine mseBase(mesh_);
+            blcovBaseFacePatch = mseBase.boundaryFacePatches();
+            const label nBaseBF = blcovBaseFacePatch.size();
+            const vectorField& allFaceAreas =
+                mesh_.addressingData().faceAreas();
+            const label nInternal = mesh_.nInternalFaces();
+            blcovBaseFaceArea.setSize(nBaseBF, 0.0);
+            forAll(blcovBaseFaceArea, bfI)
+            {
+                const label faceI = nInternal + bfI;
+                blcovBaseFaceArea[bfI] = Foam::mag(allFaceAreas[faceI]);
+            }
+            const label nP = mesh_.boundaries().size();
+            blcovBasePatchTotF.setSize(nP, 0);  blcovBasePatchTotF = 0;
+            blcovBasePatchTotA.setSize(nP, 0.0); blcovBasePatchTotA = 0.0;
+            forAll(blcovBaseFacePatch, bfI)
+            {
+                const label p = blcovBaseFacePatch[bfI];
+                if( p < 0 || p >= nP ) continue;
+                ++blcovBasePatchTotF[p];
+                blcovBasePatchTotA[p] += blcovBaseFaceArea[bfI];
+            }
+            Info << "BLCOVERAGE base snapshot: baseBoundaryFaces="
+                 << nBaseBF << endl;
+        }
+        // ---- end snapshot ----
+
         nPointsBeforeBL_ = mesh_.points().size();
+        blTopoAudit(mesh_, "PRE_REFBL");
         refLayers.refineLayers();
+        blTopoAudit(mesh_, "POST_REFBL_PASS1");
 
         // Post-refBL provenance diagnostic.
         // Dumps all BL-generated cells to CSV for direct query.
@@ -1455,6 +1573,47 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                 Info << "postRefBL provenance: mappedCells=" << nMapped
                      << " wrote postRefBL_cellProvenance.csv" << endl;
+
+                // ---- BLCOVERAGE_AUDIT PROV_BASE (construction coverage) ----
+                {
+                    labelHashSet builtBaseFaces;
+                    label nInvalidProv = 0;
+                    forAll(prov, cellI)
+                    {
+                        const label baseBfI = prov[cellI];
+                        if( baseBfI < 0 ) continue;
+                        if( baseBfI >= blcovBaseFacePatch.size() )
+                        { ++nInvalidProv; continue; }
+                        builtBaseFaces.insert(baseBfI);
+                    }
+                    const label nP = mesh_.boundaries().size();
+                    labelList  builtF(nP, 0);
+                    scalarField builtA(nP, 0.0);
+                    forAllConstIter(labelHashSet, builtBaseFaces, it)
+                    {
+                        const label b = it.key();
+                        if( b < 0 || b >= blcovBaseFacePatch.size() ) continue;
+                        const label p = blcovBaseFacePatch[b];
+                        if( p < 0 || p >= nP ) continue;
+                        ++builtF[p];
+                        builtA[p] += blcovBaseFaceArea[b];
+                    }
+                    Info << "BLCOVERAGE_AUDIT PROV_BASE_PASS1 (construction coverage)"
+                         << " invalidProv=" << nInvalidProv << endl;
+                    const PtrList<boundaryPatch>& bnd = mesh_.boundaries();
+                    forAll(bnd, p)
+                    {
+                        const scalar fpct = blcovBasePatchTotF[p] > 0
+                          ? 100.0*builtF[p]/blcovBasePatchTotF[p] : 0.0;
+                        const scalar apct = blcovBasePatchTotA[p] > SMALL
+                          ? 100.0*builtA[p]/blcovBasePatchTotA[p] : 0.0;
+                        Info << "  " << bnd[p].patchName()
+                             << ": faces=" << builtF[p] << "/"
+                             << blcovBasePatchTotF[p]
+                             << " (" << fpct << "%) area=" << apct << "%" << endl;
+                    }
+                }
+                // ---- end BLCOVERAGE_AUDIT PROV_BASE ----
 
                 // Audit bad pyramid faces on grown refBL mesh.
                 // No clearAddressingData -- optimizer needs addressing intact.
@@ -1628,8 +1787,19 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             haveClassifierPlans = plans.size() > 0;
                         }
 
-                        // Now restore pre-refBL mesh for pass 2.
-                        if( restorePreRefBLSnapshot(preRefBLSnap) )
+                        // TEMP: isolate the pass-1 partial-patch result.
+                        // Pass 2 currently restores an incomplete pre-refBL
+                        // detection state and is a separate known defect.
+                        const bool attemptTwoPassBLRepair = false;
+
+                        Info << "TWOPASS_BYPASS: retaining pass1 BL mesh"
+                             << " without restoring Q0" << endl;
+
+                        if
+                        (
+                            attemptTwoPassBLRepair
+                         && restorePreRefBLSnapshot(preRefBLSnap)
+                        )
                         {
                             refineBoundaryLayers refLayers2(mesh_);
                             refineBoundaryLayers::readSettings
@@ -1675,11 +1845,26 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             nPointsBeforeBL_ = mesh_.points().size();
                             refLayers2.refineLayers();
 
-                            if( !refLayers2.refinementValid() )
+                            const bool pass2RefinementValid =
+                                refLayers2.refinementValid();
+                            const bool pass2RefinementCompleted =
+                                refLayers2.refinementCompleted();
+
+                            if
+                            (
+                                !pass2RefinementValid
+                             || !pass2RefinementCompleted
+                            )
                             {
-                                Info << "Two-pass BL repair: pass2 invalid "
-                                     << "refinement metadata -- REJECTED, "
-                                     << "restoring pass1" << endl;
+                                Info << "Two-pass BL repair: pass2 did not "
+                                     << "complete refinement"
+                                     << " refinementValid="
+                                     << (pass2RefinementValid ? "yes" : "no")
+                                     << " refinementCompleted="
+                                     << (pass2RefinementCompleted ? "yes" : "no")
+                                     << " -- REJECTED, restoring pass1"
+                                     << endl;
+
                                 restorePreRefBLSnapshot(pass1BLSnap);
                                 twoPassAccepted = false;
                             }
@@ -1787,8 +1972,16 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         }
                         else
                         {
-                            Info << "Two-pass BL repair: pre-refBL restore "
-                                 << "failed -- keeping pass1 result" << endl;
+                            if( !attemptTwoPassBLRepair )
+                            {
+                                Info << "TWOPASS_BYPASS: pass2 disabled"
+                                     << " -- keeping pass1 result" << endl;
+                            }
+                            else
+                            {
+                                Info << "Two-pass BL repair: pre-refBL restore "
+                                     << "failed -- keeping pass1 result" << endl;
+                            }
                         }
                     }
                     else if( doAutoRepair )

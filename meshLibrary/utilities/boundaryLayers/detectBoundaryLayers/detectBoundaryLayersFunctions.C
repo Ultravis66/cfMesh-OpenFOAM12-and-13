@@ -331,7 +331,10 @@ public:
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-void detectBoundaryLayers::analyseLayers()
+void detectBoundaryLayers::analyseLayers
+(
+    const boolList* allowPartialPatch
+)
 {
     Info << "Analysing mesh for bnd layer existence" << endl;
 
@@ -354,6 +357,364 @@ void detectBoundaryLayers::analyseLayers()
             bndLayerOps::meshBndLayerNeighbourOperator(mse),
             bndLayerOps::meshBndLayerSelectorOperator(mse)
         );
+
+    // ---- BLSELECT_REASON_AUDIT (report-only) -------------------------
+    // Inspect the RAW result from groupMarking before the patch-wide
+    // filter below can turn an entire patch off because one face failed.
+    //
+    // Also replay meshBndLayerSelectorOperator::operator() exactly,
+    // serially, so we know WHY each raw rejected face failed.
+    {
+        const labelList& auditFacePatch =
+            meshSurface_.boundaryFacePatches();
+
+        const labelList& auditFaceOwner = mse.faceOwners();
+        const faceListPMG& auditFaces = mesh.faces();
+        const cellListPMG& auditCells = mesh.cells();
+
+        const label nPatches = boundaries.size();
+        const label auditStart = boundaries[0].patchStart();
+
+        // ---- BLSELECT_CELL audit: detailed failures only on the
+        // first detectBoundaryLayers invocation (POST_ADDLAYER in
+        // the current diagnostic pipeline).
+        static label blSelAuditCall = 0;
+        ++blSelAuditCall;
+
+        auto dumpFailCell =
+        [&](const label bfI, const label patchI, const word& reason)
+        {
+            if( blSelAuditCall != 1 )
+                return;
+
+            if( patchI < 0 || patchI >= nPatches )
+                return;
+
+            const word pnm = boundaries[patchI].patchName();
+
+            if( pnm != word("hub") && pnm != word("blade_1") )
+                return;
+
+            const label ownerI = auditFaceOwner[bfI];
+            const cell& cc = auditCells[ownerI];
+
+            label nQuads = 0;
+            label nBndFaces = 0;
+            label baseFace = -1;
+
+            forAll(cc, fI)
+            {
+                if( auditFaces[cc[fI]].size() == 4 )
+                    ++nQuads;
+
+                if( (cc[fI] - auditStart) == bfI )
+                {
+                    baseFace = fI;
+                    ++nBndFaces;
+                }
+            }
+
+            label nQuadAtBase = 0;
+            label nShareNonQuad = 0;
+            label nNonShare = 0;
+            label firstOther = -1;
+
+            if( baseFace >= 0 )
+            {
+                forAll(cc, fI)
+                {
+                    if( fI == baseFace )
+                        continue;
+
+                    const bool share =
+                        help::shareAnEdge
+                        (
+                            auditFaces[cc[baseFace]],
+                            auditFaces[cc[fI]]
+                        );
+
+                    if( share )
+                    {
+                        if( auditFaces[cc[fI]].size() == 4 )
+                            ++nQuadAtBase;
+                        else
+                            ++nShareNonQuad;
+                    }
+                    else
+                    {
+                        ++nNonShare;
+
+                        if( firstOther < 0 )
+                            firstOther = fI;
+                    }
+                }
+            }
+
+            // Boundary-face centre. bfI is boundary-local and the
+            // production selector itself uses globalFace-start==bfI.
+            point ctr(0, 0, 0);
+            const label globalFaceI = auditStart + bfI;
+            const face& bff = auditFaces[globalFaceI];
+
+            forAll(bff, pI)
+                ctr += mesh.points()[bff[pI]];
+
+            if( bff.size() > 0 )
+                ctr /= scalar(bff.size());
+
+            Info << "BLSELECT_CELL"
+                 << " call=" << blSelAuditCall
+                 << " patch=" << pnm
+                 << " bfI=" << bfI
+                 << " globalFace=" << globalFaceI
+                 << " owner=" << ownerI
+                 << " reason=" << reason
+                 << " cellSize=" << cc.size()
+                 << " nQuads=" << nQuads
+                 << " nBndFaces=" << nBndFaces
+                 << " baseFace=" << baseFace
+                 << " baseFaceSize="
+                 <<
+                    (
+                        baseFace >= 0
+                      ? label(auditFaces[cc[baseFace]].size())
+                      : label(-1)
+                    )
+                 << " nQuadAtBase=" << nQuadAtBase
+                 << " nShareNonQuad=" << nShareNonQuad
+                 << " nNonShare=" << nNonShare
+                 << " firstOther=" << firstOther
+                 << " firstOtherSize="
+                 <<
+                    (
+                        firstOther >= 0
+                      ? label(auditFaces[cc[firstOther]].size())
+                      : label(-1)
+                    )
+                 << " faceSizes=(";
+
+            forAll(cc, fI)
+            {
+                if( fI )
+                    Info << ",";
+
+                Info << auditFaces[cc[fI]].size();
+            }
+
+            DynList<edge> probeHairs;
+            const bool hairOK = findHairsForFace(bfI, probeHairs);
+
+            Info << ")"
+                 << " hairOK=" << (hairOK ? 1 : 0)
+                 << " nHairs=" << probeHairs.size()
+                 << " bFaceCentre=("
+                 << ctr.x() << " "
+                 << ctr.y() << " "
+                 << ctr.z() << ")"
+                 << endl;
+        };
+        // ---- end BLSELECT_CELL audit --------------------------
+
+        labelList rawPass(nPatches, 0), rawFail(nPatches, 0);
+
+        labelList acceptHex(nPatches, 0);
+        labelList acceptPrism(nPatches, 0);
+        labelList r1FaceMix(nPatches, 0);
+        labelList r2BaseFace(nPatches, 0);
+        labelList r3Structure(nPatches, 0);
+
+        if
+        (
+            auditFacePatch.size() != layerAtBndFace_.size()
+         || auditFaceOwner.size() != layerAtBndFace_.size()
+        )
+        {
+            Info << "BLSELECT_REASON_AUDIT SIZE_MISMATCH"
+                 << " facePatch=" << auditFacePatch.size()
+                 << " faceOwner=" << auditFaceOwner.size()
+                 << " layerAtBndFace=" << layerAtBndFace_.size()
+                 << endl;
+        }
+        else
+        {
+            forAll(layerAtBndFace_, bfI)
+            {
+                const label patchI = auditFacePatch[bfI];
+
+                if( patchI < 0 || patchI >= nPatches )
+                {
+                    Info << "BLSELECT_REASON_AUDIT INVALID_PATCH"
+                         << " bfI=" << bfI
+                         << " patchI=" << patchI << endl;
+                    continue;
+                }
+
+                // Actual RAW classification returned by groupMarking.
+                if( layerAtBndFace_[bfI] < 0 )
+                    ++rawFail[patchI];
+                else
+                    ++rawPass[patchI];
+
+                // Replay the exact selector logic for a reason code.
+                const label ownerI = auditFaceOwner[bfI];
+                const cell& c = auditCells[ownerI];
+
+                label nBndFaces = 0;
+                label baseFace = -1;
+                label otherBase = -1;
+                label nQuads = 0;
+
+                forAll(c, fI)
+                {
+                    if( auditFaces[c[fI]].size() == 4 )
+                        ++nQuads;
+
+                    if( (c[fI] - auditStart) == bfI )
+                    {
+                        baseFace = fI;
+                        ++nBndFaces;
+                    }
+                }
+
+                // Exact first acceptance from production selector.
+                if( nQuads == 6 )
+                {
+                    ++acceptHex[patchI];
+                    continue;
+                }
+
+                // R1: face-count/type mixture does not look prism-like.
+                if( (nQuads + 2) != c.size() )
+                {
+                    ++r1FaceMix[patchI];
+                    dumpFailCell(bfI, patchI, word("R1_FACE_MIX"));
+                    continue;
+                }
+
+                // R2: queried boundary face is not present exactly once
+                // in its supposed owner cell.
+                if( nBndFaces != 1 )
+                {
+                    ++r2BaseFace[patchI];
+                    dumpFailCell(bfI, patchI, word("R2_BASE"));
+                    continue;
+                }
+
+                label nQuadsAttachedToBaseFace = 0;
+                bool r3Early = false;
+
+                forAll(c, fI)
+                {
+                    if( fI == baseFace )
+                        continue;
+
+                    const bool sEdge =
+                        help::shareAnEdge
+                        (
+                            auditFaces[c[baseFace]],
+                            auditFaces[c[fI]]
+                        );
+
+                    if( (auditFaces[c[fI]].size() == 4) && sEdge )
+                    {
+                        ++nQuadsAttachedToBaseFace;
+                    }
+                    else if( !sEdge )
+                    {
+                        if( otherBase != -1 )
+                        {
+                            r3Early = true;
+                            break;
+                        }
+
+                        otherBase = fI;
+                    }
+                }
+
+                if( r3Early )
+                {
+                    ++r3Structure[patchI];
+                    dumpFailCell
+                    (
+                        bfI,
+                        patchI,
+                        word("R3_MULTI_OPPOSITE")
+                    );
+                    continue;
+                }
+
+                if
+                (
+                    ((nQuadsAttachedToBaseFace + 2) == c.size())
+                 && otherBase != -1
+                 && !help::shareAnEdge
+                    (
+                        auditFaces[c[baseFace]],
+                        auditFaces[c[otherBase]]
+                    )
+                )
+                {
+                    ++acceptPrism[patchI];
+                }
+                else
+                {
+                    ++r3Structure[patchI];
+                    dumpFailCell
+                    (
+                        bfI,
+                        patchI,
+                        word("R3_FINAL")
+                    );
+                }
+            }
+
+            Info
+                << "BLSELECT_REASON_AUDIT "
+                << "(RAW, before patch-wide wipe)"
+                << endl;
+
+            forAll(boundaries, patchI)
+            {
+                const label total =
+                    rawPass[patchI] + rawFail[patchI];
+
+                if( total == 0 )
+                    continue;
+
+                const label replayPass =
+                    acceptHex[patchI] + acceptPrism[patchI];
+
+                const label replayFail =
+                    r1FaceMix[patchI]
+                  + r2BaseFace[patchI]
+                  + r3Structure[patchI];
+
+                Info << "  " << boundaries[patchI].patchName()
+                     << ": rawPass=" << rawPass[patchI]
+                     << " rawFail=" << rawFail[patchI]
+                     << " total=" << total
+                     << " wouldWipe=" << (rawFail[patchI] > 0)
+
+                     << " | HEX=" << acceptHex[patchI]
+                     << " PRISM=" << acceptPrism[patchI]
+
+                     << " R1_faceMix=" << r1FaceMix[patchI]
+                     << " R2_baseFace=" << r2BaseFace[patchI]
+                     << " R3_structure=" << r3Structure[patchI]
+
+                     << " | replayPass=" << replayPass
+                     << " replayFail=" << replayFail
+                     << " replayMatchesRaw="
+                     <<
+                        (
+                            replayPass == rawPass[patchI]
+                         && replayFail == rawFail[patchI]
+                        )
+                     << endl;
+            }
+        }
+    }
+    // ---- end BLSELECT_REASON_AUDIT ----------------------------------
 
     # ifdef DEBUGLayer
     labelList layerSubsetId(nFirstLayers_);
@@ -433,7 +794,25 @@ void detectBoundaryLayers::analyseLayers()
         {
             if( layersAtPatch[i] < 0 )
             {
-                layerAtPatch_[it->first].clear();
+                const label patchI = it->first;
+
+                const bool allowPartial =
+                    allowPartialPatch &&
+                    patchI >= 0 &&
+                    patchI < label(allowPartialPatch->size()) &&
+                    (*allowPartialPatch)[patchI];
+
+                if( allowPartial )
+                {
+                    Info << "BLPARTIALPATCH detector keeping partial patch "
+                         << boundaries[patchI].patchName()
+                         << " with local unsupported faces" << endl;
+                    continue;
+                }
+
+                //- Legacy behaviour for patches not explicitly eligible
+                //- for partial boundary-layer refinement.
+                layerAtPatch_[patchI].clear();
                 break;
             }
             else

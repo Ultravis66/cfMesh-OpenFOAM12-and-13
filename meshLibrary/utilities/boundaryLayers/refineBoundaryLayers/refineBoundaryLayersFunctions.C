@@ -63,13 +63,83 @@ bool refineBoundaryLayers::analyseLayers()
     const labelList& facePatch = mse.boundaryFacePatches();
 
     meshSurfacePartitioner mPart(mse);
-    detectBoundaryLayers dbl(mPart, is2DMesh_);
+    //- Partial-patch BL policy:
+    //- use the existing effective requested layer count as the scope.
+    //- requestedLayers > 1  => partial detected layer is allowed
+    //- requestedLayers <= 1 => preserve legacy all-or-nothing behaviour
+    const PtrList<boundaryPatch>& partialBoundaries = mesh_.boundaries();
+    boolList allowPartialLayerPatch(partialBoundaries.size(), false);
+
+    forAll(partialBoundaries, patchI)
+    {
+        label requestedLayers = globalNumLayers_;
+        const word pName = partialBoundaries[patchI].patchName();
+
+        std::map<word, label>::const_iterator it =
+            numLayersForPatch_.find(pName);
+
+        if( it != numLayersForPatch_.end() )
+            requestedLayers = it->second;
+
+        allowPartialLayerPatch[patchI] = (requestedLayers > 1);
+
+        if( allowPartialLayerPatch[patchI] )
+        {
+            Info << "BLPARTIALPATCH eligible patch " << pName
+                 << " requestedLayers=" << requestedLayers << endl;
+        }
+    }
+
+    detectBoundaryLayers dbl
+    (
+        mPart,
+        is2DMesh_,
+        allowPartialLayerPatch
+    );
 
     const label nGroups = dbl.nDistinctLayers();
     const labelList& faceInLayer = dbl.faceInLayer();
 
     //- get the hair edges
     splitEdges_ = dbl.hairEdges();
+
+    //- Transaction diagnostic: distinguish "no layers detected" from
+    //- "layers detected but hair-edge generation failed".  This runs for
+    //- both the ordinary pass and a restored pass-2 mesh.
+    label nDetectedLayerFaces = 0;
+    forAll(faceInLayer, bfI)
+        if( faceInLayer[bfI] >= 0 )
+            ++nDetectedLayerFaces;
+
+    Info << "BLANALYSE"
+         << " meshPoints=" << mesh_.points().size()
+         << " meshFaces=" << mesh_.faces().size()
+         << " meshCells=" << mesh_.cells().size()
+         << " boundaryFaces=" << bFaces.size()
+         << " nGroups=" << nGroups
+         << " layerFaces=" << nDetectedLayerFaces
+         << " hairEdges=" << splitEdges_.size()
+         << endl;
+
+    //- Zero hair edges cannot support refineBoundaryLayers.  Previously
+    //- the validation loop below could vacuously succeed when every
+    //- faceInLayer entry was negative, allowing generateNewFaces() to run
+    //- against empty split-edge metadata.
+    //
+    //- Do NOT mark refinementValid_ false here: "nothing detected to refine"
+    //- and "metadata became structurally inconsistent" are different states.
+    //- The caller separately checks refinementCompleted(), which remains
+    //- false because done_ is set only after generateNewCells() completes.
+    if( splitEdges_.size() == 0 )
+    {
+        Info << "BLANALYSE_NO_HAIR_EDGES"
+             << " nGroups=" << nGroups
+             << " layerFaces=" << nDetectedLayerFaces
+             << " boundaryFaces=" << bFaces.size()
+             << " -- refinement cannot execute"
+             << endl;
+        return false;
+    }
 
     # ifdef DEBUGLayer
     OFstream file("hairEdges.vtk");
@@ -153,6 +223,20 @@ bool refineBoundaryLayers::analyseLayers()
         {
             if( layers[i] < 0 )
             {
+                if
+                (
+                    patchI >= 0 &&
+                    patchI < label(allowPartialLayerPatch.size()) &&
+                    allowPartialLayerPatch[patchI]
+                )
+                {
+                    //- Keep the valid detected portion of an explicitly
+                    //- requested BL patch. The local unsupported faces
+                    //- remain faceInLayer < 0 and are protected below.
+                    continue;
+                }
+
+                //- Legacy all-or-nothing behaviour for non-BL patches.
                 layerAtPatch_[patchI].clear();
                 break;
             }
@@ -295,6 +379,15 @@ bool refineBoundaryLayers::analyseLayers()
     forAll(nLayersAtBndFace_, bfI)
     {
         const label patchI = facePatch[bfI];
+
+        //- A locally unsupported detected-layer face must never be sent
+        //- into boundary-layer refinement. This is the critical guard
+        //- which lets the rest of a configured BL patch refine safely.
+        if( faceInLayer[bfI] < 0 )
+        {
+            nLayersAtBndFace_[bfI] = 1;
+            continue;
+        }
 
         if( nLayersAtPatch[patchI] < 0 )
         {
@@ -607,6 +700,37 @@ void refineBoundaryLayers::generateNewVertices()
                     forcedThicknessScaleAtEdge[seI] = newScale;
                 }
             }
+        }
+
+        //- Do the requested faces actually own split edges? If their
+        //- points have no splitEdgesAtPoint_ rows, no cap and no scale can
+        //- ever reach an edge, and the face is invisible to refinement.
+        //- analyseLayers() only validates faces with faceInLayer >= 0, so
+        //- provenance seed faces outside a detected layer are never checked.
+        {
+            label nFacesNoRows = 0, nPtsNoRows = 0, nPtsWithRows = 0;
+            forAllConstIter(Map<scalar>, forcedThicknessScaleAtFace_, dit)
+            {
+                const label dbfI = dit.key();
+                if( dbfI < 0 || dbfI >= label(bFaces.size()) ) continue;
+                const face& dbf = bFaces[dbfI];
+                bool anyRow = false;
+                forAll(dbf, dpI)
+                {
+                    const label gp = dbf[dpI];
+                    if( gp < 0 || gp >= label(splitEdgesAtPoint_.size()) )
+                        { ++nPtsNoRows; continue; }
+                    if( splitEdgesAtPoint_.sizeOfRow(gp) == 0 ) ++nPtsNoRows;
+                    else { ++nPtsWithRows; anyRow = true; }
+                }
+                if( !anyRow ) ++nFacesNoRows;
+            }
+            Info << "refineBoundaryLayers: seed split-edge coverage:"
+                 << " facesWithNoSplitEdges=" << nFacesNoRows
+                 << " pointsWithRows=" << nPtsWithRows
+                 << " pointsWithoutRows=" << nPtsNoRows
+                 << " splitEdgesAtPointSize=" << splitEdgesAtPoint_.size()
+                 << " splitEdges=" << splitEdges_.size() << endl;
         }
 
         Info << "refineBoundaryLayers: forced thickness scales prepared: "

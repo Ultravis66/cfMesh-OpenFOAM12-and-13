@@ -51,7 +51,32 @@ detectBoundaryLayers::detectBoundaryLayers
     is2DMesh_(is2DMesh)
 {
     Info << "Detecting layers" << endl;
-    analyseLayers();
+    analyseLayers(NULL);
+
+    Info << "Generating hair edges" << endl;
+    generateHairEdges();
+
+    Info << "Finished with bnd layer detection" << endl;
+}
+
+
+detectBoundaryLayers::detectBoundaryLayers
+(
+    const meshSurfacePartitioner& meshSurface,
+    const bool is2DMesh,
+    const boolList& allowPartialPatch
+)
+:
+    meshSurface_(meshSurface),
+    nFirstLayers_(0),
+    layerAtBndFace_(),
+    layerAtPatch_(),
+    hairEdges_(),
+    hairEdgesAtBoundaryPoint_(),
+    is2DMesh_(is2DMesh)
+{
+    Info << "Detecting layers" << endl;
+    analyseLayers(&allowPartialPatch);
 
     Info << "Generating hair edges" << endl;
     generateHairEdges();
