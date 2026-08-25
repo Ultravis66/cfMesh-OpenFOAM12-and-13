@@ -13,7 +13,8 @@ Description
       2. source bfI -> source patch roles
       3. faceFaces(bfI) -> neighbor patch roles
       4. combined role set -> junction type
-      5. group source bfI by type -> one BLRepairPlan per type
+      5. group source bfI by type and connected component
+         -> one BLRepairPlan per connected defect component
 
     First integration: diagnostic only. Log classification counts.
     Do not apply repair until classification is verified correct.
@@ -145,21 +146,22 @@ class BLJunctionClassifier
             case BLRepairPlan::HUB_FLOW:
             case BLRepairPlan::SHROUD_FLOW:
                 // Moderate: annular inlet/outlet rings
-                r0 = BLRepairPlan::ringParams(3, 0.6);
+                r0 = BLRepairPlan::ringParams(2, 0.6);
                 r1 = BLRepairPlan::ringParams(4, 0.8);
                 r2 = BLRepairPlan::ringParams(0, 1.0);
                 break;
 
             case BLRepairPlan::WALL_WALL:
                 // Conservative: blade/hub or blade/shroud
-                r0 = BLRepairPlan::ringParams(3, 0.7);
-                r1 = BLRepairPlan::ringParams(4, 0.9);
+                r0 = BLRepairPlan::ringParams(2, 1.0);
+                r1 = BLRepairPlan::ringParams(4, 1.0);
                 r2 = BLRepairPlan::ringParams(0, 1.0);
                 break;
 
             default:
-                // Generic: minimal intervention
-                r0 = BLRepairPlan::ringParams(3, 0.8);
+                // Generic-triple disabled for mechanism isolation.
+                // Preserve the normal 3-layer BL and apply no thickness scaling.
+                r0 = BLRepairPlan::ringParams(3, 1.0);
                 r1 = BLRepairPlan::ringParams(0, 1.0);
                 r2 = BLRepairPlan::ringParams(0, 1.0);
                 break;
@@ -271,29 +273,117 @@ public:
                  << ": " << it() << " faces" << endl;
         }
 
-        // Build repair plans (empty if diagnosticOnly)
+        // Build repair plans (empty if diagnosticOnly).
+        //
+        // Each junction type may contain multiple spatially disconnected
+        // defect regions.  Do not collapse those regions into one repair
+        // transaction: split the provenance seed boundary faces into
+        // connected components using boundary-face adjacency.
+        //
+        // The returned Map key is only a unique plan/component ID.  Callers
+        // consume the BLRepairPlan value and do not attach semantics to the
+        // key.
         Map<BLRepairPlan> plans;
 
         if( !diagnosticOnly )
         {
+            label nextPlanId = 0;
+
             forAllIter(Map<HashSet<label>>, typeToSeeds, it)
             {
                 const BLRepairPlan::junctionType jType =
                     BLRepairPlan::junctionType(it.key());
 
+                const HashSet<label>& seeds = it();
+
                 BLRepairPlan::ringParams r0, r1, r2;
                 defaultRingParams(jType, r0, r1, r2);
 
-                BLRepairPlan plan
-                (
-                    it(),
-                    r0, r1, r2,
-                    jType,
-                    BLRepairPlan::junctionTypeName(jType)
-                );
+                // Flood only through seed faces of this junction type.
+                // This deliberately defines connectivity on the defect seeds
+                // themselves; repair-footprint overlap is a separate policy
+                // decision and is not introduced in this decomposition step.
+                HashSet<label> visitedSeeds;
+                label nComponents = 0;
 
-                plan.print();
-                plans.insert(it.key(), plan);
+                forAllConstIter(HashSet<label>, seeds, seedIt)
+                {
+                    const label startBfI = seedIt.key();
+
+                    if( visitedSeeds.found(startBfI) )
+                        continue;
+
+                    HashSet<label> component;
+
+                    // A component can contain at most all seeds of this type.
+                    // Use a simple bounded FIFO rather than depending on
+                    // DynamicList stack semantics.
+                    labelList queue(seeds.size(), -1);
+                    label qHead = 0;
+                    label qTail = 0;
+
+                    visitedSeeds.insert(startBfI);
+                    component.insert(startBfI);
+                    queue[qTail++] = startBfI;
+
+                    while( qHead < qTail )
+                    {
+                        const label bfI = queue[qHead++];
+
+                        if( bfI < 0 || bfI >= label(faceFaces.size()) )
+                            continue;
+
+                        forAllRow(faceFaces, bfI, nI)
+                        {
+                            const label nbBfI = faceFaces(bfI, nI);
+
+                            if
+                            (
+                                seeds.found(nbBfI)
+                             && !visitedSeeds.found(nbBfI)
+                            )
+                            {
+                                visitedSeeds.insert(nbBfI);
+                                component.insert(nbBfI);
+
+                                // qTail cannot exceed seeds.size() because
+                                // every queued face is inserted into
+                                // visitedSeeds exactly once.
+                                queue[qTail++] = nbBfI;
+                            }
+                        }
+                    }
+
+                    const label componentI = nComponents++;
+                    const label planId = nextPlanId++;
+
+                    Info << "BLRepairComponent:"
+                         << " planId=" << planId
+                         << " type="
+                         << BLRepairPlan::junctionTypeName(jType)
+                         << " component=" << componentI
+                         << " seeds=" << component.size()
+                         << endl;
+
+                    BLRepairPlan plan
+                    (
+                        component,
+                        r0, r1, r2,
+                        jType,
+                        BLRepairPlan::junctionTypeName(jType)
+                    );
+
+                    plan.print();
+                    plans.insert(planId, plan);
+                }
+
+                Info << "BLRepairComponents:"
+                     << " type="
+                     << BLRepairPlan::junctionTypeName(jType)
+                     << " components=" << nComponents
+                     << " seeds=" << seeds.size()
+                     << " visited=" << visitedSeeds.size()
+                     << endl;
             }
         }
 

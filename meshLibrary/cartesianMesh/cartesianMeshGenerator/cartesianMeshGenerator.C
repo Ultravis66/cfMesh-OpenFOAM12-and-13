@@ -70,6 +70,51 @@ namespace Foam
 
 // * * * * * * * * * * * * Private member functions  * * * * * * * * * * * * //
 
+//- Raw signed volume of one cell, using the same unclamped
+//- construction as rawCellVolumeStats() and checkCellVolumes().
+static scalar rawSignedCellVolume
+(
+    const polyMeshGen& mesh,
+    const label cellI
+)
+{
+    const vectorField& fCtrs  = mesh.addressingData().faceCentres();
+    const vectorField& fAreas = mesh.addressingData().faceAreas();
+    const labelList& own      = mesh.owner();
+    const cellListPMG& cells  = mesh.cells();
+
+    if( cellI < 0 || cellI >= label(cells.size()) )
+        return scalar(0.0);
+
+    const cell& c = cells[cellI];
+
+    if( c.size() == 0 )
+        return scalar(0.0);
+
+    vector cEst(vector::zero);
+
+    forAll(c, fI)
+        cEst += fCtrs[c[fI]];
+
+    cEst /= c.size();
+
+    scalar cellVol(0.0);
+
+    forAll(c, fI)
+    {
+        scalar pyr3Vol =
+            fAreas[c[fI]] & (fCtrs[c[fI]] - cEst);
+
+        if( own[c[fI]] != cellI )
+            pyr3Vol *= -1.0;
+
+        cellVol += pyr3Vol;
+    }
+
+    return cellVol / scalar(3.0);
+}
+
+
 //- Raw signed cell-volume statistics.
 //
 //  MUST NOT use mesh.addressingData().cellVolumes(): that cache stores
@@ -1889,6 +1934,46 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             q1NNeg, q1NBelowVS
                         );
 
+                        // Preserve Q1 negative/near-zero cell identity and
+                        // BL provenance across the Q1 -> Q0 rollback.  Cell
+                        // numbering changes in Q2, but primary base bfI is
+                        // the stable attribution coordinate.
+                        labelList q1NegCellI(pass1NegVol.size(), -1);
+                        labelList q1NegBaseBfI(pass1NegVol.size(), -1);
+                        scalarField q1NegSignedVol
+                        (
+                            pass1NegVol.size(),
+                            scalar(0.0)
+                        );
+
+                        label q1NegAttrI = 0;
+
+                        forAllConstIter
+                        (
+                            labelHashSet,
+                            pass1NegVol,
+                            q1NvIt
+                        )
+                        {
+                            const label cellI = q1NvIt.key();
+
+                            q1NegCellI[q1NegAttrI] = cellI;
+
+                            if
+                            (
+                                cellI >= 0
+                             && cellI < label(prov.size())
+                            )
+                            {
+                                q1NegBaseBfI[q1NegAttrI] = prov[cellI];
+                            }
+
+                            q1NegSignedVol[q1NegAttrI] =
+                                rawSignedCellVolume(mesh_, cellI);
+
+                            ++q1NegAttrI;
+                        }
+
                         Info << "Two-pass BL repair: pass1 badPyramids="
                              << pass1BadPyr
                              << " negVol=" << pass1NegVol.size()
@@ -1931,6 +2016,464 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             refLayers2.setRampSeedPoints
                                 (preRefBLSnap.rampSeedPoints);
                             refLayers2.setVtFaceRing(preRefBLSnap.vtFaceRing);
+
+                            // -------------------------------------------------
+                            // Repair interaction groups.
+                            //
+                            // Seed components are not necessarily independent:
+                            // their expanded repair footprints can overlap.
+                            // Build the footprints on the RESTORED Q0 topology,
+                            // using the exact ring construction semantics used
+                            // by forceMaxLayersAtFaces(), then merge plans whose
+                            // footprints touch.
+                            //
+                            // Diagnostic only: every plan is still applied.
+                            // -------------------------------------------------
+                            labelList repairGroupAtBfI;
+                            Map<labelHashSet> repairGroupPlans;
+                            Map<labelHashSet> repairGroupFootprints;
+                            label nRepairGroups = 0;
+
+                            labelList q1GroupNegCount;
+                            scalarField q1GroupNegMag;
+                            scalarField q1GroupMinVol;
+
+                            // Populated from exploratory Q2.  Group IDs and
+                            // plan IDs are runtime/topology-local bookkeeping;
+                            // nothing geometry-specific is hard-coded here.
+                            labelHashSet unsafeRepairGroups;
+                            labelHashSet unsafePlanIds;
+
+                            if( haveClassifierPlans )
+                            {
+                                const meshSurfaceEngine repairMse(mesh_);
+                                const VRWGraph& repairFaceFaces =
+                                    repairMse.faceFaces();
+
+                                Map<labelHashSet> planFootprints;
+
+                                label nActivePlans = 0;
+
+                                forAllConstIter
+                                (
+                                    Map<BLRepairPlan>,
+                                    plans,
+                                    pCountIt
+                                )
+                                {
+                                    if( pCountIt().active() )
+                                        ++nActivePlans;
+                                }
+
+                                labelList planIds(nActivePlans, -1);
+                                label planPos = 0;
+
+                                // Construct exactly the rings that the current
+                                // forceMaxLayersAtFaces() implementation builds.
+                                forAllConstIter
+                                (
+                                    Map<BLRepairPlan>,
+                                    plans,
+                                    pFpIt
+                                )
+                                {
+                                    const BLRepairPlan& plan = pFpIt();
+
+                                    if( !plan.active() )
+                                        continue;
+
+                                    const label planId = pFpIt.key();
+
+                                    planIds[planPos++] = planId;
+
+                                    labelHashSet ring0;
+                                    labelHashSet ring1;
+                                    labelHashSet ring2;
+
+                                    forAllConstIter
+                                    (
+                                        HashSet<label>,
+                                        plan.seedBfI_,
+                                        sIt
+                                    )
+                                    {
+                                        const label bfI = sIt.key();
+
+                                        if
+                                        (
+                                            bfI >= 0
+                                         && bfI < label(repairFaceFaces.size())
+                                        )
+                                        {
+                                            ring0.insert(bfI);
+                                        }
+                                    }
+
+                                    if( plan.ring1_.maxLayers > 0 )
+                                    {
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            ring0,
+                                            r0It
+                                        )
+                                        {
+                                            const label bfI = r0It.key();
+
+                                            forAllRow
+                                            (
+                                                repairFaceFaces,
+                                                bfI,
+                                                nI
+                                            )
+                                            {
+                                                const label nbfI =
+                                                    repairFaceFaces(bfI, nI);
+
+                                                if
+                                                (
+                                                    nbfI < 0
+                                                 || nbfI >=
+                                                    label
+                                                    (
+                                                        repairFaceFaces.size()
+                                                    )
+                                                )
+                                                    continue;
+
+                                                if( ring0.found(nbfI) )
+                                                    continue;
+
+                                                ring1.insert(nbfI);
+                                            }
+                                        }
+                                    }
+
+                                    if( plan.ring2_.maxLayers > 0 )
+                                    {
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            ring1,
+                                            r1It
+                                        )
+                                        {
+                                            const label bfI = r1It.key();
+
+                                            forAllRow
+                                            (
+                                                repairFaceFaces,
+                                                bfI,
+                                                nI
+                                            )
+                                            {
+                                                const label nbfI =
+                                                    repairFaceFaces(bfI, nI);
+
+                                                if
+                                                (
+                                                    nbfI < 0
+                                                 || nbfI >=
+                                                    label
+                                                    (
+                                                        repairFaceFaces.size()
+                                                    )
+                                                )
+                                                    continue;
+
+                                                if
+                                                (
+                                                    ring0.found(nbfI)
+                                                 || ring1.found(nbfI)
+                                                )
+                                                    continue;
+
+                                                ring2.insert(nbfI);
+                                            }
+                                        }
+                                    }
+
+                                    labelHashSet footprint;
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        ring0,
+                                        fIt
+                                    )
+                                        footprint.insert(fIt.key());
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        ring1,
+                                        fIt
+                                    )
+                                        footprint.insert(fIt.key());
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        ring2,
+                                        fIt
+                                    )
+                                        footprint.insert(fIt.key());
+
+                                    planFootprints.insert(planId, footprint);
+
+                                    Info << "BLRepairFootprint:"
+                                         << " planId=" << planId
+                                         << " type="
+                                         << BLRepairPlan::junctionTypeName
+                                            (plan.sourceType_)
+                                         << " seeds="
+                                         << plan.seedBfI_.size()
+                                         << " footprint="
+                                         << footprint.size()
+                                         << endl;
+                                }
+
+                                auto footprintsOverlap =
+                                []
+                                (
+                                    const labelHashSet& a,
+                                    const labelHashSet& b
+                                ) -> bool
+                                {
+                                    if( a.size() <= b.size() )
+                                    {
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            a,
+                                            aIt
+                                        )
+                                        {
+                                            if( b.found(aIt.key()) )
+                                                return true;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            b,
+                                            bIt
+                                        )
+                                        {
+                                            if( a.found(bIt.key()) )
+                                                return true;
+                                        }
+                                    }
+
+                                    return false;
+                                };
+
+                                boolList assigned(planIds.size(), false);
+
+                                forAll(planIds, pI)
+                                {
+                                    if( assigned[pI] )
+                                        continue;
+
+                                    const label firstPlanId = planIds[pI];
+
+                                    labelHashSet groupPlans;
+                                    labelHashSet groupFootprint;
+
+                                    groupPlans.insert(firstPlanId);
+
+                                    const labelHashSet& firstFp =
+                                        planFootprints[firstPlanId];
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        firstFp,
+                                        fIt
+                                    )
+                                        groupFootprint.insert(fIt.key());
+
+                                    assigned[pI] = true;
+
+                                    // Transitive closure: if a newly merged
+                                    // footprint touches another plan, that plan
+                                    // belongs to the same interaction group.
+                                    bool grew = true;
+
+                                    while( grew )
+                                    {
+                                        grew = false;
+
+                                        forAll(planIds, pJ)
+                                        {
+                                            if( assigned[pJ] )
+                                                continue;
+
+                                            const label candidateId =
+                                                planIds[pJ];
+
+                                            const labelHashSet& candidateFp =
+                                                planFootprints[candidateId];
+
+                                            if
+                                            (
+                                                footprintsOverlap
+                                                (
+                                                    groupFootprint,
+                                                    candidateFp
+                                                )
+                                            )
+                                            {
+                                                groupPlans.insert(candidateId);
+
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    candidateFp,
+                                                    cfIt
+                                                )
+                                                {
+                                                    groupFootprint.insert
+                                                        (cfIt.key());
+                                                }
+
+                                                assigned[pJ] = true;
+                                                grew = true;
+                                            }
+                                        }
+                                    }
+
+                                    repairGroupPlans.insert
+                                        (nRepairGroups, groupPlans);
+                                    repairGroupFootprints.insert
+                                        (nRepairGroups, groupFootprint);
+
+                                    Info << "BLRepairInteractionGroup:"
+                                         << " group=" << nRepairGroups
+                                         << " plans=" << groupPlans.size()
+                                         << " footprint="
+                                         << groupFootprint.size()
+                                         << endl;
+
+                                    ++nRepairGroups;
+                                }
+
+                                repairGroupAtBfI.setSize
+                                (
+                                    repairFaceFaces.size(),
+                                    -1
+                                );
+
+                                label nGroupMapConflicts = 0;
+
+                                forAllConstIter
+                                (
+                                    Map<labelHashSet>,
+                                    repairGroupFootprints,
+                                    gFpIt
+                                )
+                                {
+                                    const label groupI = gFpIt.key();
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        gFpIt(),
+                                        gfIt
+                                    )
+                                    {
+                                        const label bfI = gfIt.key();
+
+                                        if
+                                        (
+                                            bfI < 0
+                                         || bfI >=
+                                            label(repairGroupAtBfI.size())
+                                        )
+                                            continue;
+
+                                        if
+                                        (
+                                            repairGroupAtBfI[bfI] >= 0
+                                         && repairGroupAtBfI[bfI] != groupI
+                                        )
+                                        {
+                                            ++nGroupMapConflicts;
+                                        }
+
+                                        repairGroupAtBfI[bfI] = groupI;
+                                    }
+                                }
+
+                                Info << "BLRepairInteractionGroups:"
+                                     << " activePlans=" << nActivePlans
+                                     << " groups=" << nRepairGroups
+                                     << " mapConflicts="
+                                     << nGroupMapConflicts
+                                     << endl;
+
+                                q1GroupNegCount.setSize(nRepairGroups, 0);
+                                q1GroupNegMag.setSize
+                                    (nRepairGroups, scalar(0.0));
+                                q1GroupMinVol.setSize
+                                    (nRepairGroups, GREAT);
+
+                                // Attribute stored Q1 bad-volume cells through
+                                // stable base-face provenance.
+                                forAll(q1NegCellI, q1I)
+                                {
+                                    const label bfI =
+                                        q1NegBaseBfI[q1I];
+
+                                    label groupI = -1;
+
+                                    if
+                                    (
+                                        bfI >= 0
+                                     && bfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        groupI =
+                                            repairGroupAtBfI[bfI];
+                                    }
+
+                                    const scalar signedVol =
+                                        q1NegSignedVol[q1I];
+
+                                    Info << "BLRepairNegAttrib:"
+                                         << " pass=Q1"
+                                         << " cell=" << q1NegCellI[q1I]
+                                         << " bfI=" << bfI
+                                         << " group=" << groupI
+                                         << " signedVol=" << signedVol
+                                         << endl;
+
+                                    if
+                                    (
+                                        groupI >= 0
+                                     && groupI < nRepairGroups
+                                    )
+                                    {
+                                        ++q1GroupNegCount[groupI];
+
+                                        if( signedVol < 0.0 )
+                                        {
+                                            q1GroupNegMag[groupI] +=
+                                                -signedVol;
+                                        }
+
+                                        q1GroupMinVol[groupI] =
+                                            Foam::min
+                                            (
+                                                q1GroupMinVol[groupI],
+                                                signedVol
+                                            );
+                                    }
+                                }
+                            }
 
                             if( haveClassifierPlans )
                             {
@@ -2004,6 +2547,195 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 mesh_, q2NegMag, q2MinCellVol,
                                 q2NNeg, q2NBelowVS
                             );
+
+                            // Group-local negative-volume attribution.
+                            // Diagnostic only: global Q1/Q2 acceptance below
+                            // remains completely unchanged.
+                            if
+                            (
+                                haveClassifierPlans
+                             && nRepairGroups > 0
+                            )
+                            {
+                                labelList q2GroupNegCount
+                                    (nRepairGroups, 0);
+                                scalarField q2GroupNegMag
+                                    (nRepairGroups, scalar(0.0));
+                                scalarField q2GroupMinVol
+                                    (nRepairGroups, GREAT);
+
+                                const labelList& q2Prov =
+                                    refLayers2.cellToBaseBndFace();
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    pass2NegVol,
+                                    q2NvIt
+                                )
+                                {
+                                    const label cellI = q2NvIt.key();
+
+                                    label bfI = -1;
+
+                                    if
+                                    (
+                                        cellI >= 0
+                                     && cellI < label(q2Prov.size())
+                                    )
+                                    {
+                                        bfI = q2Prov[cellI];
+                                    }
+
+                                    label groupI = -1;
+
+                                    if
+                                    (
+                                        bfI >= 0
+                                     && bfI <
+                                        label(repairGroupAtBfI.size())
+                                    )
+                                    {
+                                        groupI =
+                                            repairGroupAtBfI[bfI];
+                                    }
+
+                                    const scalar signedVol =
+                                        rawSignedCellVolume(mesh_, cellI);
+
+                                    Info << "BLRepairNegAttrib:"
+                                         << " pass=Q2"
+                                         << " cell=" << cellI
+                                         << " bfI=" << bfI
+                                         << " group=" << groupI
+                                         << " signedVol=" << signedVol
+                                         << endl;
+
+                                    if
+                                    (
+                                        groupI >= 0
+                                     && groupI < nRepairGroups
+                                    )
+                                    {
+                                        ++q2GroupNegCount[groupI];
+
+                                        if( signedVol < 0.0 )
+                                        {
+                                            q2GroupNegMag[groupI] +=
+                                                -signedVol;
+                                        }
+
+                                        q2GroupMinVol[groupI] =
+                                            Foam::min
+                                            (
+                                                q2GroupMinVol[groupI],
+                                                signedVol
+                                            );
+                                    }
+                                }
+
+                                for
+                                (
+                                    label groupI = 0;
+                                    groupI < nRepairGroups;
+                                    ++groupI
+                                )
+                                {
+                                    const label q1Count =
+                                        q1GroupNegCount[groupI];
+                                    const label q2Count =
+                                        q2GroupNegCount[groupI];
+
+                                    const scalar q1Mag =
+                                        q1GroupNegMag[groupI];
+                                    const scalar q2Mag =
+                                        q2GroupNegMag[groupI];
+
+                                    const scalar q1Min =
+                                        q1Count > 0
+                                      ? q1GroupMinVol[groupI]
+                                      : scalar(0.0);
+
+                                    const scalar q2Min =
+                                        q2Count > 0
+                                      ? q2GroupMinVol[groupI]
+                                      : scalar(0.0);
+
+                                    const bool countOK =
+                                        q2Count <= q1Count;
+
+                                    const bool magOK =
+                                        q2Mag <= q1Mag;
+
+                                    const bool minOK =
+                                        q2Count == 0
+                                     || (
+                                            q1Count > 0
+                                         && q2Min >= q1Min
+                                        );
+
+                                    const bool negSafe =
+                                        countOK && magOK && minOK;
+
+                                    const label nPlans =
+                                        repairGroupPlans.found(groupI)
+                                      ? repairGroupPlans[groupI].size()
+                                      : 0;
+
+                                    const label nFootprint =
+                                        repairGroupFootprints.found(groupI)
+                                      ? repairGroupFootprints[groupI].size()
+                                      : 0;
+
+                                    Info << "BLRepairNegGroup:"
+                                         << " group=" << groupI
+                                         << " plans=" << nPlans
+                                         << " footprint=" << nFootprint
+                                         << " count=" << q1Count
+                                         << "->" << q2Count
+                                         << " negMag=" << q1Mag
+                                         << "->" << q2Mag
+                                         << " minVol=" << q1Min
+                                         << "->" << q2Min
+                                         << " negSafe="
+                                         << (negSafe ? "yes" : "no")
+                                         << endl;
+
+                                    if( !negSafe )
+                                    {
+                                        unsafeRepairGroups.insert(groupI);
+
+                                        if
+                                        (
+                                            repairGroupPlans.found(groupI)
+                                        )
+                                        {
+                                            const labelHashSet& badGroupPlans =
+                                                repairGroupPlans[groupI];
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                badGroupPlans,
+                                                badPlanIt
+                                            )
+                                            {
+                                                unsafePlanIds.insert
+                                                    (badPlanIt.key());
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Info << "BLRepairSelectiveCandidates:"
+                                     << " unsafeGroups="
+                                     << unsafeRepairGroups.size()
+                                     << " unsafePlans="
+                                     << unsafePlanIds.size()
+                                     << " totalGroups="
+                                     << nRepairGroups
+                                     << endl;
+                            }
 
                             //- Phase 1: effectively zero tolerance. Deltas
                             //- are logged below so a scale-aware floor can
@@ -2082,10 +2814,317 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 twoPassAccepted = true;
                                 blPointsFromPass2 = true;
                             }
+                            else if
+                            (
+                                haveClassifierPlans
+                             && unsafeRepairGroups.size() > 0
+                             && unsafePlanIds.size() > 0
+                            )
+                            {
+                                // Exploratory Q2 found locally unsafe repair
+                                // interaction groups.  Restore the exact Q0
+                                // transaction and regenerate once more with
+                                // only the locally safe candidate plans.
+                                //
+                                // Q3 is still subject to the SAME strict
+                                // global acceptance criteria as Q2.
+                                Info << "Selective BL repair Q3: exploratory Q2 "
+                                     << "rejected; retrying without "
+                                     << unsafeRepairGroups.size()
+                                     << " unsafe group(s), "
+                                     << unsafePlanIds.size()
+                                     << " unsafe plan(s)"
+                                     << endl;
+
+                                if
+                                (
+                                    restorePreRefBLSnapshot(preRefBLSnap)
+                                )
+                                {
+                                    refineBoundaryLayers refLayers3(mesh_);
+
+                                    refineBoundaryLayers::readSettings
+                                        (meshDict_, refLayers3);
+
+                                    refLayers3.setBlblJunctionPoints
+                                    (
+                                        preRefBLSnap.blblJunctionPoints
+                                    );
+
+                                    refLayers3.setBlblAcuteCornerPoints
+                                    (
+                                        preRefBLSnap.blblAcuteCornerPoints
+                                    );
+
+                                    refLayers3.setRampSeedPoints
+                                    (
+                                        preRefBLSnap.rampSeedPoints
+                                    );
+
+                                    refLayers3.setVtFaceRing
+                                    (
+                                        preRefBLSnap.vtFaceRing
+                                    );
+
+                                    label nQ3AppliedPlans = 0;
+                                    label nQ3SkippedPlans = 0;
+
+                                    forAllIter
+                                    (
+                                        Map<BLRepairPlan>,
+                                        plans,
+                                        q3Pit
+                                    )
+                                    {
+                                        const label planId = q3Pit.key();
+                                        const BLRepairPlan& plan = q3Pit();
+
+                                        if( !plan.active() )
+                                            continue;
+
+                                        if
+                                        (
+                                            unsafePlanIds.found(planId)
+                                        )
+                                        {
+                                            ++nQ3SkippedPlans;
+
+                                            Info << "Selective BL repair Q3:"
+                                                 << " skip planId="
+                                                 << planId
+                                                 << " type="
+                                                 << BLRepairPlan::
+                                                    junctionTypeName
+                                                    (plan.sourceType_)
+                                                 << " seeds="
+                                                 << plan.seedBfI_.size()
+                                                 << endl;
+
+                                            continue;
+                                        }
+
+                                        ++nQ3AppliedPlans;
+
+                                        refLayers3.forceMaxLayersAtFaces
+                                        (
+                                            plan.seedBfI_,
+                                            plan.ring0_.maxLayers,
+                                            plan.ring1_.maxLayers,
+                                            plan.ring2_.maxLayers,
+                                            plan.ring0_.thicknessScale,
+                                            plan.ring1_.thicknessScale,
+                                            plan.ring2_.thicknessScale
+                                        );
+                                    }
+
+                                    Info << "Selective BL repair Q3:"
+                                         << " appliedPlans="
+                                         << nQ3AppliedPlans
+                                         << " skippedPlans="
+                                         << nQ3SkippedPlans
+                                         << endl;
+
+                                    nPointsBeforeBL_ =
+                                        mesh_.points().size();
+
+                                    refLayers3.refineLayers();
+
+                                    const bool pass3RefinementValid =
+                                        refLayers3.refinementValid();
+
+                                    const bool pass3RefinementCompleted =
+                                        refLayers3.refinementCompleted();
+
+                                    if
+                                    (
+                                        !pass3RefinementValid
+                                     || !pass3RefinementCompleted
+                                    )
+                                    {
+                                        Info << "Selective BL repair Q3:"
+                                             << " refinement incomplete"
+                                             << " refinementValid="
+                                             << (
+                                                    pass3RefinementValid
+                                                  ? "yes" : "no"
+                                                )
+                                             << " refinementCompleted="
+                                             << (
+                                                    pass3RefinementCompleted
+                                                  ? "yes" : "no"
+                                                )
+                                             << " -- REJECTED, restoring Q1"
+                                             << endl;
+
+                                        restorePreRefBLSnapshot
+                                            (pass1BLSnap);
+                                    }
+                                    else
+                                    {
+                                        labelHashSet pass3NegVol;
+
+                                        polyMeshGenChecks::checkCellVolumes
+                                        (
+                                            mesh_,
+                                            false,
+                                            &pass3NegVol
+                                        );
+
+                                        labelHashSet pass3BadPyr;
+
+                                        polyMeshGenChecks::checkFacePyramids
+                                        (
+                                            mesh_,
+                                            false,
+                                            -SMALL,
+                                            &pass3BadPyr
+                                        );
+
+                                        scalar q3MinCellVol = GREAT;
+                                        scalar q3NegMag = 0.0;
+                                        label q3NNeg = 0;
+                                        label q3NBelowVS = 0;
+
+                                        rawCellVolumeStats
+                                        (
+                                            mesh_,
+                                            q3NegMag,
+                                            q3MinCellVol,
+                                            q3NNeg,
+                                            q3NBelowVS
+                                        );
+
+                                        const bool q3NegCountOK =
+                                            pass3NegVol.size()
+                                         <= pass1NegVol.size();
+
+                                        const bool q3BadPyrBetter =
+                                            label(pass3BadPyr.size())
+                                          < pass1BadPyr;
+
+                                        const bool q3NegMagOK =
+                                            q3NegMag
+                                         <= q1NegMag + negMagTol;
+
+                                        const bool q3MinVolOK =
+                                            q3MinCellVol
+                                         >= q1MinCellVol - volTolAbs;
+
+                                        const bool pass3Better =
+                                            q3NegCountOK
+                                         && q3BadPyrBetter
+                                         && q3NegMagOK
+                                         && q3MinVolOK;
+
+                                        Info << "Selective BL repair Q3:"
+                                             << " badPyramids="
+                                             << pass3BadPyr.size()
+                                             << " negVol="
+                                             << pass3NegVol.size()
+                                             << (
+                                                    pass3Better
+                                                  ? " -- ACCEPTED"
+                                                  : " -- REJECTED"
+                                                )
+                                             << endl;
+
+                                        Info << "PREREFBL Q1/Q3"
+                                             << "  negVol "
+                                             << pass1NegVol.size()
+                                             << "/"
+                                             << pass3NegVol.size()
+                                             << "  badPyr "
+                                             << pass1BadPyr
+                                             << "/"
+                                             << pass3BadPyr.size()
+                                             << "  negMag "
+                                             << q1NegMag
+                                             << "/"
+                                             << q3NegMag
+                                             << "  minVol "
+                                             << q1MinCellVol
+                                             << "/"
+                                             << q3MinCellVol
+                                             << endl;
+
+                                        Info << "PREREFBL Q3 raw populations:"
+                                             << " rawNeg="
+                                             << q3NNeg
+                                             << " rawBelowVSmall="
+                                             << q3NBelowVS
+                                             << " checkCellVolumes="
+                                             << pass3NegVol.size()
+                                             << endl;
+
+                                        Info << "PREREFBL Q3 decision terms:"
+                                             << " negCountOK="
+                                             << (
+                                                    q3NegCountOK
+                                                  ? "yes" : "no"
+                                                )
+                                             << " badPyrBetter="
+                                             << (
+                                                    q3BadPyrBetter
+                                                  ? "yes" : "no"
+                                                )
+                                             << " negMagOK="
+                                             << (
+                                                    q3NegMagOK
+                                                  ? "yes" : "no"
+                                                )
+                                             << " minVolOK="
+                                             << (
+                                                    q3MinVolOK
+                                                  ? "yes" : "no"
+                                                )
+                                             << endl;
+
+                                        if( pass3Better )
+                                        {
+                                            refLayers3.pointsInBndLayer
+                                                (blPoints_);
+
+                                            // Historical variable name:
+                                            // means an accepted repair-pass
+                                            // point set is already harvested.
+                                            twoPassAccepted = true;
+                                            blPointsFromPass2 = true;
+
+                                            Info << "Selective BL repair Q3:"
+                                                 << " keeping selective "
+                                                 << "repair result"
+                                                 << endl;
+                                        }
+                                        else
+                                        {
+                                            Info << "Selective BL repair Q3:"
+                                                 << " restoring Q1 after "
+                                                 << "global rejection"
+                                                 << endl;
+
+                                            restorePreRefBLSnapshot
+                                                (pass1BLSnap);
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    Info << "Selective BL repair Q3:"
+                                         << " Q0 restore failed"
+                                         << " -- restoring Q1"
+                                         << endl;
+
+                                    restorePreRefBLSnapshot(pass1BLSnap);
+                                }
+                            }
                             else
                             {
                                 Info << "Two-pass BL repair: restoring pass1 "
-                                     << "result after rejected pass2" << endl;
+                                     << "result after rejected pass2"
+                                     << " -- no locally unsafe repair "
+                                     << "groups available for selective Q3"
+                                     << endl;
+
                                 restorePreRefBLSnapshot(pass1BLSnap);
                             }
                             } // end refinementValid else
