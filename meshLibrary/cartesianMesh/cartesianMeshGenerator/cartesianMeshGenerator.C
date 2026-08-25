@@ -2109,6 +2109,12 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             labelHashSet unsafeRepairGroups;
                             labelHashSet unsafePlanIds;
 
+                            // Q3 keeps only interventions that exploratory Q2
+                            // proved both negative-volume safe AND locally
+                            // beneficial for bad pyramids.
+                            labelHashSet selectedRepairGroups;
+                            labelHashSet selectedPlanIds;
+
                             if( haveClassifierPlans )
                             {
                                 const meshSurfaceEngine repairMse(mesh_);
@@ -3105,6 +3111,34 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                          << (negSafe ? "yes" : "no")
                                          << endl;
 
+                                    const bool pyrBetter =
+                                        q2Pyr < q1Pyr;
+
+                                    if( negSafe && pyrBetter )
+                                    {
+                                        selectedRepairGroups.insert(groupI);
+
+                                        if
+                                        (
+                                            repairGroupPlans.found(groupI)
+                                        )
+                                        {
+                                            const labelHashSet& goodGroupPlans =
+                                                repairGroupPlans[groupI];
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                goodGroupPlans,
+                                                goodPlanIt
+                                            )
+                                            {
+                                                selectedPlanIds.insert
+                                                    (goodPlanIt.key());
+                                            }
+                                        }
+                                    }
+
                                     if( !negSafe )
                                     {
                                         unsafeRepairGroups.insert(groupI);
@@ -3136,6 +3170,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                      << unsafeRepairGroups.size()
                                      << " unsafePlans="
                                      << unsafePlanIds.size()
+                                     << " selectedGroups="
+                                     << selectedRepairGroups.size()
+                                     << " selectedPlans="
+                                     << selectedPlanIds.size()
                                      << " totalGroups="
                                      << nRepairGroups
                                      << endl;
@@ -3221,8 +3259,8 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             else if
                             (
                                 haveClassifierPlans
-                             && unsafeRepairGroups.size() > 0
-                             && unsafePlanIds.size() > 0
+                             && selectedRepairGroups.size() > 0
+                             && selectedPlanIds.size() > 0
                             )
                             {
                                 // Exploratory Q2 found locally unsafe repair
@@ -3233,11 +3271,11 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 // Q3 is still subject to the SAME strict
                                 // global acceptance criteria as Q2.
                                 Info << "Selective BL repair Q3: exploratory Q2 "
-                                     << "rejected; retrying without "
-                                     << unsafeRepairGroups.size()
-                                     << " unsafe group(s), "
-                                     << unsafePlanIds.size()
-                                     << " unsafe plan(s)"
+                                     << "rejected; retrying with "
+                                     << selectedRepairGroups.size()
+                                     << " safe+beneficial group(s), "
+                                     << selectedPlanIds.size()
+                                     << " selected plan(s)"
                                      << endl;
 
                                 if
@@ -3288,7 +3326,7 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                                         if
                                         (
-                                            unsafePlanIds.found(planId)
+                                            !selectedPlanIds.found(planId)
                                         )
                                         {
                                             ++nQ3SkippedPlans;
@@ -3302,12 +3340,24 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                                     (plan.sourceType_)
                                                  << " seeds="
                                                  << plan.seedBfI_.size()
+                                                 << " reason=notSafeBeneficial"
                                                  << endl;
 
                                             continue;
                                         }
 
                                         ++nQ3AppliedPlans;
+
+                                        Info << "Selective BL repair Q3:"
+                                             << " apply planId="
+                                             << planId
+                                             << " type="
+                                             << BLRepairPlan::
+                                                junctionTypeName
+                                                (plan.sourceType_)
+                                             << " seeds="
+                                             << plan.seedBfI_.size()
+                                             << endl;
 
                                         refLayers3.forceMaxLayersAtFaces
                                         (
