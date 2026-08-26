@@ -2115,6 +2115,14 @@ void cartesianMeshGenerator::refBoundaryLayers()
                             labelHashSet selectedRepairGroups;
                             labelHashSet selectedPlanIds;
 
+                            // Plans directly implicated by a Q2 negative-volume
+                            // regression through actual effective-cap provenance,
+                            // and non-implicated plans from conflicted groups that
+                            // may be retried after an accepted Q3.
+                            labelHashSet implicatedPlanIds;
+                            labelHashSet salvageRepairGroups;
+                            labelHashSet salvagePlanIds;
+
                             if( haveClassifierPlans )
                             {
                                 const meshSurfaceEngine repairMse(mesh_);
@@ -3011,6 +3019,95 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                     }
                                 }
 
+                                // Fine-grained negative-volume
+                                // attribution in the stable base-bfI
+                                // coordinate system.  This is used only to
+                                // identify directly implicated effective cap
+                                // providers inside otherwise conflicted groups.
+                                Map<label> q1BfNegCount;
+                                Map<scalar> q1BfNegMag;
+                                Map<scalar> q1BfMinVol;
+
+                                forAll(q1NegBaseBfI, q1BfI)
+                                {
+                                    const label bfI =
+                                        q1NegBaseBfI[q1BfI];
+
+                                    if( bfI < 0 )
+                                        continue;
+
+                                    const scalar signedVol =
+                                        q1NegSignedVol[q1BfI];
+
+                                    if( !q1BfNegCount.found(bfI) )
+                                    {
+                                        q1BfNegCount.insert(bfI, 0);
+                                        q1BfNegMag.insert(bfI, scalar(0.0));
+                                        q1BfMinVol.insert(bfI, GREAT);
+                                    }
+
+                                    ++q1BfNegCount[bfI];
+
+                                    if( signedVol < 0.0 )
+                                        q1BfNegMag[bfI] += -signedVol;
+
+                                    q1BfMinVol[bfI] =
+                                        Foam::min
+                                        (
+                                            q1BfMinVol[bfI],
+                                            signedVol
+                                        );
+                                }
+
+                                Map<label> q2BfNegCount;
+                                Map<scalar> q2BfNegMag;
+                                Map<scalar> q2BfMinVol;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    pass2NegVol,
+                                    q2BfNvIt
+                                )
+                                {
+                                    const label cellI = q2BfNvIt.key();
+
+                                    if
+                                    (
+                                        cellI < 0
+                                     || cellI >= label(q2Prov.size())
+                                    )
+                                        continue;
+
+                                    const label bfI = q2Prov[cellI];
+
+                                    if( bfI < 0 )
+                                        continue;
+
+                                    const scalar signedVol =
+                                        rawSignedCellVolume(mesh_, cellI);
+
+                                    if( !q2BfNegCount.found(bfI) )
+                                    {
+                                        q2BfNegCount.insert(bfI, 0);
+                                        q2BfNegMag.insert
+                                            (bfI, scalar(0.0));
+                                        q2BfMinVol.insert(bfI, GREAT);
+                                    }
+
+                                    ++q2BfNegCount[bfI];
+
+                                    if( signedVol < 0.0 )
+                                        q2BfNegMag[bfI] += -signedVol;
+
+                                    q2BfMinVol[bfI] =
+                                        Foam::min
+                                        (
+                                            q2BfMinVol[bfI],
+                                            signedVol
+                                        );
+                                }
+
                                 labelList q2GroupBadPyr
                                     (nRepairGroups, 0);
 
@@ -3280,6 +3377,275 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                     const bool pyrBetter =
                                         q2Pyr < q1Pyr;
 
+                                    // A group may be pyramid-beneficial yet
+                                    // negative-volume unsafe.  Do not discard
+                                    // every plan blindly.  Identify the bfI
+                                    // populations that actually worsened, then
+                                    // map those bfIs to the plans that supplied
+                                    // their winning effective caps.
+                                    //
+                                    // Fail closed: salvage from a conflicted
+                                    // group is allowed only when every observed
+                                    // local worsening is attributable to at
+                                    // least one effective provider belonging
+                                    // to that group.
+                                    if( !negSafe && pyrBetter )
+                                    {
+                                        bool salvageAttributionComplete = true;
+                                        labelHashSet localImplicatedPlans;
+                                        labelHashSet localSalvagePlans;
+                                        label nWorsenedBfI = 0;
+
+                                        if
+                                        (
+                                            !repairGroupPlans.found(groupI)
+                                         || !repairGroupFootprints.found(groupI)
+                                        )
+                                        {
+                                            salvageAttributionComplete = false;
+                                        }
+                                        else
+                                        {
+                                            const labelHashSet& groupPlans =
+                                                repairGroupPlans[groupI];
+
+                                            const labelHashSet& groupFootprint =
+                                                repairGroupFootprints[groupI];
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                groupFootprint,
+                                                sgfIt
+                                            )
+                                            {
+                                                const label bfI =
+                                                    sgfIt.key();
+
+                                                const label q1BfCount =
+                                                    q1BfNegCount.found(bfI)
+                                                  ? q1BfNegCount[bfI] : 0;
+
+                                                const label q2BfCount =
+                                                    q2BfNegCount.found(bfI)
+                                                  ? q2BfNegCount[bfI] : 0;
+
+                                                const scalar q1BfMag =
+                                                    q1BfNegMag.found(bfI)
+                                                  ? q1BfNegMag[bfI]
+                                                  : scalar(0.0);
+
+                                                const scalar q2BfMag =
+                                                    q2BfNegMag.found(bfI)
+                                                  ? q2BfNegMag[bfI]
+                                                  : scalar(0.0);
+
+                                                const scalar q1BfMin =
+                                                    q1BfCount > 0
+                                                  ? q1BfMinVol[bfI]
+                                                  : scalar(0.0);
+
+                                                const scalar q2BfMin =
+                                                    q2BfCount > 0
+                                                  ? q2BfMinVol[bfI]
+                                                  : scalar(0.0);
+
+                                                const bool bfCountWorse =
+                                                    q2BfCount > q1BfCount;
+
+                                                const bool bfMagWorse =
+                                                    q2BfMag > q1BfMag;
+
+                                                const bool bfMinWorse =
+                                                    q2BfCount > 0
+                                                 && (
+                                                        q1BfCount == 0
+                                                     || q2BfMin < q1BfMin
+                                                    );
+
+                                                const bool bfWorse =
+                                                    bfCountWorse
+                                                 || bfMagWorse
+                                                 || bfMinWorse;
+
+                                                if( !bfWorse )
+                                                    continue;
+
+                                                ++nWorsenedBfI;
+
+                                                Info
+                                                    << "BLRepairSalvageAttrib:"
+                                                    << " group=" << groupI
+                                                    << " bfI=" << bfI
+                                                    << " count="
+                                                    << q1BfCount << "->"
+                                                    << q2BfCount
+                                                    << " negMag="
+                                                    << q1BfMag << "->"
+                                                    << q2BfMag
+                                                    << " minVol="
+                                                    << q1BfMin << "->"
+                                                    << q2BfMin
+                                                    << endl;
+
+                                                if
+                                                (
+                                                    !q2CapProviders.found
+                                                    (bfI)
+                                                )
+                                                {
+                                                    salvageAttributionComplete =
+                                                        false;
+
+                                                    Info
+                                                        << "BLRepairSalvageAttrib:"
+                                                        << " group="
+                                                        << groupI
+                                                        << " bfI=" << bfI
+                                                        << " provider=NONE"
+                                                        << " -- incomplete"
+                                                        << endl;
+
+                                                    continue;
+                                                }
+
+                                                const labelHashSet& providers =
+                                                    q2CapProviders[bfI];
+
+                                                label nValidProviders = 0;
+
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    providers,
+                                                    spIt
+                                                )
+                                                {
+                                                    const label planId =
+                                                        spIt.key();
+
+                                                    if
+                                                    (
+                                                        planId < 0
+                                                     || !groupPlans.found
+                                                        (planId)
+                                                    )
+                                                    {
+                                                        salvageAttributionComplete =
+                                                            false;
+
+                                                        Info
+                                                            << "BLRepairSalvageAttrib:"
+                                                            << " group="
+                                                            << groupI
+                                                            << " bfI="
+                                                            << bfI
+                                                            << " providerPlan="
+                                                            << planId
+                                                            << " -- provider "
+                                                            << "outside group"
+                                                            << endl;
+
+                                                        continue;
+                                                    }
+
+                                                    ++nValidProviders;
+                                                    localImplicatedPlans.insert
+                                                        (planId);
+                                                    implicatedPlanIds.insert
+                                                        (planId);
+
+                                                    Info
+                                                        << "BLRepairSalvageAttrib:"
+                                                        << " group="
+                                                        << groupI
+                                                        << " bfI="
+                                                        << bfI
+                                                        << " implicatedPlan="
+                                                        << planId
+                                                        << endl;
+                                                }
+
+                                                if( nValidProviders == 0 )
+                                                {
+                                                    salvageAttributionComplete =
+                                                        false;
+                                                }
+                                            }
+
+                                            // An unsafe group must have at least
+                                            // one local worsening before we infer
+                                            // any plan-level salvage.
+                                            if( nWorsenedBfI == 0 )
+                                            {
+                                                salvageAttributionComplete =
+                                                    false;
+                                            }
+
+                                            if( salvageAttributionComplete )
+                                            {
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    groupPlans,
+                                                    gpIt
+                                                )
+                                                {
+                                                    const label planId =
+                                                        gpIt.key();
+
+                                                    if
+                                                    (
+                                                        localImplicatedPlans.found
+                                                        (planId)
+                                                    )
+                                                        continue;
+
+                                                    // Only retry plans that Q2
+                                                    // proved actually altered at
+                                                    // least one boundary face.
+                                                    if
+                                                    (
+                                                        !q2EffectiveFacesByPlan
+                                                            .found(planId)
+                                                     || q2EffectiveFacesByPlan
+                                                            [planId].size() == 0
+                                                    )
+                                                        continue;
+
+                                                    localSalvagePlans.insert
+                                                        (planId);
+                                                    salvagePlanIds.insert
+                                                        (planId);
+                                                }
+
+                                                if
+                                                (
+                                                    localSalvagePlans.size() > 0
+                                                )
+                                                {
+                                                    salvageRepairGroups.insert
+                                                        (groupI);
+                                                }
+                                            }
+                                        }
+
+                                        Info << "BLRepairSalvageGroup:"
+                                             << " group=" << groupI
+                                             << " attributionComplete="
+                                             << (
+                                                    salvageAttributionComplete
+                                                  ? "yes" : "no"
+                                                )
+                                             << " worsenedBfI="
+                                             << nWorsenedBfI
+                                             << " implicatedPlans="
+                                             << localImplicatedPlans.size()
+                                             << " salvagePlans="
+                                             << localSalvagePlans.size()
+                                             << endl;
+                                    }
+
                                     if( negSafe && pyrBetter )
                                     {
                                         selectedRepairGroups.insert(groupI);
@@ -3340,6 +3706,12 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                      << selectedRepairGroups.size()
                                      << " selectedPlans="
                                      << selectedPlanIds.size()
+                                     << " implicatedPlans="
+                                     << implicatedPlanIds.size()
+                                     << " salvageGroups="
+                                     << salvageRepairGroups.size()
+                                     << " salvagePlans="
+                                     << salvagePlanIds.size()
                                      << " totalGroups="
                                      << nRepairGroups
                                      << endl;
@@ -3702,6 +4074,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
                                         if( pass3Better )
                                         {
+                                            // Q3 is now the accepted incumbent.
+                                            // Harvest its BL points before any
+                                            // Q4 experiment so a rejected Q4 can
+                                            // restore Q3 exactly.
                                             refLayers3.pointsInBndLayer
                                                 (blPoints_);
 
@@ -3715,6 +4091,403 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                                  << " keeping selective "
                                                  << "repair result"
                                                  << endl;
+
+                                            if( salvagePlanIds.size() > 0 )
+                                            {
+                                                PreRefBLMeshSnapshot q3BLSnap;
+                                                takePreRefBLSnapshot(q3BLSnap);
+
+                                                labelHashSet q4PlanIds;
+
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    selectedPlanIds,
+                                                    q4SelIt
+                                                )
+                                                {
+                                                    q4PlanIds.insert
+                                                        (q4SelIt.key());
+                                                }
+
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    salvagePlanIds,
+                                                    q4SalvIt
+                                                )
+                                                {
+                                                    q4PlanIds.insert
+                                                        (q4SalvIt.key());
+                                                }
+
+                                                Info
+                                                    << "Salvage BL repair Q4:"
+                                                    << " incumbentQ3Plans="
+                                                    << selectedPlanIds.size()
+                                                    << " salvagePlans="
+                                                    << salvagePlanIds.size()
+                                                    << " totalQ4Plans="
+                                                    << q4PlanIds.size()
+                                                    << endl;
+
+                                                if
+                                                (
+                                                    restorePreRefBLSnapshot
+                                                    (preRefBLSnap)
+                                                )
+                                                {
+                                                    refineBoundaryLayers
+                                                        refLayers4(mesh_);
+
+                                                    refineBoundaryLayers::
+                                                        readSettings
+                                                        (meshDict_, refLayers4);
+
+                                                    refLayers4.
+                                                        setBlblJunctionPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                            blblJunctionPoints
+                                                        );
+
+                                                    refLayers4.
+                                                        setBlblAcuteCornerPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                            blblAcuteCornerPoints
+                                                        );
+
+                                                    refLayers4.setRampSeedPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                            rampSeedPoints
+                                                        );
+
+                                                    refLayers4.setVtFaceRing
+                                                        (
+                                                            preRefBLSnap.
+                                                            vtFaceRing
+                                                        );
+
+                                                    label nQ4AppliedPlans = 0;
+                                                    label nQ4SkippedPlans = 0;
+
+                                                    forAllIter
+                                                    (
+                                                        Map<BLRepairPlan>,
+                                                        plans,
+                                                        q4Pit
+                                                    )
+                                                    {
+                                                        const label planId =
+                                                            q4Pit.key();
+
+                                                        const BLRepairPlan&
+                                                            plan = q4Pit();
+
+                                                        if( !plan.active() )
+                                                            continue;
+
+                                                        if
+                                                        (
+                                                            !q4PlanIds.found
+                                                            (planId)
+                                                        )
+                                                        {
+                                                            ++nQ4SkippedPlans;
+                                                            continue;
+                                                        }
+
+                                                        ++nQ4AppliedPlans;
+
+                                                        Info
+                                                            << "Salvage BL repair Q4:"
+                                                            << " apply planId="
+                                                            << planId
+                                                            << " type="
+                                                            << BLRepairPlan::
+                                                               junctionTypeName
+                                                               (
+                                                                   plan.
+                                                                   sourceType_
+                                                               )
+                                                            << " seeds="
+                                                            << plan.
+                                                               seedBfI_.size()
+                                                            << (
+                                                                   salvagePlanIds
+                                                                   .found(planId)
+                                                                 ? " source=salvage"
+                                                                 : " source=Q3"
+                                                               )
+                                                            << endl;
+
+                                                        refLayers4.
+                                                            forceMaxLayersAtFaces
+                                                            (
+                                                                plan.seedBfI_,
+                                                                plan.ring0_.
+                                                                    maxLayers,
+                                                                plan.ring1_.
+                                                                    maxLayers,
+                                                                plan.ring2_.
+                                                                    maxLayers,
+                                                                plan.ring0_.
+                                                                    thicknessScale,
+                                                                plan.ring1_.
+                                                                    thicknessScale,
+                                                                plan.ring2_.
+                                                                    thicknessScale,
+                                                                planId
+                                                            );
+                                                    }
+
+                                                    Info
+                                                        << "Salvage BL repair Q4:"
+                                                        << " appliedPlans="
+                                                        << nQ4AppliedPlans
+                                                        << " skippedPlans="
+                                                        << nQ4SkippedPlans
+                                                        << endl;
+
+                                                    nPointsBeforeBL_ =
+                                                        mesh_.points().size();
+
+                                                    refLayers4.refineLayers();
+
+                                                    const bool
+                                                        pass4RefinementValid =
+                                                        refLayers4.
+                                                        refinementValid();
+
+                                                    const bool
+                                                        pass4RefinementCompleted =
+                                                        refLayers4.
+                                                        refinementCompleted();
+
+                                                    if
+                                                    (
+                                                        !pass4RefinementValid
+                                                     || !pass4RefinementCompleted
+                                                    )
+                                                    {
+                                                        Info
+                                                            << "Salvage BL repair Q4:"
+                                                            << " refinement "
+                                                            << "incomplete"
+                                                            << " refinementValid="
+                                                            << (
+                                                                   pass4RefinementValid
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << " refinementCompleted="
+                                                            << (
+                                                                   pass4RefinementCompleted
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << " -- REJECTED, "
+                                                            << "restoring Q3"
+                                                            << endl;
+
+                                                        restorePreRefBLSnapshot
+                                                            (q3BLSnap);
+                                                    }
+                                                    else
+                                                    {
+                                                        labelHashSet
+                                                            pass4NegVol;
+
+                                                        polyMeshGenChecks::
+                                                            checkCellVolumes
+                                                            (
+                                                                mesh_,
+                                                                false,
+                                                                &pass4NegVol
+                                                            );
+
+                                                        labelHashSet
+                                                            pass4BadPyr;
+
+                                                        polyMeshGenChecks::
+                                                            checkFacePyramids
+                                                            (
+                                                                mesh_,
+                                                                false,
+                                                                -SMALL,
+                                                                &pass4BadPyr
+                                                            );
+
+                                                        scalar q4MinCellVol =
+                                                            GREAT;
+                                                        scalar q4NegMag = 0.0;
+                                                        label q4NNeg = 0;
+                                                        label q4NBelowVS = 0;
+
+                                                        rawCellVolumeStats
+                                                        (
+                                                            mesh_,
+                                                            q4NegMag,
+                                                            q4MinCellVol,
+                                                            q4NNeg,
+                                                            q4NBelowVS
+                                                        );
+
+                                                        const scalar
+                                                            q4NegMagTol =
+                                                            volTolAbs
+                                                          + volTolRel
+                                                           *q3NegMag;
+
+                                                        const bool
+                                                            q4NegCountOK =
+                                                            pass4NegVol.size()
+                                                         <= pass3NegVol.size();
+
+                                                        const bool
+                                                            q4BadPyrBetter =
+                                                            label
+                                                            (
+                                                                pass4BadPyr.
+                                                                size()
+                                                            )
+                                                          < label
+                                                            (
+                                                                pass3BadPyr.
+                                                                size()
+                                                            );
+
+                                                        const bool
+                                                            q4NegMagOK =
+                                                            q4NegMag
+                                                         <= q3NegMag
+                                                          + q4NegMagTol;
+
+                                                        const bool
+                                                            q4MinVolOK =
+                                                            q4MinCellVol
+                                                         >= q3MinCellVol
+                                                          - volTolAbs;
+
+                                                        const bool
+                                                            pass4Better =
+                                                            q4NegCountOK
+                                                         && q4BadPyrBetter
+                                                         && q4NegMagOK
+                                                         && q4MinVolOK;
+
+                                                        Info
+                                                            << "Salvage BL repair Q4:"
+                                                            << " badPyramids="
+                                                            << pass4BadPyr.size()
+                                                            << " negVol="
+                                                            << pass4NegVol.size()
+                                                            << (
+                                                                   pass4Better
+                                                                 ? " -- ACCEPTED"
+                                                                 : " -- REJECTED"
+                                                               )
+                                                            << endl;
+
+                                                        Info
+                                                            << "PREREFBL Q3/Q4"
+                                                            << "  negVol "
+                                                            << pass3NegVol.size()
+                                                            << "/"
+                                                            << pass4NegVol.size()
+                                                            << "  badPyr "
+                                                            << pass3BadPyr.size()
+                                                            << "/"
+                                                            << pass4BadPyr.size()
+                                                            << "  negMag "
+                                                            << q3NegMag
+                                                            << "/"
+                                                            << q4NegMag
+                                                            << "  minVol "
+                                                            << q3MinCellVol
+                                                            << "/"
+                                                            << q4MinCellVol
+                                                            << endl;
+
+                                                        Info
+                                                            << "PREREFBL Q4 "
+                                                            << "decision terms:"
+                                                            << " negCountOK="
+                                                            << (
+                                                                   q4NegCountOK
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << " badPyrBetter="
+                                                            << (
+                                                                   q4BadPyrBetter
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << " negMagOK="
+                                                            << (
+                                                                   q4NegMagOK
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << " minVolOK="
+                                                            << (
+                                                                   q4MinVolOK
+                                                                 ? "yes" : "no"
+                                                               )
+                                                            << endl;
+
+                                                        Info
+                                                            << "PREREFBL Q4 "
+                                                            << "raw populations:"
+                                                            << " rawNeg="
+                                                            << q4NNeg
+                                                            << " rawBelowVSmall="
+                                                            << q4NBelowVS
+                                                            << " checkCellVolumes="
+                                                            << pass4NegVol.size()
+                                                            << endl;
+
+                                                        if( pass4Better )
+                                                        {
+                                                            refLayers4.
+                                                                pointsInBndLayer
+                                                                (blPoints_);
+
+                                                            twoPassAccepted =
+                                                                true;
+                                                            blPointsFromPass2 =
+                                                                true;
+
+                                                            Info
+                                                                << "Salvage BL repair Q4:"
+                                                                << " keeping salvage "
+                                                                << "repair result"
+                                                                << endl;
+                                                        }
+                                                        else
+                                                        {
+                                                            Info
+                                                                << "Salvage BL repair Q4:"
+                                                                << " restoring Q3 "
+                                                                << "after global "
+                                                                << "rejection"
+                                                                << endl;
+
+                                                            restorePreRefBLSnapshot
+                                                                (q3BLSnap);
+                                                        }
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    Info
+                                                        << "Salvage BL repair Q4:"
+                                                        << " Q0 restore failed "
+                                                        << "-- restoring Q3"
+                                                        << endl;
+
+                                                    restorePreRefBLSnapshot
+                                                        (q3BLSnap);
+                                                }
+                                            }
                                         }
                                         else
                                         {
