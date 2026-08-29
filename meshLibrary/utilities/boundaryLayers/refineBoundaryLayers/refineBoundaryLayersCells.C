@@ -29,6 +29,7 @@ Description
 #include "meshSurfaceEngine.H"
 #include "helperFunctions.H"
 #include "demandDrivenData.H"
+#include <map>
 
 //#define DEBUGLayer
 
@@ -1422,6 +1423,106 @@ void refineBoundaryLayers::generateNewCells()
     label nCells = cells.size();
     cells.setSize(nCells+nNewCells);
 
+    // REFINE_CHILD_CLOSURE_AUDIT
+    // Diagnostic only.  Check generated child shells before face-label
+    // consolidation/reconstruction can alter their connectivity.
+    label nGeneratedChildrenChecked = 0;
+    label nGeneratedChildrenBad = 0;
+    label nGeneratedBadType1 = 0;
+    label nGeneratedBadType2 = 0;
+    label nGeneratedBadType3 = 0;
+    label nGeneratedBadEdges = 0;
+    label nGeneratedMalformedFaces = 0;
+
+    auto auditGeneratedChild =
+    [&]
+    (
+        const auto& childFaces,
+        const label parentCellI,
+        const label localChildI,
+        const label childRefType
+    )
+    {
+        ++nGeneratedChildrenChecked;
+
+        std::map<std::pair<label,label>, label> edgeUse;
+
+        bool bad = false;
+        label badEdgesThisChild = 0;
+        label malformedThisChild = 0;
+
+        forAll(childFaces, fI)
+        {
+            const auto& f = childFaces[fI];
+
+            if( f.size() < 3 )
+            {
+                bad = true;
+                ++malformedThisChild;
+                continue;
+            }
+
+            forAll(f, pI)
+            {
+                const label a = f[pI];
+                const label b = f[(pI+1)%f.size()];
+
+                if( a == b )
+                    bad = true;
+
+                ++edgeUse
+                [
+                    std::make_pair
+                    (
+                        Foam::min(a,b),
+                        Foam::max(a,b)
+                    )
+                ];
+            }
+        }
+
+        for
+        (
+            std::map<std::pair<label,label>, label>::const_iterator
+                iter=edgeUse.begin();
+            iter!=edgeUse.end();
+            ++iter
+        )
+        {
+            if( iter->second != 2 )
+            {
+                bad = true;
+                ++badEdgesThisChild;
+            }
+        }
+
+        if( bad )
+        {
+            ++nGeneratedChildrenBad;
+            nGeneratedBadEdges += badEdgesThisChild;
+            nGeneratedMalformedFaces += malformedThisChild;
+
+            if( childRefType == 1 )
+                ++nGeneratedBadType1;
+            else if( childRefType == 2 )
+                ++nGeneratedBadType2;
+            else if( childRefType == 3 )
+                ++nGeneratedBadType3;
+
+            if( nGeneratedChildrenBad <= 50 )
+            {
+                Info << "REFINE_CHILD_CLOSURE_BAD"
+                     << " parent=" << parentCellI
+                     << " childLocal=" << localChildI
+                     << " refType=" << childRefType
+                     << " nFaces=" << childFaces.size()
+                     << " badEdges=" << badEdgesThisChild
+                     << " malformedFaces=" << malformedThisChild
+                     << endl;
+            }
+        }
+    };
+
     //- provenance map: newCellI -> bfI that generated it (-1 if not a BL cell)
     cellToBaseBndFace_.setSize(nCells+nNewCells, -1);
     forAll(cellToBfI, cI)
@@ -1454,6 +1555,269 @@ void refineBoundaryLayers::generateNewCells()
                     newC.append(facesFromFace_(c[fI], cfI));
             }
 
+            // TYPE0_PROVENANCE_AUDIT
+            //
+            // Target the first simple bad cell and one larger bad cell
+            // previously identified by REFINE_PRE_RELABEL_CLOSURE.
+            // At this point:
+            //
+            //   c     = original cell face labels
+            //   newC  = replacement newFaces_ labels
+            //
+            // Nothing has yet been written back to c.
+            if( cellI == 951557 || cellI == 951730 )
+            {
+                std::map<std::pair<label,label>, label> edgeUse;
+
+                forAll(newC, nfLocalI)
+                {
+                    const label nfI = newC[nfLocalI];
+
+                    if
+                    (
+                        nfI < 0
+                     || nfI >= label(newFaces_.size())
+                    )
+                    {
+                        Info << "TYPE0_PROVENANCE_BAD_REF"
+                             << " cell=" << cellI
+                             << " newFace=" << nfI
+                             << endl;
+                        continue;
+                    }
+
+                    const label nPts = newFaces_.sizeOfRow(nfI);
+
+                    for(label pI=0; pI<nPts; ++pI)
+                    {
+                        const label a = newFaces_(nfI, pI);
+                        const label b =
+                            newFaces_(nfI, (pI+1)%nPts);
+
+                        ++edgeUse
+                        [
+                            std::make_pair
+                            (
+                                Foam::min(a,b),
+                                Foam::max(a,b)
+                            )
+                        ];
+                    }
+                }
+
+                label nBadEdges = 0;
+                for
+                (
+                    std::map<std::pair<label,label>, label>::const_iterator
+                        iter=edgeUse.begin();
+                    iter!=edgeUse.end();
+                    ++iter
+                )
+                {
+                    if( iter->second != 2 )
+                        ++nBadEdges;
+                }
+
+                Info << "TYPE0_PROVENANCE_BEGIN"
+                     << " cell=" << cellI
+                     << " originalFaces=" << c.size()
+                     << " replacementFaces=" << newC.size()
+                     << " badEdges=" << nBadEdges
+                     << endl;
+
+                // Print every original face and every replacement face
+                // originating from it.  These cells are tiny, so this is
+                // deliberately exhaustive.
+                forAll(c, oldLocalI)
+                {
+                    const label oldFaceI = c[oldLocalI];
+
+                    Info << "TYPE0_PROVENANCE_OLD"
+                         << " cell=" << cellI
+                         << " local=" << oldLocalI
+                         << " oldFace=" << oldFaceI;
+
+                    if
+                    (
+                        oldFaceI >= 0
+                     && oldFaceI < label(faces.size())
+                    )
+                    {
+                        Info << " oldPts=" << faces[oldFaceI];
+                    }
+                    else
+                    {
+                        Info << " oldPts=OUT_OF_RANGE";
+                    }
+
+                    Info << " replacements=(";
+
+                    if
+                    (
+                        oldFaceI >= 0
+                     && oldFaceI < label(facesFromFace_.size())
+                    )
+                    {
+                        forAllRow
+                        (
+                            facesFromFace_,
+                            oldFaceI,
+                            repI
+                        )
+                        {
+                            Info << ' '
+                                 << facesFromFace_(oldFaceI, repI);
+                        }
+                    }
+
+                    Info << " )" << endl;
+
+                    if
+                    (
+                        oldFaceI < 0
+                     || oldFaceI >= label(facesFromFace_.size())
+                    )
+                        continue;
+
+                    forAllRow(facesFromFace_, oldFaceI, repI)
+                    {
+                        const label nfI =
+                            facesFromFace_(oldFaceI, repI);
+
+                        Info << "TYPE0_PROVENANCE_REP"
+                             << " cell=" << cellI
+                             << " oldFace=" << oldFaceI
+                             << " repLocal=" << repI
+                             << " newFace=" << nfI;
+
+                        if
+                        (
+                            nfI >= 0
+                         && nfI < label(newFaces_.size())
+                        )
+                        {
+                            Info << " newPts="
+                                 << newFaces_[nfI];
+                        }
+                        else
+                        {
+                            Info << " newPts=OUT_OF_RANGE";
+                        }
+
+                        Info << endl;
+                    }
+                }
+
+                // Print all unmatched edges and identify exactly which
+                // original/replacement face contributes each edge.
+                for
+                (
+                    std::map<std::pair<label,label>, label>::const_iterator
+                        iter=edgeUse.begin();
+                    iter!=edgeUse.end();
+                    ++iter
+                )
+                {
+                    if( iter->second == 2 )
+                        continue;
+
+                    const label ea = iter->first.first;
+                    const label eb = iter->first.second;
+
+                    Info << "TYPE0_PROVENANCE_BAD_EDGE"
+                         << " cell=" << cellI
+                         << " edge=(" << ea << ' ' << eb << ')'
+                         << " use=" << iter->second
+                         << endl;
+
+                    forAll(c, oldLocalI)
+                    {
+                        const label oldFaceI = c[oldLocalI];
+
+                        if
+                        (
+                            oldFaceI < 0
+                         || oldFaceI >= label(facesFromFace_.size())
+                        )
+                            continue;
+
+                        forAllRow
+                        (
+                            facesFromFace_,
+                            oldFaceI,
+                            repI
+                        )
+                        {
+                            const label nfI =
+                                facesFromFace_(oldFaceI, repI);
+
+                            if
+                            (
+                                nfI < 0
+                             || nfI >= label(newFaces_.size())
+                            )
+                                continue;
+
+                            const label nPts =
+                                newFaces_.sizeOfRow(nfI);
+
+                            bool containsBadEdge = false;
+
+                            for(label pI=0; pI<nPts; ++pI)
+                            {
+                                const label a =
+                                    newFaces_(nfI, pI);
+                                const label b =
+                                    newFaces_
+                                    (
+                                        nfI,
+                                        (pI+1)%nPts
+                                    );
+
+                                if
+                                (
+                                    Foam::min(a,b) == ea
+                                 && Foam::max(a,b) == eb
+                                )
+                                {
+                                    containsBadEdge = true;
+                                    break;
+                                }
+                            }
+
+                            if( containsBadEdge )
+                            {
+                                Info
+                                    << "TYPE0_PROVENANCE_EDGE_SOURCE"
+                                    << " cell=" << cellI
+                                    << " edge=("
+                                    << ea << ' ' << eb << ')'
+                                    << " oldFace=" << oldFaceI
+                                    << " replacementFace=" << nfI
+                                    << " oldPts=";
+
+                                if
+                                (
+                                    oldFaceI >= 0
+                                 && oldFaceI < label(faces.size())
+                                )
+                                    Info << faces[oldFaceI];
+                                else
+                                    Info << "OUT_OF_RANGE";
+
+                                Info << " newPts="
+                                     << newFaces_[nfI]
+                                     << endl;
+                            }
+                        }
+                    }
+                }
+
+                Info << "TYPE0_PROVENANCE_END"
+                     << " cell=" << cellI
+                     << endl;
+            }
+
             //- update the cell
             c.setSize(newC.size());
             forAll(c, fI)
@@ -1467,6 +1831,8 @@ void refineBoundaryLayers::generateNewCells()
             forAll(cellsFromCell, cI)
             {
                 const DynList<DynList<label, 8>, 10>& nc = cellsFromCell[cI];
+
+                auditGeneratedChild(nc, cellI, cI, refType[cellI]);
 
                 const label newCellI = cI==0?cellI:nCells++;
                 cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
@@ -1515,6 +1881,8 @@ void refineBoundaryLayers::generateNewCells()
             forAll(cellsFromCell, cI)
             {
                 const DynList<DynList<label, 4>, 6>& nc = cellsFromCell[cI];
+
+                auditGeneratedChild(nc, cellI, cI, refType[cellI]);
 
                 # ifdef DEBUGLayer
                 Pout << "Adding cell " << (cI==0?cellI:nCells)
@@ -1574,6 +1942,8 @@ void refineBoundaryLayers::generateNewCells()
             {
                 const DynList<DynList<label, 4>, 6>& nc = cellsFromCell[cI];
 
+                auditGeneratedChild(nc, cellI, cI, refType[cellI]);
+
                 const label newCellI = cI==0?cellI:nCells++;
                 cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
@@ -1618,6 +1988,157 @@ void refineBoundaryLayers::generateNewCells()
             ) << "Cannot refine boundary layer for cell "
               << cellI << abort(FatalError);
         }
+    }
+
+    Info << "REFINE_CHILD_CLOSURE"
+         << " checked=" << nGeneratedChildrenChecked
+         << " bad=" << nGeneratedChildrenBad
+         << " badType1=" << nGeneratedBadType1
+         << " badType2=" << nGeneratedBadType2
+         << " badType3=" << nGeneratedBadType3
+         << " badEdges=" << nGeneratedBadEdges
+         << " malformedFaces=" << nGeneratedMalformedFaces
+         << endl;
+
+    // REFINE_PRE_RELABEL_CLOSURE_AUDIT
+    //
+    // Diagnostic only. At this point every cell already references
+    // newFaces_, but the final face-list reconstruction/newFaceLabel
+    // renumbering has NOT happened yet.
+    //
+    // This catches both:
+    //   - refined cells after face consolidation, and
+    //   - refType==0 cells reconstructed from facesFromFace_.
+    {
+        labelLongList badCellIds;
+
+        label nBadCellsType0 = 0;
+        label nBadCellsType1 = 0;
+        label nBadCellsType2 = 0;
+        label nBadCellsType3 = 0;
+        label nBadCellsAppended = 0;
+
+        label nBadEdgesTotal = 0;
+        label nBadFaceRefs = 0;
+        label nDegenerateFaces = 0;
+
+        forAll(cells, cellI)
+        {
+            const cell& c = cells[cellI];
+
+            std::map<std::pair<label,label>, label> edgeUse;
+
+            bool bad = false;
+            label badEdgesThisCell = 0;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                if
+                (
+                    faceI < 0
+                 || faceI >= label(newFaces_.size())
+                )
+                {
+                    bad = true;
+                    ++nBadFaceRefs;
+                    continue;
+                }
+
+                const label nPts = newFaces_.sizeOfRow(faceI);
+
+                if( nPts < 3 )
+                {
+                    bad = true;
+                    ++nDegenerateFaces;
+                    continue;
+                }
+
+                for(label pI=0; pI<nPts; ++pI)
+                {
+                    const label a = newFaces_(faceI, pI);
+                    const label b =
+                        newFaces_(faceI, (pI+1)%nPts);
+
+                    if( a == b )
+                        bad = true;
+
+                    ++edgeUse
+                    [
+                        std::make_pair
+                        (
+                            Foam::min(a,b),
+                            Foam::max(a,b)
+                        )
+                    ];
+                }
+            }
+
+            for
+            (
+                std::map<std::pair<label,label>, label>::const_iterator
+                    iter=edgeUse.begin();
+                iter!=edgeUse.end();
+                ++iter
+            )
+            {
+                if( iter->second != 2 )
+                {
+                    bad = true;
+                    ++badEdgesThisCell;
+                }
+            }
+
+            if( bad )
+            {
+                badCellIds.append(cellI);
+                nBadEdgesTotal += badEdgesThisCell;
+
+                label rt = -1;
+
+                if( cellI < label(refType.size()) )
+                {
+                    rt = refType[cellI];
+
+                    if( rt == 0 )
+                        ++nBadCellsType0;
+                    else if( rt == 1 )
+                        ++nBadCellsType1;
+                    else if( rt == 2 )
+                        ++nBadCellsType2;
+                    else if( rt == 3 )
+                        ++nBadCellsType3;
+                }
+                else
+                {
+                    ++nBadCellsAppended;
+                }
+
+                if( badCellIds.size() <= 100 )
+                {
+                    Info << "REFINE_PRE_RELABEL_BAD"
+                         << " cell=" << cellI
+                         << " refType=" << rt
+                         << " nFaces=" << c.size()
+                         << " badEdges=" << badEdgesThisCell
+                         << endl;
+                }
+            }
+        }
+
+        Info << "REFINE_PRE_RELABEL_CLOSURE"
+             << " cells=" << cells.size()
+             << " badCells=" << badCellIds.size()
+             << " badType0=" << nBadCellsType0
+             << " badType1=" << nBadCellsType1
+             << " badType2=" << nBadCellsType2
+             << " badType3=" << nBadCellsType3
+             << " badAppended=" << nBadCellsAppended
+             << " badEdges=" << nBadEdgesTotal
+             << " badFaceRefs=" << nBadFaceRefs
+             << " degenerateFaces=" << nDegenerateFaces
+             << endl;
     }
 
     //- check the orientation of new faces, because owner and neighbour cells
@@ -1708,15 +2229,25 @@ void refineBoundaryLayers::generateNewCells()
     faces.setSize(newFaces_.size());
 
     label currFace = 0;
+    label nInternalRelabelMismatch = 0;
+
     for(label faceI=0;faceI<nOrigInternalFaces;++faceI)
     {
         forAllRow(facesFromFace_, faceI, ffI)
         {
-            face& f = faces[currFace];
-            newFaceLabel[currFace] = currFace;
-            ++currFace;
-
             const label newFaceI = facesFromFace_(faceI, ffI);
+
+            face& f = faces[currFace];
+
+            // newFaceLabel maps an index in newFaces_ to its final
+            // face index in the reconstructed mesh.  Using currFace
+            // as both key and value is only valid accidentally when
+            // newFaceI == currFace.
+            if( newFaceI != currFace )
+                ++nInternalRelabelMismatch;
+
+            newFaceLabel[newFaceI] = currFace;
+            ++currFace;
 
             f.setSize(newFaces_.sizeOfRow(newFaceI));
 
@@ -1724,6 +2255,11 @@ void refineBoundaryLayers::generateNewCells()
                 f[pI] = newFaces_(newFaceI, pI);
         }
     }
+
+    Info << "REFINE_RELABEL internalDerivedMismatch="
+         << nInternalRelabelMismatch
+         << " internalDerivedFaces=" << currFace
+         << endl;
 
     //- store newly-generated internal faces
     # ifdef DEBUGLayer
@@ -1855,6 +2391,113 @@ void refineBoundaryLayers::generateNewCells()
 
         forAll(c, fI)
             c[fI] = newFaceLabel[c[fI]];
+    }
+
+    // REFINE_POST_RELABEL_CLOSURE_AUDIT
+    // Diagnostic only. At this point cells reference the reconstructed
+    // mesh face list, so test the actual committed cell shells.
+    {
+        labelLongList badCellIds;
+        label nBadEdgesTotal = 0;
+        label nBadFaceRefs = 0;
+        label nDegenerateFaces = 0;
+
+        forAll(cells, cellI)
+        {
+            const cell& c = cells[cellI];
+
+            std::map<std::pair<label,label>, label> edgeUse;
+
+            bool bad = false;
+            label badEdgesThisCell = 0;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                if( faceI < 0 || faceI >= faces.size() )
+                {
+                    bad = true;
+                    ++nBadFaceRefs;
+                    continue;
+                }
+
+                const face& f = faces[faceI];
+
+                if( f.size() < 3 )
+                {
+                    bad = true;
+                    ++nDegenerateFaces;
+                    continue;
+                }
+
+                forAll(f, pI)
+                {
+                    const label a = f[pI];
+                    const label b = f[(pI+1)%f.size()];
+
+                    if( a == b )
+                        bad = true;
+
+                    ++edgeUse
+                    [
+                        std::make_pair
+                        (
+                            Foam::min(a,b),
+                            Foam::max(a,b)
+                        )
+                    ];
+                }
+            }
+
+            for
+            (
+                std::map<std::pair<label,label>, label>::const_iterator
+                    iter=edgeUse.begin();
+                iter!=edgeUse.end();
+                ++iter
+            )
+            {
+                if( iter->second != 2 )
+                {
+                    bad = true;
+                    ++badEdgesThisCell;
+                }
+            }
+
+            if( bad )
+            {
+                badCellIds.append(cellI);
+                nBadEdgesTotal += badEdgesThisCell;
+            }
+        }
+
+        Info << "REFINE_POST_RELABEL_CLOSURE"
+             << " cells=" << cells.size()
+             << " badCells=" << badCellIds.size()
+             << " badEdges=" << nBadEdgesTotal
+             << " badFaceRefs=" << nBadFaceRefs
+             << " degenerateFaces=" << nDegenerateFaces
+             << endl;
+
+        if( badCellIds.size() )
+        {
+            Info << "REFINE_POST_RELABEL_BAD_IDS ids=(";
+
+            const label nPrint =
+                Foam::min(label(badCellIds.size()), label(100));
+
+            for(label i=0; i<nPrint; ++i)
+            {
+                if( i ) Info << ',';
+                Info << badCellIds[i];
+            }
+
+            if( badCellIds.size() > nPrint )
+                Info << ",...";
+
+            Info << ')' << endl;
+        }
     }
 
     # ifdef DEBUGLayer
