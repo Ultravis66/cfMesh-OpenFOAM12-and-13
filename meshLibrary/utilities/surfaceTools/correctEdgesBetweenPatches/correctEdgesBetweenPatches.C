@@ -254,7 +254,19 @@ correctEdgesBetweenPatches::correctEdgesBetweenPatches(polyMeshGen& mesh)
 
     //decomposeProblematicFaces();
 
-    decomposeConcaveFaces();
+    // EXPERIMENT:
+    // Preserve the original internal polygon interfaces instead of
+    // fan-decomposing them in decomposeConcaveFaces().
+    //
+    // Diagnostic lineage has shown that this historical operation
+    // creates 308 duplicate-neighbour interfaces from an entry state
+    // containing zero duplicate-neighbour pairs.
+    Info
+        << "[EXPERIMENT_SKIP_CONCAVE_FACE_DECOMP]"
+        << " preserving original internal polygon interfaces"
+        << endl;
+
+    //decomposeConcaveFaces();
 
     topologyLineage("afterDecomposeConcaveFaces");
 
