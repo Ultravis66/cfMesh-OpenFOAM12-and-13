@@ -198,6 +198,43 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
     }
 
 
+    // Diagnostic only: provide a topology-independent spatial
+    // fingerprint for cells across later renumbering/reconstruction.
+    // Use the arithmetic mean of UNIQUE cell vertices.
+    auto diagnosticCellVertexCentre =
+    [&]
+    (
+        const label cellI
+    ) -> point
+    {
+        const cell& dc = mesh_.cells()[cellI];
+        const faceListPMG& df = mesh_.faces();
+        const pointFieldPMG& dp = mesh_.points();
+
+        labelHashSet cellPoints;
+
+        forAll(dc, cfI)
+        {
+            const face& f = df[dc[cfI]];
+
+            forAll(f, fpI)
+                cellPoints.insert(f[fpI]);
+        }
+
+        if( cellPoints.empty() )
+            return point::zero;
+
+        point c(point::zero);
+
+        forAllConstIter(labelHashSet, cellPoints, it)
+            c += dp[it.key()];
+
+        c /= scalar(cellPoints.size());
+
+        return c;
+    };
+
+
     // -----------------------------------------------------------------
     // Phase 3:
     // Find the ACTUAL topology defect that requires cell decomposition:
@@ -369,6 +406,59 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
             else
             {
                 ++nUnresolvedUnsafePairs;
+
+                // Diagnostic only: print EVERY unresolved unordered pair,
+                // not merely the first 20, and attach a spatial fingerprint
+                // which can be correlated after later cell renumbering.
+                {
+                    label nSharedFaces = 0;
+
+                    forAll(c, cfI)
+                    {
+                        const label faceI = c[cfI];
+
+                        if( faceI >= nInternalFaces )
+                            continue;
+
+                        label nbrCell = -1;
+
+                        if( owner[faceI] == cellI )
+                            nbrCell = neighbour[faceI];
+                        else if( neighbour[faceI] == cellI )
+                            nbrCell = owner[faceI];
+
+                        if( nbrCell == otherCell )
+                            ++nSharedFaces;
+                    }
+
+                    const point centreA =
+                        diagnosticCellVertexCentre(cellI);
+
+                    const point centreB =
+                        diagnosticCellVertexCentre(otherCell);
+
+                    const point mid =
+                        0.5*(centreA + centreB);
+
+                    Info
+                        << "[DECOMPTOPPAIR_UNRESOLVED_ALL]"
+                        << " pair=("
+                        << cellI << ' ' << otherCell << ')'
+                        << " nSharedFaces=" << nSharedFaces
+                        << " requested=("
+                        << thisRequested << ' '
+                        << otherRequested << ')'
+                        << " safe=("
+                        << thisSafe << ' '
+                        << otherSafe << ')'
+                        << " margin=("
+                        << apexMargin[cellI] << ' '
+                        << apexMargin[otherCell] << ')'
+                        << " centreA=" << centreA
+                        << " centreB=" << centreB
+                        << " mid=" << mid
+                        << endl;
+                }
 
                 if( nUnresolvedPrint < 20 )
                 {

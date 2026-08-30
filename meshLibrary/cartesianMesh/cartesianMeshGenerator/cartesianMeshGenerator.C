@@ -7727,6 +7727,270 @@ void cartesianMeshGenerator::generateMesh()
                  << "negVol=" << finalNegCells.size()
                  << " badPyramids=" << finalBadPyrFaces.size()
                  << endl;
+
+
+            // Diagnostic only:
+            // reproduce the repeated-neighbour semantics of OpenFOAM's
+            // primitiveMeshCheck::checkUpperTriangular().
+            //
+            // Each unordered cell pair is handled by its lower-labelled
+            // ("master") cell.  Print every unique pair connected through
+            // more than one internal face, plus spatial fingerprints which
+            // can be correlated with DECOMPTOPPAIR_UNRESOLVED_ALL before
+            // renumbering.
+            {
+                const auto& finalCells = mesh_.cells();
+                const auto& finalFaces = mesh_.faces();
+                const auto& finalPoints = mesh_.points();
+                const auto& finalOwner = mesh_.owner();
+                const auto& finalNeighbour = mesh_.neighbour();
+
+                const label finalNInternalFaces =
+                    mesh_.nInternalFaces();
+
+
+                auto finalDiagnosticCellVertexCentre =
+                [&]
+                (
+                    const label cellI
+                ) -> point
+                {
+                    const cell& c = finalCells[cellI];
+
+                    labelHashSet cellPoints;
+
+                    forAll(c, cfI)
+                    {
+                        const face& f =
+                            finalFaces[c[cfI]];
+
+                        forAll(f, fpI)
+                            cellPoints.insert(f[fpI]);
+                    }
+
+                    if( cellPoints.empty() )
+                        return point::zero;
+
+                    point centre(point::zero);
+
+                    forAllConstIter
+                    (
+                        labelHashSet,
+                        cellPoints,
+                        it
+                    )
+                    {
+                        centre +=
+                            finalPoints[it.key()];
+                    }
+
+                    centre /=
+                        scalar(cellPoints.size());
+
+                    return centre;
+                };
+
+
+                label nFinalDuplicatePairs = 0;
+                label nFinalDuplicateMasterCells = 0;
+
+
+                forAll(finalCells, cellI)
+                {
+                    const cell& c =
+                        finalCells[cellI];
+
+                    labelHashSet seenNeighbours;
+                    labelHashSet duplicateNeighbours;
+
+                    bool masterHasMultiple = false;
+
+
+                    forAll(c, cfI)
+                    {
+                        const label faceI =
+                            c[cfI];
+
+                        if
+                        (
+                            faceI >=
+                            finalNInternalFaces
+                        )
+                        {
+                            continue;
+                        }
+
+
+                        label otherCell = -1;
+
+                        if
+                        (
+                            finalOwner[faceI]
+                         == cellI
+                        )
+                        {
+                            otherCell =
+                                finalNeighbour[faceI];
+                        }
+                        else if
+                        (
+                            finalNeighbour[faceI]
+                         == cellI
+                        )
+                        {
+                            otherCell =
+                                finalOwner[faceI];
+                        }
+                        else
+                        {
+                            FatalErrorIn
+                            (
+                                "cartesianMeshGenerator "
+                                "final duplicate-pair diagnostic"
+                            )
+                                << "Internal face "
+                                << faceI
+                                << " listed in cell "
+                                << cellI
+                                << " but owner/neighbour are "
+                                << finalOwner[faceI]
+                                << " and "
+                                << finalNeighbour[faceI]
+                                << abort(FatalError);
+                        }
+
+
+                        // Match primitiveMeshCheck:
+                        // only the lower-labelled cell handles
+                        // this neighbour pair.
+                        if( cellI >= otherCell )
+                            continue;
+
+
+                        if
+                        (
+                            seenNeighbours.found
+                            (
+                                otherCell
+                            )
+                        )
+                        {
+                            if
+                            (
+                                duplicateNeighbours.found
+                                (
+                                    otherCell
+                                )
+                            )
+                            {
+                                continue;
+                            }
+
+                            duplicateNeighbours.insert
+                            (
+                                otherCell
+                            );
+
+                            masterHasMultiple = true;
+                            ++nFinalDuplicatePairs;
+
+
+                            label nSharedFaces = 0;
+
+                            forAll(c, cfJ)
+                            {
+                                const label fJ =
+                                    c[cfJ];
+
+                                if
+                                (
+                                    fJ >=
+                                    finalNInternalFaces
+                                )
+                                {
+                                    continue;
+                                }
+
+                                label nbr = -1;
+
+                                if
+                                (
+                                    finalOwner[fJ]
+                                 == cellI
+                                )
+                                {
+                                    nbr =
+                                        finalNeighbour[fJ];
+                                }
+                                else if
+                                (
+                                    finalNeighbour[fJ]
+                                 == cellI
+                                )
+                                {
+                                    nbr =
+                                        finalOwner[fJ];
+                                }
+
+                                if( nbr == otherCell )
+                                    ++nSharedFaces;
+                            }
+
+
+                            const point centreA =
+                                finalDiagnosticCellVertexCentre
+                                (
+                                    cellI
+                                );
+
+                            const point centreB =
+                                finalDiagnosticCellVertexCentre
+                                (
+                                    otherCell
+                                );
+
+                            const point mid =
+                                0.5*(centreA + centreB);
+
+
+                            Info
+                                << "[FINAL_DUPLICATE_PAIR]"
+                                << " pair=("
+                                << cellI << ' '
+                                << otherCell << ')'
+                                << " nSharedFaces="
+                                << nSharedFaces
+                                << " centreA="
+                                << centreA
+                                << " centreB="
+                                << centreB
+                                << " mid="
+                                << mid
+                                << endl;
+                        }
+                        else
+                        {
+                            seenNeighbours.insert
+                            (
+                                otherCell
+                            );
+                        }
+                    }
+
+
+                    if( masterHasMultiple )
+                        ++nFinalDuplicateMasterCells;
+                }
+
+
+                Info
+                    << "[FINAL_DUPLICATE_SUMMARY]"
+                    << " uniquePairs="
+                    << nFinalDuplicatePairs
+                    << " masterCells="
+                    << nFinalDuplicateMasterCells
+                    << endl;
+            }
             //- Post-BL Rescue Rung: surface-constrained local repair
             //- for negVol introduced by BL/replaceBoundaries.
             //- Runs BEFORE MESHHISTORY/writeLineageCSV so final state
