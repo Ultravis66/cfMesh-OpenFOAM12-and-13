@@ -547,6 +547,16 @@ void correctEdgesBetweenPatches::patchCorrection()
     // 2 = quad split
     labelList patchCorrectionType(bFaces.size(), 0);
     labelList quadCorrectionCorner(bFaces.size(), -1);
+
+    // Fan candidates remain virtual until the complete patch-correction
+    // transaction has been accepted.  No mesh point is allocated during
+    // discovery.
+    List<point> fanCorrectionApex
+    (
+        bFaces.size(),
+        point::zero
+    );
+
     labelList fanCorrectionApexPoint(bFaces.size(), -1);
 
     // 0 = legacy i--i+2 diagonal
@@ -872,44 +882,11 @@ void correctEdgesBetweenPatches::patchCorrection()
                     fanDiagNVerts.append(bf.size());
                     fanDiagApex.append(pAvg);
 
-                    triF[2] = mesh_.points().size();
-
-                    // Use the arithmetic vertex mean as the actual
-                    // fan apex. Unlike face::centre(), this remains
-                    // bounded by the local vertex cloud and cannot
-                    // fly hundreds of local face lengths away when
-                    // projected triangle-area contributions cancel.
-                    mesh_.points().append(pAvg);
-
+                    // Store only the accepted geometric candidate.
+                    // The physical mesh point is allocated later, during
+                    // the single final boundary commit.
                     patchCorrectionType[bfI] = 1;
-                    fanCorrectionApexPoint[bfI] = triF[2];
-
-                    // Record the new apex for the existing targeted
-                    // post-topology surface projection.
-                    newPatchCorrectionPoints_.append(triF[2]);
-
-                    static label nCentroid = 0;
-                    if( ++nCentroid <= 10 )
-                    {
-                        Info
-                            << "[GeomFix] new centroid point "
-                            << triF[2]
-                            << " at " << pAvg
-                            << " legacyFaceCentre=" << p
-                            << " patch="
-                            << facePatches[bfI]
-                            << endl;
-                    }
-
-                    forAll(bf, j)
-                    {
-                        triF[0] = bf[j];
-                        triF[1] = bf.nextLabel(j);
-
-                        newBoundaryFaces_.appendList(triF);
-                        newBoundaryOwners_.append(boundaryFaceOwners[bfI]);
-                        newBoundaryPatches_.append(facePatches[bfI]);
-                    }
+                    fanCorrectionApex[bfI] = pAvg;
 
                     break;
                 }
@@ -1065,6 +1042,31 @@ void correctEdgesBetweenPatches::patchCorrection()
     };
 
 
+    auto appendVirtualTriangleGeometry =
+    [&]
+    (
+        const point& p0,
+        const point& p1,
+        const point& p2,
+        const bool reverseOrientation,
+        DynamicList<point>& centres,
+        DynamicList<vector>& areas
+    )
+    {
+        const point fc =
+            (1.0/3.0)*(p0 + p1 + p2);
+
+        vector fa =
+            0.5*((p1 - p0) ^ (p2 - p0));
+
+        if( reverseOrientation )
+            fa = -fa;
+
+        centres.append(fc);
+        areas.append(fa);
+    };
+
+
     auto prospectiveOwnerVolume =
     [&]
     (
@@ -1124,23 +1126,16 @@ void correctEdgesBetweenPatches::patchCorrection()
 
             if( patchCorrectionType[bfI] == 1 )
             {
-                const label apexPoint =
-                    fanCorrectionApexPoint[bfI];
-
-                if( apexPoint < 0 )
-                    return -GREAT;
-
-                face tf(3);
+                const point& apex =
+                    fanCorrectionApex[bfI];
 
                 forAll(bf, j)
                 {
-                    tf[0] = bf[j];
-                    tf[1] = bf.nextLabel(j);
-                    tf[2] = apexPoint;
-
-                    appendFaceGeometry
+                    appendVirtualTriangleGeometry
                     (
-                        tf,
+                        allPoints[bf[j]],
+                        allPoints[bf.nextLabel(j)],
+                        apex,
                         false,
                         centres,
                         areas
@@ -1536,18 +1531,38 @@ void correctEdgesBetweenPatches::patchCorrection()
 
         if( patchCorrectionType[bfI] == 1 )
         {
+            // The fan has survived geometric admissibility and all
+            // preceding transaction decisions.  Allocate its real mesh
+            // point only now, immediately before the single boundary
+            // commit.
             const label apexPoint =
-                fanCorrectionApexPoint[bfI];
+                mesh_.points().size();
 
-            if( apexPoint < 0 )
+            mesh_.points().append
+            (
+                fanCorrectionApex[bfI]
+            );
+
+            fanCorrectionApexPoint[bfI] =
+                apexPoint;
+
+            newPatchCorrectionPoints_.append
+            (
+                apexPoint
+            );
+
+            static label nCommittedFanApex = 0;
+
+            if( ++nCommittedFanApex <= 10 )
             {
-                FatalErrorIn
-                (
-                    "void correctEdgesBetweenPatches::patchCorrection()"
-                )
-                    << "Missing fan apex for boundary face "
-                    << bfI
-                    << abort(FatalError);
+                Info
+                    << "[GeomFix] committed fan apex point "
+                    << apexPoint
+                    << " at "
+                    << fanCorrectionApex[bfI]
+                    << " patch="
+                    << facePatches[bfI]
+                    << endl;
             }
 
             face tf(3);
