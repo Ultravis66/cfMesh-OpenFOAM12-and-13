@@ -1,5 +1,5 @@
 # cfMesh for OpenFOAM 13
-# I did not abandoned this project, huge update coming soon! 
+# I did not abandoned this project, huge update coming soon in early August 2026...  
 Active development fork of cfMesh for OpenFOAM Foundation v13. This fork focuses on OpenFOAM 13 compatibility, deterministic parallel behavior, robust Cartesian/polyhedral meshing, boundary-layer generation near difficult topology, and surface-conformance fixes for STL-driven CFD workflows.
 
 The current primary stress-test case is a two-passage NASA Rotor 37 turbomachinery sector with active boundary layers. Rotor 37 is used because it combines many hard meshing features in one geometry: blade/hub/shroud junctions, periodic sector boundaries, acute trailing-edge features, refinement transitions, and boundary-layer growth near BL/no-BL interfaces.
