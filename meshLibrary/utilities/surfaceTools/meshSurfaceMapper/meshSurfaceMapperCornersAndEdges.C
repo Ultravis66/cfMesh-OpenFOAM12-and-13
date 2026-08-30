@@ -29,8 +29,10 @@ Description
 #include "triSurf.H"
 #include "triSurfacePartitioner.H"
 #include "meshSurfaceMapper.H"
+#include "sourceFeatureGraph.H"
 #include "meshSurfaceEngine.H"
 #include "meshSurfaceEngineModifier.H"
+#include "polyMeshGenAddressing.H"
 #include "meshSurfacePartitioner.H"
 #include "labelledScalar.H"
 
@@ -1369,11 +1371,542 @@ void meshSurfaceMapper::mapCorners(const labelLongList& nodesToMap)
 
 void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
 {
+    boolList mappingAccepted;
+    mapEdgeNodes(nodesToMap, mappingAccepted);
+}
+
+
+void meshSurfaceMapper::mapEdgeNodes
+(
+    const labelLongList& nodesToMap,
+    boolList& mappingAccepted
+)
+{
+    const pointFieldPMG& points = surfaceEngine_.points();
+    const labelList& bPoints = surfaceEngine_.boundaryPoints();
+
+    pointField desiredPositions
+    (
+        nodesToMap.size(),
+        point::zero
+    );
+
+    forAll(nodesToMap, i)
+    {
+        desiredPositions[i] =
+            points[bPoints[nodesToMap[i]]];
+    }
+
+    mapEdgeNodes
+    (
+        nodesToMap,
+        desiredPositions,
+        mappingAccepted
+    );
+}
+
+
+void meshSurfaceMapper::mapEdgeNodes
+(
+    const labelLongList& nodesToMap,
+    const pointField& desiredPositions,
+    boolList& mappingAccepted
+)
+{
+    mappingAccepted.setSize(nodesToMap.size());
+    mappingAccepted = false;
+
+    if( desiredPositions.size() != nodesToMap.size() )
+    {
+        WarningIn
+        (
+            "void meshSurfaceMapper::mapEdgeNodes"
+            "(const labelLongList&, const pointField&, boolList&)"
+        )
+            << "desiredPositions size " << desiredPositions.size()
+            << " does not match nodesToMap size "
+            << nodesToMap.size()
+            << ". No points will be moved."
+            << endl;
+
+        return;
+    }
+
     const pointFieldPMG& points = surfaceEngine_.points();
     const labelList& bPoints = surfaceEngine_.boundaryPoints();
 
     const meshSurfacePartitioner& mPart = meshPartitioner();
     const VRWGraph& pPatches = mPart.pointPatches();
+
+    // Diagnostic only: census the SOURCE triSurface representation of
+    // the physical patch pairs entering this mapper call.
+    //
+    // A native source feature requires exactly two incident facets with
+    // different region IDs. Open nFacets==1 edges are deliberately NOT
+    // native cross-region features and are invisible to the current
+    // findNearestEdgePoint() feature search.
+    static bool triSurfPairCensusPrinted(false);
+
+    if( !triSurfPairCensusPrinted )
+    {
+        triSurfPairCensusPrinted = true;
+
+        const triSurf& censusSurf = meshOctree_.surface();
+        const VRWGraph& censusEdgeFacets = censusSurf.edgeFacets();
+        const LongList<labelledTri>& censusFacets = censusSurf.facets();
+        const LongList<edge>& censusEdges = censusSurf.edges();
+        const pointField& censusPoints = censusSurf.points();
+        const wordList& censusPatchNames = censusSurf.patchNames();
+
+        const label nCensusPatches = censusPatchNames.size();
+
+        labelList sharedCrossRegion
+        (
+            nCensusPatches*nCensusPatches,
+            0
+        );
+
+        labelList openEdgesByPatch(nCensusPatches, 0);
+
+        // Keep the source IDs/owners of all true open edges so we can
+        // measure whether separate patch-boundary chains geometrically
+        // represent the same physical seam.
+        DynList<label> censusOpenEdgeIds;
+        DynList<label> censusOpenEdgePatch;
+
+        label nNonManifoldEdges = 0;
+
+        forAll(censusEdgeFacets, edgeI)
+        {
+            const label nEF = censusEdgeFacets.sizeOfRow(edgeI);
+
+            if( nEF == 1 )
+            {
+                const label f0 = censusEdgeFacets(edgeI, 0);
+
+                if( f0 >= 0 && f0 < censusFacets.size() )
+                {
+                    const label r0 = censusFacets[f0].region();
+
+                    if( r0 >= 0 && r0 < nCensusPatches )
+                    {
+                        ++openEdgesByPatch[r0];
+                        censusOpenEdgeIds.append(edgeI);
+                        censusOpenEdgePatch.append(r0);
+                    }
+                }
+
+                continue;
+            }
+
+            if( nEF != 2 )
+            {
+                if( nEF > 2 )
+                    ++nNonManifoldEdges;
+
+                continue;
+            }
+
+            const label f0 = censusEdgeFacets(edgeI, 0);
+            const label f1 = censusEdgeFacets(edgeI, 1);
+
+            if
+            (
+                f0 < 0 || f1 < 0 ||
+                f0 >= censusFacets.size() ||
+                f1 >= censusFacets.size()
+            )
+            {
+                continue;
+            }
+
+            label r0 = censusFacets[f0].region();
+            label r1 = censusFacets[f1].region();
+
+            if( r0 == r1 )
+                continue;
+
+            if
+            (
+                r0 < 0 || r1 < 0 ||
+                r0 >= nCensusPatches ||
+                r1 >= nCensusPatches
+            )
+            {
+                continue;
+            }
+
+            if( r1 < r0 )
+            {
+                const label tmp = r0;
+                r0 = r1;
+                r1 = tmp;
+            }
+
+            ++sharedCrossRegion[r0*nCensusPatches + r1];
+        }
+
+        // Which patch pairs are actually represented by the volume
+        // feature points in this mapper call?
+        labelList usedVolumePair
+        (
+            nCensusPatches*nCensusPatches,
+            0
+        );
+
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+
+            if( pPatches.sizeOfRow(bpI) != 2 )
+                continue;
+
+            label p0 = pPatches(bpI, 0);
+            label p1 = pPatches(bpI, 1);
+
+            if
+            (
+                p0 < 0 || p1 < 0 ||
+                p0 >= nCensusPatches ||
+                p1 >= nCensusPatches
+            )
+            {
+                continue;
+            }
+
+            if( p1 < p0 )
+            {
+                const label tmp = p0;
+                p0 = p1;
+                p1 = tmp;
+            }
+
+            ++usedVolumePair[p0*nCensusPatches + p1];
+        }
+
+        for(label p0=0; p0<nCensusPatches; ++p0)
+        {
+            for(label p1=p0+1; p1<nCensusPatches; ++p1)
+            {
+                const label pairI =
+                    p0*nCensusPatches + p1;
+
+                if( usedVolumePair[pairI] == 0 )
+                    continue;
+
+                Info
+                    << "[TRISURF_PAIR_CENSUS]"
+                    << " pair="
+                    << censusPatchNames[p0] << "|"
+                    << censusPatchNames[p1]
+                    << " volumeFeaturePoints="
+                    << usedVolumePair[pairI]
+                    << " nativeSharedEdges="
+                    << sharedCrossRegion[pairI]
+                    << endl;
+            }
+        }
+
+        for(label patchI=0; patchI<nCensusPatches; ++patchI)
+        {
+            if( openEdgesByPatch[patchI] == 0 )
+                continue;
+
+            Info
+                << "[TRISURF_OPEN_CENSUS]"
+                << " patch=" << censusPatchNames[patchI]
+                << " openEdges=" << openEdgesByPatch[patchI]
+                << endl;
+        }
+
+        // Diagnostic-only geometric pairing census for open source edges.
+        //
+        // For every volume-used A/B patch pair having open source edges
+        // on both sides, query BOTH directions (A->B and B->A). Each open
+        // edge selects the opposite-patch open edge having the smallest
+        // normalized midpoint-to-segment separation.
+        //
+        // Report:
+        //   sepNorm      : transverse separation / min(local edge lengths)
+        //   align        : |unit tangent dot product|
+        //   overlapFrac  : projected overlap / min(local edge lengths)
+        //
+        // This does NOT create virtual features and does NOT move the mesh.
+        for(label p0=0; p0<nCensusPatches; ++p0)
+        {
+            for(label p1=p0+1; p1<nCensusPatches; ++p1)
+            {
+                const label pairI = p0*nCensusPatches + p1;
+
+                if( usedVolumePair[pairI] == 0 )
+                    continue;
+
+                if
+                (
+                    openEdgesByPatch[p0] == 0 ||
+                    openEdgesByPatch[p1] == 0
+                )
+                {
+                    continue;
+                }
+
+                label nQueries = 0;
+                label nFound = 0;
+
+                scalar sumBestSepNorm = 0;
+                scalar minBestSepNorm = GREAT;
+                scalar maxBestSepNorm = 0;
+
+                scalar sumBestAlign = 0;
+                scalar minBestAlign = GREAT;
+
+                scalar sumBestOverlap = 0;
+                scalar minBestOverlap = GREAT;
+
+                label nNearExact = 0;
+                label nStrong = 0;
+
+                forAll(censusOpenEdgeIds, oi)
+                {
+                    const label ownerA = censusOpenEdgePatch[oi];
+
+                    if( ownerA != p0 && ownerA != p1 )
+                        continue;
+
+                    const label ownerB =
+                        (ownerA == p0) ? p1 : p0;
+
+                    const label eAI = censusOpenEdgeIds[oi];
+                    const edge& eA = censusEdges[eAI];
+
+                    const point& a0 = censusPoints[eA.start()];
+                    const point& a1 = censusPoints[eA.end()];
+
+                    const vector dA = a1 - a0;
+                    const scalar lenA = Foam::sqrt(magSqr(dA));
+
+                    if( lenA < ROOTVSMALL )
+                        continue;
+
+                    ++nQueries;
+
+                    scalar bestSepNorm = GREAT;
+                    scalar bestAlign = 0;
+                    scalar bestOverlap = 0;
+                    bool foundBest = false;
+
+                    forAll(censusOpenEdgeIds, oj)
+                    {
+                        if( censusOpenEdgePatch[oj] != ownerB )
+                            continue;
+
+                        const label eBI = censusOpenEdgeIds[oj];
+                        const edge& eB = censusEdges[eBI];
+
+                        const point& b0 = censusPoints[eB.start()];
+                        const point& b1 = censusPoints[eB.end()];
+
+                        const vector dB = b1 - b0;
+                        const scalar lenB = Foam::sqrt(magSqr(dB));
+
+                        if( lenB < ROOTVSMALL )
+                            continue;
+
+                        const scalar minLen =
+                            Foam::min(lenA, lenB);
+
+                        if( minLen < ROOTVSMALL )
+                            continue;
+
+                        const scalar align =
+                            Foam::min
+                            (
+                                scalar(1),
+                                Foam::mag(dA & dB) /
+                                (lenA*lenB + VSMALL)
+                            );
+
+                        const point midA = 0.5*(a0 + a1);
+                        const point midB = 0.5*(b0 + b1);
+
+                        const point qAonB =
+                            help::nearestPointOnTheEdgeExact
+                            (
+                                b0, b1, midA
+                            );
+
+                        const point qBonA =
+                            help::nearestPointOnTheEdgeExact
+                            (
+                                a0, a1, midB
+                            );
+
+                        const scalar sep =
+                            Foam::min
+                            (
+                                Foam::sqrt(magSqr(midA - qAonB)),
+                                Foam::sqrt(magSqr(midB - qBonA))
+                            );
+
+                        const scalar sepNorm =
+                            sep / (minLen + VSMALL);
+
+                        // Project B endpoints onto the infinite A line,
+                        // intersect that parameter interval with A=[0,1].
+                        const scalar lenASq = magSqr(dA);
+                        const scalar tB0A =
+                            ((b0-a0) & dA) / (lenASq + VSMALL);
+                        const scalar tB1A =
+                            ((b1-a0) & dA) / (lenASq + VSMALL);
+
+                        const scalar loA =
+                            Foam::max
+                            (
+                                scalar(0),
+                                Foam::min(tB0A, tB1A)
+                            );
+
+                        const scalar hiA =
+                            Foam::min
+                            (
+                                scalar(1),
+                                Foam::max(tB0A, tB1A)
+                            );
+
+                        const scalar overlapA =
+                            Foam::max(scalar(0), hiA-loA)*lenA;
+
+                        // Symmetric projection: A endpoints onto B.
+                        const scalar lenBSq = magSqr(dB);
+                        const scalar tA0B =
+                            ((a0-b0) & dB) / (lenBSq + VSMALL);
+                        const scalar tA1B =
+                            ((a1-b0) & dB) / (lenBSq + VSMALL);
+
+                        const scalar loB =
+                            Foam::max
+                            (
+                                scalar(0),
+                                Foam::min(tA0B, tA1B)
+                            );
+
+                        const scalar hiB =
+                            Foam::min
+                            (
+                                scalar(1),
+                                Foam::max(tA0B, tA1B)
+                            );
+
+                        const scalar overlapB =
+                            Foam::max(scalar(0), hiB-loB)*lenB;
+
+                        const scalar overlapFrac =
+                            Foam::min
+                            (
+                                scalar(1),
+                                0.5*(overlapA + overlapB) /
+                                (minLen + VSMALL)
+                            );
+
+                        // Primary selection is geometric separation.
+                        // For effectively tied separation, prefer better
+                        // tangent alignment.
+                        if
+                        (
+                            !foundBest ||
+                            sepNorm < bestSepNorm ||
+                            (
+                                Foam::mag(sepNorm-bestSepNorm) < 1e-12 &&
+                                align > bestAlign
+                            )
+                        )
+                        {
+                            foundBest = true;
+                            bestSepNorm = sepNorm;
+                            bestAlign = align;
+                            bestOverlap = overlapFrac;
+                        }
+                    }
+
+                    if( !foundBest )
+                        continue;
+
+                    ++nFound;
+
+                    sumBestSepNorm += bestSepNorm;
+                    minBestSepNorm =
+                        Foam::min(minBestSepNorm, bestSepNorm);
+                    maxBestSepNorm =
+                        Foam::max(maxBestSepNorm, bestSepNorm);
+
+                    sumBestAlign += bestAlign;
+                    minBestAlign =
+                        Foam::min(minBestAlign, bestAlign);
+
+                    sumBestOverlap += bestOverlap;
+                    minBestOverlap =
+                        Foam::min(minBestOverlap, bestOverlap);
+
+                    // Diagnostic tiers only. These are dimensionless and
+                    // are NOT production seam-acceptance tolerances.
+                    if
+                    (
+                        bestSepNorm <= 1e-3 &&
+                        bestAlign >= 0.999 &&
+                        bestOverlap >= 0.5
+                    )
+                    {
+                        ++nNearExact;
+                    }
+
+                    if
+                    (
+                        bestSepNorm <= 2e-2 &&
+                        bestAlign >= 0.98 &&
+                        bestOverlap >= 0.25
+                    )
+                    {
+                        ++nStrong;
+                    }
+                }
+
+                if( nFound == 0 )
+                    continue;
+
+                Info
+                    << "[TRISURF_OPEN_PAIR]"
+                    << " pair="
+                    << censusPatchNames[p0] << "|"
+                    << censusPatchNames[p1]
+                    << " volumeFeaturePoints="
+                    << usedVolumePair[pairI]
+                    << " nativeSharedEdges="
+                    << sharedCrossRegion[pairI]
+                    << " openA=" << openEdgesByPatch[p0]
+                    << " openB=" << openEdgesByPatch[p1]
+                    << " queries=" << nQueries
+                    << " found=" << nFound
+                    << " bestSepNorm(min/avg/max)="
+                    << minBestSepNorm << "/"
+                    << sumBestSepNorm/scalar(nFound) << "/"
+                    << maxBestSepNorm
+                    << " bestAlign(min/avg)="
+                    << minBestAlign << "/"
+                    << sumBestAlign/scalar(nFound)
+                    << " bestOverlap(min/avg)="
+                    << minBestOverlap << "/"
+                    << sumBestOverlap/scalar(nFound)
+                    << " nearExact=" << nNearExact
+                    << " strong=" << nStrong
+                    << endl;
+            }
+        }
+
+        Info
+            << "[TRISURF_CENSUS_SUMMARY]"
+            << " nonManifoldEdges=" << nNonManifoldEdges
+            << endl;
+    }
 
     //const triSurf& surf = meshOctree_.surface();
     //const pointField& sPoints = surf.points();
@@ -1399,6 +1932,25 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
     pointField projectedPoints(nodesToMap.size(), point::zero);
     scalarList projectedDistSq(nodesToMap.size(), scalar(-1));
 
+    // Diagnostic-only mapEdgeNodes outcome storage.
+    // Each OMP iteration writes only its own index.
+    //
+    //  -1 unseen
+    //   1 BL/no-BL protected
+    //   2 no patches
+    //   3 true feature edge not found
+    //   4 ratio rejected
+    //   5 true edge target outside mapping distance
+    //   6 accepted
+    labelList edgeDiagDecision(nodesToMap.size(), label(-1));
+    boolList edgeDiagNeutral(nodesToMap.size(), false);
+
+    pointField edgeDiagOverTarget(nodesToMap.size(), point::zero);
+    scalarList edgeDiagOverTrueDist(nodesToMap.size(), scalar(-1));
+    scalarList edgeDiagOverAllowedDist(nodesToMap.size(), scalar(-1));
+    scalarList edgeDiagOverRatio(nodesToMap.size(), scalar(-1));
+
+
     // Mark protected indices so OMP loop can skip them
     // BL/no-BL interface points must stay on feature curve
     boolList isProtected(nodesToMap.size(), false);
@@ -1412,6 +1964,17 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
             Info << "mapEdgeNodes: excluding "
                  << nProt << " protected BL/no-BL interface points" << endl;
     }
+    // Diagnostic-only BL/neutral membership using this mapper's
+    // CURRENT boundary-point addressing.
+    if( !blNeutralPoints_.empty() )
+    {
+        forAll(nodesToMap, i)
+        {
+            if( blNeutralPoints_.found(nodesToMap[i]) )
+                edgeDiagNeutral[i] = true;
+        }
+    }
+
 
     // v7: watch-list storage for the incident-edge-neighbor
     // instrumentation. tjWatchedBoundaryPointToSourceCorner_ was populated
@@ -1464,16 +2027,22 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         // Skip BL/no-BL interface points - must stay on feature curve
         if( isProtected[i] )
         {
+            edgeDiagDecision[i] = 1;
             if( tjIsWatched[i] ) tjDecision[i] = 3;
             continue;
         }
         const label bpI = nodesToMap[i];
-        const point& p = points[bPoints[bpI]];
+
+        // liveP is the actual current mesh state.
+        // queryP is only the geometric smoothing/search intent.
+        const point& liveP = points[bPoints[bpI]];
+        const point& queryP = desiredPositions[i];
 
         //- find patches at this edge point
         const DynList<label> patches = pPatches[bpI];
         if( patches.size() == 0 )
         {
+            edgeDiagDecision[i] = 2;
             if( tjIsWatched[i] ) tjDecision[i] = 2;
             continue;  // guard: no patches = no valid snap
         }
@@ -1481,7 +2050,7 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         const scalar maxDist = mappingDistance[i];
 
         //- find approximate position of the vertex on the edge
-        point mapPointApprox(p);
+        point mapPointApprox(queryP);
         scalar distSqApprox;
         label iter(0);
         while( iter++ < 5 )
@@ -1511,14 +2080,21 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
 
             mapPointApprox = newP;
         }
-        distSqApprox = magSqr(mapPointApprox - p);
+        distSqApprox = magSqr(mapPointApprox - queryP);
 
         //- find the nearest vertex on the triSurface feature edge
         point mapPoint(mapPointApprox);
         scalar distSq(distSqApprox);
         label nse;
         const bool edgeFoundOk =
-            meshOctree_.findNearestEdgePoint(mapPoint, distSq, nse, p, patches);
+            meshOctree_.findNearestEdgePoint
+            (
+                mapPoint,
+                distSq,
+                nse,
+                queryP,
+                patches
+            );
 
         // v7 tap: EDGE_NOT_FOUND path (SOL review -- previously
         // uninstrumented; production silently proceeds using
@@ -1539,8 +2115,23 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
         // mapPointApprox is an average of patch projections -- not guaranteed
         // to lie on the feature curve. Near blade/hub/periodic corners this
         // creates protrusions. If true edge projection fails, skip this point.
-        if( distSq > 1.2 * distSqApprox )
+
+          // Fail closed if the true feature-edge search failed.
+          //
+          // mapPointApprox is only an average of independent patch
+          // projections. It is not guaranteed to lie on the true
+          // patch-intersection curve.
+          if( !edgeFoundOk )
+          {
+            edgeDiagDecision[i] = 3;
+              projectedPoints[i] = point::zero;
+              projectedDistSq[i] = scalar(-1);
+              continue;
+          }
+
+          if( distSq > 1.2 * distSqApprox )
         {
+            edgeDiagDecision[i] = 4;
             // v7 tap: capture production's RATIO_REJECTED outcome for
             // watched points, using values already computed above
             // (mapPointApprox, distSqApprox, mapPoint, distSq). No new
@@ -1559,19 +2150,52 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
             continue;
         }
 
-        //- check if the mapping distance is within the given tolerances
-        if( distSq > maxDist )
+        //- A successful feature-edge target must remain on the feature.
+        //- Do not truncate an over-distance move by interpolating from p
+        //- toward mapPoint: unless p already lies on the same straight
+        //- feature segment, that interpolation produces an off-feature
+        //- point and destroys the boundary-intersection constraint.
+        //
+        //- If the true feature target is outside the allowed mapping
+        //- distance, fail closed and leave this vertex unchanged.
+        const scalar actualMoveDistSq =
+            magSqr(mapPoint - liveP);
+
+        if( actualMoveDistSq > maxDist )
         {
-            //- this indicates possible problems
-            //- reduce the mapping distance
-            const scalar f = Foam::sqrt(maxDist / distSq);
-            distSq = mappingDistance[i];
-            mapPoint = f * (mapPoint - p) + p;
+            edgeDiagDecision[i] = 5;
+
+            const scalar trueDist =
+                Foam::sqrt
+                (
+                    Foam::max
+                    (
+                        actualMoveDistSq,
+                        scalar(0)
+                    )
+                );
+
+            const scalar allowedDist =
+                Foam::sqrt(Foam::max(maxDist, scalar(0)));
+
+            edgeDiagOverTarget[i] = mapPoint;
+            edgeDiagOverTrueDist[i] = trueDist;
+            edgeDiagOverAllowedDist[i] = allowedDist;
+            edgeDiagOverRatio[i] =
+                trueDist / Foam::max(allowedDist, VSMALL);
+
+            projectedPoints[i] = point::zero;
+            projectedDistSq[i] = scalar(-1);
+            continue;
         }
 
                 //- store only - no mesh mutation in parallel
+        edgeDiagDecision[i] = 6;
         projectedPoints[i] = mapPoint;
-        projectedDistSq[i] = distSq;
+
+        // Synchronization/commit distance is the real mesh movement,
+        // not the query-position residual to the feature.
+        projectedDistSq[i] = actualMoveDistSq;
 
         // v7 tap: capture production's EDGE_ACCEPTED outcome for
         // watched points. Same no-new-queries principle.
@@ -1584,15 +2208,1991 @@ void meshSurfaceMapper::mapEdgeNodes(const labelLongList& nodesToMap)
             tjDecision[i] = 0;
         }
     }
-
-    // Serial move pass - deterministic order, no validity check
-    // Edge nodes must reach feature curve - validity check inappropriate
-    forAll(nodesToMap, i)
+    // Diagnostic-only population census. No geometry behavior change.
     {
-        const label bpI = nodesToMap[i];
-        if( projectedDistSq[i] < scalar(0) ) continue;
-        sMod.moveBoundaryVertexNoUpdate(bpI, projectedPoints[i]);
+        label nProtected = 0;
+        label nNoPatches = 0;
+        label nEdgeNotFound = 0;
+        label nRatioRejected = 0;
+        label nOverDistance = 0;
+        label nAccepted = 0;
+        label nUnseen = 0;
+
+        label nNeutralInput = 0;
+        label nNeutralOverDistance = 0;
+        label nOrdinaryOverDistance = 0;
+        label nNeutralAccepted = 0;
+
+        scalar sumOverRatio = 0;
+        scalar maxOverRatio = 0;
+
+        label nPrinted = 0;
+
+        forAll(nodesToMap, i)
+        {
+            if( edgeDiagNeutral[i] )
+                ++nNeutralInput;
+
+            switch( edgeDiagDecision[i] )
+            {
+                case 1:
+                    ++nProtected;
+                    break;
+
+                case 2:
+                    ++nNoPatches;
+                    break;
+
+                case 3:
+                    ++nEdgeNotFound;
+                    break;
+
+                case 4:
+                    ++nRatioRejected;
+                    break;
+
+                case 5:
+                {
+                    ++nOverDistance;
+
+                    if( edgeDiagNeutral[i] )
+                        ++nNeutralOverDistance;
+                    else
+                        ++nOrdinaryOverDistance;
+
+                    sumOverRatio += edgeDiagOverRatio[i];
+
+                    maxOverRatio =
+                        Foam::max
+                        (
+                            maxOverRatio,
+                            edgeDiagOverRatio[i]
+                        );
+
+                    if( nPrinted < 8 )
+                    {
+                        const label bpI = nodesToMap[i];
+                        const DynList<label> patches = pPatches[bpI];
+
+                        Info
+                            << "[EDGEMAP_OVERDIST]"
+                            << " bpI=" << bpI
+                            << " meshPointI=" << bPoints[bpI]
+                            << " neutral="
+                            << (edgeDiagNeutral[i] ? 1 : 0)
+                            << " patches=" << patches
+                            << " from=" << oldPositions[i]
+                            << " trueTarget="
+                            << edgeDiagOverTarget[i]
+                            << " trueDist="
+                            << edgeDiagOverTrueDist[i]
+                            << " allowedDist="
+                            << edgeDiagOverAllowedDist[i]
+                            << " ratio="
+                            << edgeDiagOverRatio[i]
+                            << endl;
+
+                        ++nPrinted;
+                    }
+
+                    break;
+                }
+
+                case 6:
+                    ++nAccepted;
+
+                    if( edgeDiagNeutral[i] )
+                        ++nNeutralAccepted;
+
+                    break;
+
+                default:
+                    ++nUnseen;
+                    break;
+            }
+        }
+
+        // Diagnostic only: classify edge-map outcomes by the number of
+        // surface patches incident to the boundary point.
+        //
+        // Buckets:
+        //   0 = no patches
+        //   1 = one patch
+        //   2 = two patches
+        //   3 = three or more patches
+        //
+        // This does not alter search, projection, acceptance, or motion.
+        label edgeNotFoundByPatchCount[4] = {0, 0, 0, 0};
+        label ratioRejectedByPatchCount[4] = {0, 0, 0, 0};
+        label overDistanceByPatchCount[4] = {0, 0, 0, 0};
+        label acceptedByPatchCount[4] = {0, 0, 0, 0};
+
+        forAll(nodesToMap, i)
+        {
+            const label decision = edgeDiagDecision[i];
+
+            if
+            (
+                decision != 3 &&
+                decision != 4 &&
+                decision != 5 &&
+                decision != 6
+            )
+            {
+                continue;
+            }
+
+            const label bpI = nodesToMap[i];
+            const label nPatches = pPatches[bpI].size();
+
+            label bucket = 3;
+            if( nPatches <= 0 )
+                bucket = 0;
+            else if( nPatches == 1 )
+                bucket = 1;
+            else if( nPatches == 2 )
+                bucket = 2;
+
+            if( decision == 3 )
+                ++edgeNotFoundByPatchCount[bucket];
+            else if( decision == 4 )
+                ++ratioRejectedByPatchCount[bucket];
+            else if( decision == 5 )
+                ++overDistanceByPatchCount[bucket];
+            else if( decision == 6 )
+                ++acceptedByPatchCount[bucket];
+        }
+
+        // ------------------------------------------------------------
+        // Diagnostic-only SourceFeatureGraph recovery audit.
+        //
+        // Production has already completed the OMP mapping calculation.
+        // Query only points classified as EDGE_NOT_FOUND (decision 3).
+        //
+        // Nothing below modifies:
+        //   projectedPoints
+        //   projectedDistSq
+        //   mappingAccepted
+        //   mesh point coordinates
+        //
+        // Virtual seam diagnostic policy:
+        //   sourceDist / local edge length <= 0.25
+        //   seam gap / min edge length      <= 0.02
+        //   |tA.tB|                         >= 0.98
+        //
+        // SourceFeatureGraph also requires both open-edge targets to lie
+        // within the existing production mappingDistance[i].
+        // ------------------------------------------------------------
+        {
+            const sourceFeatureGraph& sfGraph = sourceFeatures();
+
+            const triSurf& sfSurf = meshOctree_.surface();
+            const wordList& sfPatchNames = sfSurf.patchNames();
+            const edgeLongList& sfEdges = sfSurf.edges();
+            const pointField& sfPoints = sfSurf.points();
+
+            const label nSfPatches = sfPatchNames.size();
+            const label nSfPairs = nSfPatches*nSfPatches;
+
+            labelList sfFailed(nSfPairs, 0);
+            labelList sfNative(nSfPairs, 0);
+            labelList sfVirtual(nSfPairs, 0);
+            labelList sfUnresolved(nSfPairs, 0);
+
+            // Diagnostic decomposition of unresolved graph queries.
+            labelList sfNoCandidate(nSfPairs, 0);
+            labelList sfGeometryRejected(nSfPairs, 0);
+            labelList sfTargetOverDistance(nSfPairs, 0);
+            labelList sfSourceCapOnly(nSfPairs, 0);
+            labelList sfNativeOverDistance(nSfPairs, 0);
+            labelList sfOtherUnresolved(nSfPairs, 0);
+
+            label sfTotalFailed = 0;
+            label sfTotalNative = 0;
+            label sfTotalVirtual = 0;
+            label sfTotalUnresolved = 0;
+
+            label sfTotalNoCandidate = 0;
+            label sfTotalGeometryRejected = 0;
+            label sfTotalTargetOverDistance = 0;
+            label sfTotalSourceCapOnly = 0;
+            label sfTotalNativeOverDistance = 0;
+            label sfTotalOtherUnresolved = 0;
+
+            forAll(nodesToMap, i)
+            {
+                if( edgeDiagDecision[i] != 3 )
+                    continue;
+
+                const label bpI = nodesToMap[i];
+
+                if( pPatches.sizeOfRow(bpI) != 2 )
+                    continue;
+
+                label patchA = pPatches(bpI, 0);
+                label patchB = pPatches(bpI, 1);
+
+                if
+                (
+                    patchA < 0 ||
+                    patchB < 0 ||
+                    patchA >= nSfPatches ||
+                    patchB >= nSfPatches ||
+                    patchA == patchB
+                )
+                {
+                    continue;
+                }
+
+                if( patchB < patchA )
+                {
+                    const label tmp = patchA;
+                    patchA = patchB;
+                    patchB = tmp;
+                }
+
+                const label pairI =
+                    patchA*nSfPatches + patchB;
+
+                ++sfFailed[pairI];
+                ++sfTotalFailed;
+
+                const point& queryPoint =
+                    points[bPoints[bpI]];
+
+                sourceFeatureGraph::featureHit hit;
+
+                const bool recovered =
+                    sfGraph.findNearestFeaturePoint
+                    (
+                        hit,
+                        queryPoint,
+                        patchA,
+                        patchB,
+                        mappingDistance[i],
+                        scalar(0.02),
+                        scalar(0.98)
+                    );
+
+                if( !recovered )
+                {
+                    ++sfUnresolved[pairI];
+                    ++sfTotalUnresolved;
+
+                    if( !hit.found )
+                    {
+                        ++sfNoCandidate[pairI];
+                        ++sfTotalNoCandidate;
+                    }
+                    else if
+                    (
+                        hit.type ==
+                        sourceFeatureGraph::NATIVE_FEATURE
+                    )
+                    {
+                        // Native candidate exists, but the graph rejected
+                        // it. In v0 the native admissibility gate is the
+                        // production mapping-distance limit.
+                        ++sfNativeOverDistance[pairI];
+                        ++sfTotalNativeOverDistance;
+                    }
+                    else if
+                    (
+                        hit.type ==
+                        sourceFeatureGraph::VIRTUAL_OPEN_SEAM &&
+                        hit.sourceEdgeA >= 0 &&
+                        hit.sourceEdgeB >= 0 &&
+                        hit.sourceEdgeA < sfEdges.size() &&
+                        hit.sourceEdgeB < sfEdges.size()
+                    )
+                    {
+                        const edge& eA =
+                            sfEdges[hit.sourceEdgeA];
+
+                        const edge& eB =
+                            sfEdges[hit.sourceEdgeB];
+
+                        const scalar lenA =
+                            Foam::sqrt
+                            (
+                                magSqr
+                                (
+                                    sfPoints[eA.end()]
+                                  - sfPoints[eA.start()]
+                                )
+                            );
+
+                        const scalar lenB =
+                            Foam::sqrt
+                            (
+                                magSqr
+                                (
+                                    sfPoints[eB.end()]
+                                  - sfPoints[eB.start()]
+                                )
+                            );
+
+                        const scalar sourceDistANorm =
+                            Foam::sqrt(hit.sourceDistASq)
+                          / (lenA + VSMALL);
+
+                        const scalar sourceDistBNorm =
+                            Foam::sqrt(hit.sourceDistBSq)
+                          / (lenB + VSMALL);
+
+                        const bool geometryOk =
+                        (
+                            Foam::max
+                            (
+                                sourceDistANorm,
+                                sourceDistBNorm
+                            ) <= scalar(0.25)
+                         && hit.gapNorm <= scalar(0.02)
+                         && hit.alignment >= scalar(0.98)
+                        );
+
+                        const bool targetWithinDistance =
+                        (
+                            mappingDistance[i] <= VSMALL ||
+                            hit.distSq <= mappingDistance[i]
+                        );
+
+                        const bool sourcesWithinDistance =
+                        (
+                            mappingDistance[i] <= VSMALL ||
+                            (
+                                hit.sourceDistASq <= mappingDistance[i] &&
+                                hit.sourceDistBSq <= mappingDistance[i]
+                            )
+                        );
+
+                        if( !geometryOk )
+                        {
+                            ++sfGeometryRejected[pairI];
+                            ++sfTotalGeometryRejected;
+                        }
+                        else if( !targetWithinDistance )
+                        {
+                            ++sfTargetOverDistance[pairI];
+                            ++sfTotalTargetOverDistance;
+                        }
+                        else if( !sourcesWithinDistance )
+                        {
+                            // Canonical virtual target is inside the
+                            // production mapping radius, but one of the
+                            // two support projections is outside it.
+                            //
+                            // This isolates an overly conservative
+                            // SourceFeatureGraph v0 distance policy from
+                            // a genuine production target-distance reject.
+                            ++sfSourceCapOnly[pairI];
+                            ++sfTotalSourceCapOnly;
+                        }
+                        else
+                        {
+                            ++sfOtherUnresolved[pairI];
+                            ++sfTotalOtherUnresolved;
+                        }
+                    }
+                    else
+                    {
+                        ++sfOtherUnresolved[pairI];
+                        ++sfTotalOtherUnresolved;
+                    }
+
+                    continue;
+                }
+
+                if
+                (
+                    hit.type ==
+                    sourceFeatureGraph::NATIVE_FEATURE
+                )
+                {
+                    ++sfNative[pairI];
+                    ++sfTotalNative;
+                }
+                else if
+                (
+                    hit.type ==
+                    sourceFeatureGraph::VIRTUAL_OPEN_SEAM
+                )
+                {
+                    ++sfVirtual[pairI];
+                    ++sfTotalVirtual;
+                }
+                else
+                {
+                    ++sfUnresolved[pairI];
+                    ++sfTotalUnresolved;
+                }
+            }
+
+            for(label patchA=0; patchA<nSfPatches; ++patchA)
+            {
+                for
+                (
+                    label patchB=patchA+1;
+                    patchB<nSfPatches;
+                    ++patchB
+                )
+                {
+                    const label pairI =
+                        patchA*nSfPatches + patchB;
+
+                    if( sfFailed[pairI] == 0 )
+                        continue;
+
+                    Info
+                        << "[SOURCE_FEATURE_RECOVERY]"
+                        << " pair="
+                        << sfPatchNames[patchA] << "|"
+                        << sfPatchNames[patchB]
+                        << " edgeNotFound="
+                        << sfFailed[pairI]
+                        << " native="
+                        << sfNative[pairI]
+                        << " virtual="
+                        << sfVirtual[pairI]
+                        << " unresolved="
+                        << sfUnresolved[pairI]
+                        << " noCandidate="
+                        << sfNoCandidate[pairI]
+                        << " geometryRejected="
+                        << sfGeometryRejected[pairI]
+                        << " targetOverDistance="
+                        << sfTargetOverDistance[pairI]
+                        << " sourceCapOnly="
+                        << sfSourceCapOnly[pairI]
+                        << " nativeOverDistance="
+                        << sfNativeOverDistance[pairI]
+                        << " other="
+                        << sfOtherUnresolved[pairI]
+                        << endl;
+                }
+            }
+
+            Info
+                << "[SOURCE_FEATURE_RECOVERY_SUMMARY]"
+                << " edgeNotFound=" << sfTotalFailed
+                << " native=" << sfTotalNative
+                << " virtual=" << sfTotalVirtual
+                << " unresolved=" << sfTotalUnresolved
+                << " noCandidate=" << sfTotalNoCandidate
+                << " geometryRejected=" << sfTotalGeometryRejected
+                << " targetOverDistance=" << sfTotalTargetOverDistance
+                << " sourceCapOnly=" << sfTotalSourceCapOnly
+                << " nativeOverDistance=" << sfTotalNativeOverDistance
+                << " other=" << sfTotalOtherUnresolved
+                << endl;
+        }
+
+        Info
+            << "[EDGEMAP_PATCHCOUNT]"
+            << " edgeNotFound(p0/p1/p2/p3p)="
+            << edgeNotFoundByPatchCount[0] << "/"
+            << edgeNotFoundByPatchCount[1] << "/"
+            << edgeNotFoundByPatchCount[2] << "/"
+            << edgeNotFoundByPatchCount[3]
+            << " ratioRejected(p0/p1/p2/p3p)="
+            << ratioRejectedByPatchCount[0] << "/"
+            << ratioRejectedByPatchCount[1] << "/"
+            << ratioRejectedByPatchCount[2] << "/"
+            << ratioRejectedByPatchCount[3]
+            << " overDistance(p0/p1/p2/p3p)="
+            << overDistanceByPatchCount[0] << "/"
+            << overDistanceByPatchCount[1] << "/"
+            << overDistanceByPatchCount[2] << "/"
+            << overDistanceByPatchCount[3]
+            << " accepted(p0/p1/p2/p3p)="
+            << acceptedByPatchCount[0] << "/"
+            << acceptedByPatchCount[1] << "/"
+            << acceptedByPatchCount[2] << "/"
+            << acceptedByPatchCount[3]
+            << endl;
+
+        // Diagnostic only: classify mapping outcomes by the number of
+        // actual cross-patch feature edges attached to the boundary point.
+        //
+        // Buckets:
+        //   0 = no local feature edge
+        //   1 = dangling / endpoint-like feature support
+        //   2 = ordinary continuous feature curve
+        //   3 = three or more feature edges
+        label edgeNotFoundByFeatureCount[4] = {0, 0, 0, 0};
+        label ratioRejectedByFeatureCount[4] = {0, 0, 0, 0};
+        label overDistanceByFeatureCount[4] = {0, 0, 0, 0};
+        label acceptedByFeatureCount[4] = {0, 0, 0, 0};
+
+        forAll(nodesToMap, i)
+        {
+            const label decision = edgeDiagDecision[i];
+
+            if
+            (
+                decision != 3 &&
+                decision != 4 &&
+                decision != 5 &&
+                decision != 6
+            )
+            {
+                continue;
+            }
+
+            const label bpI = nodesToMap[i];
+            const label nFeatureEdges =
+                mPart.numberOfFeatureEdgesAtPoint(bpI);
+
+            label bucket = 3;
+            if( nFeatureEdges <= 0 )
+                bucket = 0;
+            else if( nFeatureEdges == 1 )
+                bucket = 1;
+            else if( nFeatureEdges == 2 )
+                bucket = 2;
+
+            if( decision == 3 )
+                ++edgeNotFoundByFeatureCount[bucket];
+            else if( decision == 4 )
+                ++ratioRejectedByFeatureCount[bucket];
+            else if( decision == 5 )
+                ++overDistanceByFeatureCount[bucket];
+            else if( decision == 6 )
+                ++acceptedByFeatureCount[bucket];
+        }
+
+        // Diagnostic only: cross-tab exact mapper outcomes by the
+        // physical two-patch pair carried by each boundary point.
+        //
+        // Outcome slots:
+        //   0 = EDGE_NOT_FOUND
+        //   1 = RATIO_REJECTED
+        //   2 = OVER_DISTANCE
+        //   3 = ACCEPTED
+        const wordList& edgeMapPatchNames =
+            meshOctree_.surface().patchNames();
+
+        const label nEdgeMapPatches = edgeMapPatchNames.size();
+
+        labelList edgeMapPairOutcome
+        (
+            4*nEdgeMapPatches*nEdgeMapPatches,
+            0
+        );
+
+        label nInvalidEdgeMapPairs = 0;
+
+        forAll(nodesToMap, i)
+        {
+            const label decision = edgeDiagDecision[i];
+
+            label outcome = -1;
+            if( decision == 3 )
+                outcome = 0;
+            else if( decision == 4 )
+                outcome = 1;
+            else if( decision == 5 )
+                outcome = 2;
+            else if( decision == 6 )
+                outcome = 3;
+            else
+                continue;
+
+            const label bpI = nodesToMap[i];
+
+            if( pPatches.sizeOfRow(bpI) != 2 )
+            {
+                ++nInvalidEdgeMapPairs;
+                continue;
+            }
+
+            label p0 = pPatches(bpI, 0);
+            label p1 = pPatches(bpI, 1);
+
+            if
+            (
+                p0 < 0 || p1 < 0 ||
+                p0 >= nEdgeMapPatches ||
+                p1 >= nEdgeMapPatches
+            )
+            {
+                ++nInvalidEdgeMapPairs;
+                continue;
+            }
+
+            if( p1 < p0 )
+            {
+                const label tmp = p0;
+                p0 = p1;
+                p1 = tmp;
+            }
+
+            const label pairI =
+                p0*nEdgeMapPatches + p1;
+
+            ++edgeMapPairOutcome[4*pairI + outcome];
+        }
+
+        for(label p0=0; p0<nEdgeMapPatches; ++p0)
+        {
+            for(label p1=p0; p1<nEdgeMapPatches; ++p1)
+            {
+                const label pairI =
+                    p0*nEdgeMapPatches + p1;
+
+                const label nNotFound =
+                    edgeMapPairOutcome[4*pairI + 0];
+                const label nRatio =
+                    edgeMapPairOutcome[4*pairI + 1];
+                const label nOver =
+                    edgeMapPairOutcome[4*pairI + 2];
+                const label nAccept =
+                    edgeMapPairOutcome[4*pairI + 3];
+
+                const label total =
+                    nNotFound + nRatio + nOver + nAccept;
+
+                if( total == 0 )
+                    continue;
+
+                Info
+                    << "[EDGEMAP_PAIR]"
+                    << " pair="
+                    << edgeMapPatchNames[p0] << "|"
+                    << edgeMapPatchNames[p1]
+                    << " ids=" << p0 << "|" << p1
+                    << " input=" << total
+                    << " edgeNotFound=" << nNotFound
+                    << " ratioRejected=" << nRatio
+                    << " overDistance=" << nOver
+                    << " accepted=" << nAccept
+                    << endl;
+            }
+        }
+
+        if( nInvalidEdgeMapPairs )
+        {
+            Info
+                << "[EDGEMAP_PAIR_INVALID]"
+                << " count=" << nInvalidEdgeMapPairs
+                << endl;
+        }
+
+        Info
+            << "[EDGEMAP_FEATURECOUNT]"
+            << " edgeNotFound(e0/e1/e2/e3p)="
+            << edgeNotFoundByFeatureCount[0] << "/"
+            << edgeNotFoundByFeatureCount[1] << "/"
+            << edgeNotFoundByFeatureCount[2] << "/"
+            << edgeNotFoundByFeatureCount[3]
+            << " ratioRejected(e0/e1/e2/e3p)="
+            << ratioRejectedByFeatureCount[0] << "/"
+            << ratioRejectedByFeatureCount[1] << "/"
+            << ratioRejectedByFeatureCount[2] << "/"
+            << ratioRejectedByFeatureCount[3]
+            << " overDistance(e0/e1/e2/e3p)="
+            << overDistanceByFeatureCount[0] << "/"
+            << overDistanceByFeatureCount[1] << "/"
+            << overDistanceByFeatureCount[2] << "/"
+            << overDistanceByFeatureCount[3]
+            << " accepted(e0/e1/e2/e3p)="
+            << acceptedByFeatureCount[0] << "/"
+            << acceptedByFeatureCount[1] << "/"
+            << acceptedByFeatureCount[2] << "/"
+            << acceptedByFeatureCount[3]
+            << endl;
+
+        // Diagnostic only: point-conditioned correspondence between
+        // EDGE_NOT_FOUND volume feature points and open source boundaries.
+        //
+        // For each failed two-patch point p on A/B:
+        //   1. Find nearest OPEN source edge owned by A.
+        //   2. Find nearest OPEN source edge owned by B.
+        //   3. Compare the two projected source positions and tangents.
+        //
+        // This asks directly whether the feature which native A/B lookup
+        // failed to find is represented instead by two separate open source
+        // boundaries at that SAME physical location.
+        //
+        // No mesh mutation and no additional production octree queries.
+        {
+            const triSurf& corrSurf = meshOctree_.surface();
+            const VRWGraph& corrEdgeFacets = corrSurf.edgeFacets();
+            const LongList<labelledTri>& corrFacets = corrSurf.facets();
+            const LongList<edge>& corrEdges = corrSurf.edges();
+            const pointField& corrPoints = corrSurf.points();
+            const wordList& corrPatchNames = corrSurf.patchNames();
+
+            const label nCorrPatches = corrPatchNames.size();
+            const label nPairSlots =
+                nCorrPatches*nCorrPatches;
+
+            // Collect source OPEN edges once.
+            DynList<label> corrOpenEdgeIds;
+            DynList<label> corrOpenEdgePatch;
+            labelList corrOpenCount(nCorrPatches, 0);
+
+            forAll(corrEdgeFacets, eI)
+            {
+                if( corrEdgeFacets.sizeOfRow(eI) != 1 )
+                    continue;
+
+                const label fI = corrEdgeFacets(eI, 0);
+
+                if( fI < 0 || fI >= corrFacets.size() )
+                    continue;
+
+                const label patchI =
+                    corrFacets[fI].region();
+
+                if
+                (
+                    patchI < 0 ||
+                    patchI >= nCorrPatches
+                )
+                {
+                    continue;
+                }
+
+                corrOpenEdgeIds.append(eI);
+                corrOpenEdgePatch.append(patchI);
+                ++corrOpenCount[patchI];
+            }
+
+            labelList nFailed(nPairSlots, 0);
+            labelList nBothOpen(nPairSlots, 0);
+            labelList nNearBoth(nPairSlots, 0);
+            labelList nGapSmall(nPairSlots, 0);
+            labelList nAligned(nPairSlots, 0);
+            labelList nStrong(nPairSlots, 0);
+            labelList nNearExact(nPairSlots, 0);
+
+            scalarList sumDistANorm(nPairSlots, scalar(0));
+            scalarList sumDistBNorm(nPairSlots, scalar(0));
+            scalarList sumGapNorm(nPairSlots, scalar(0));
+            scalarList sumAlign(nPairSlots, scalar(0));
+
+            scalarList maxDistANorm(nPairSlots, scalar(0));
+            scalarList maxDistBNorm(nPairSlots, scalar(0));
+            scalarList maxGapNorm(nPairSlots, scalar(0));
+            scalarList minAlign(nPairSlots, GREAT);
+
+            forAll(nodesToMap, i)
+            {
+                // Production decision 3 == EDGE_NOT_FOUND.
+                if( edgeDiagDecision[i] != 3 )
+                    continue;
+
+                const label bpI = nodesToMap[i];
+
+                if( pPatches.sizeOfRow(bpI) != 2 )
+                    continue;
+
+                label pA = pPatches(bpI, 0);
+                label pB = pPatches(bpI, 1);
+
+                if
+                (
+                    pA < 0 || pB < 0 ||
+                    pA >= nCorrPatches ||
+                    pB >= nCorrPatches ||
+                    pA == pB
+                )
+                {
+                    continue;
+                }
+
+                if( pB < pA )
+                {
+                    const label tmp = pA;
+                    pA = pB;
+                    pB = tmp;
+                }
+
+                const label pairI =
+                    pA*nCorrPatches + pB;
+
+                ++nFailed[pairI];
+
+                const point& pQuery =
+                    points[bPoints[bpI]];
+
+                bool foundA = false;
+                bool foundB = false;
+
+                scalar bestASq = GREAT;
+                scalar bestBSq = GREAT;
+
+                point qA(pQuery);
+                point qB(pQuery);
+
+                scalar lenA = 0;
+                scalar lenB = 0;
+
+                vector dirA(vector::zero);
+                vector dirB(vector::zero);
+
+                forAll(corrOpenEdgeIds, oi)
+                {
+                    const label owner =
+                        corrOpenEdgePatch[oi];
+
+                    if( owner != pA && owner != pB )
+                        continue;
+
+                    const label eI =
+                        corrOpenEdgeIds[oi];
+
+                    const edge& e = corrEdges[eI];
+
+                    const point& e0 =
+                        corrPoints[e.start()];
+                    const point& e1 =
+                        corrPoints[e.end()];
+
+                    const vector d = e1-e0;
+                    const scalar len =
+                        Foam::sqrt(magSqr(d));
+
+                    if( len < ROOTVSMALL )
+                        continue;
+
+                    const point q =
+                        help::nearestPointOnTheEdgeExact
+                        (
+                            e0,
+                            e1,
+                            pQuery
+                        );
+
+                    const scalar dSq =
+                        magSqr(q-pQuery);
+
+                    if( owner == pA && dSq < bestASq )
+                    {
+                        foundA = true;
+                        bestASq = dSq;
+                        qA = q;
+                        lenA = len;
+                        dirA = d;
+                    }
+
+                    if( owner == pB && dSq < bestBSq )
+                    {
+                        foundB = true;
+                        bestBSq = dSq;
+                        qB = q;
+                        lenB = len;
+                        dirB = d;
+                    }
+                }
+
+                if( !foundA || !foundB )
+                    continue;
+
+                ++nBothOpen[pairI];
+
+                const scalar dA =
+                    Foam::sqrt(bestASq);
+                const scalar dB =
+                    Foam::sqrt(bestBSq);
+
+                const scalar dANorm =
+                    dA/(lenA + VSMALL);
+                const scalar dBNorm =
+                    dB/(lenB + VSMALL);
+
+                const scalar minLen =
+                    Foam::min(lenA, lenB);
+
+                const scalar gap =
+                    Foam::sqrt(magSqr(qA-qB));
+
+                const scalar gapNorm =
+                    gap/(minLen + VSMALL);
+
+                const scalar align =
+                    Foam::min
+                    (
+                        scalar(1),
+                        Foam::mag(dirA & dirB) /
+                        (lenA*lenB + VSMALL)
+                    );
+
+                sumDistANorm[pairI] += dANorm;
+                sumDistBNorm[pairI] += dBNorm;
+                sumGapNorm[pairI] += gapNorm;
+                sumAlign[pairI] += align;
+
+                maxDistANorm[pairI] =
+                    Foam::max
+                    (
+                        maxDistANorm[pairI],
+                        dANorm
+                    );
+
+                maxDistBNorm[pairI] =
+                    Foam::max
+                    (
+                        maxDistBNorm[pairI],
+                        dBNorm
+                    );
+
+                maxGapNorm[pairI] =
+                    Foam::max
+                    (
+                        maxGapNorm[pairI],
+                        gapNorm
+                    );
+
+                minAlign[pairI] =
+                    Foam::min
+                    (
+                        minAlign[pairI],
+                        align
+                    );
+
+                // Diagnostic categories only. These are NOT proposed
+                // production tolerances.
+                const bool nearBoth =
+                    Foam::max(dANorm, dBNorm) <= 0.25;
+
+                const bool gapSmall =
+                    gapNorm <= 0.02;
+
+                const bool aligned =
+                    align >= 0.98;
+
+                if( nearBoth )
+                    ++nNearBoth[pairI];
+
+                if( gapSmall )
+                    ++nGapSmall[pairI];
+
+                if( aligned )
+                    ++nAligned[pairI];
+
+                if( nearBoth && gapSmall && aligned )
+                    ++nStrong[pairI];
+
+                if
+                (
+                    Foam::max(dANorm, dBNorm) <= 0.05 &&
+                    gapNorm <= 1e-3 &&
+                    align >= 0.999
+                )
+                {
+                    ++nNearExact[pairI];
+                }
+            }
+
+            for(label pA=0; pA<nCorrPatches; ++pA)
+            {
+                for(label pB=pA+1; pB<nCorrPatches; ++pB)
+                {
+                    const label pairI =
+                        pA*nCorrPatches + pB;
+
+                    if( nFailed[pairI] == 0 )
+                        continue;
+
+                    Info
+                        << "[EDGEMAP_OPEN_CORRESPONDENCE]"
+                        << " pair="
+                        << corrPatchNames[pA] << "|"
+                        << corrPatchNames[pB]
+                        << " edgeNotFound="
+                        << nFailed[pairI]
+                        << " sourceOpenA="
+                        << corrOpenCount[pA]
+                        << " sourceOpenB="
+                        << corrOpenCount[pB]
+                        << " bothOpen="
+                        << nBothOpen[pairI]
+                        << " nearBoth="
+                        << nNearBoth[pairI]
+                        << " gapSmall="
+                        << nGapSmall[pairI]
+                        << " aligned="
+                        << nAligned[pairI]
+                        << " strong="
+                        << nStrong[pairI]
+                        << " nearExact="
+                        << nNearExact[pairI];
+
+                    if( nBothOpen[pairI] > 0 )
+                    {
+                        const scalar denom =
+                            scalar(nBothOpen[pairI]);
+
+                        Info
+                            << " distANorm(avg/max)="
+                            << sumDistANorm[pairI]/denom
+                            << "/"
+                            << maxDistANorm[pairI]
+                            << " distBNorm(avg/max)="
+                            << sumDistBNorm[pairI]/denom
+                            << "/"
+                            << maxDistBNorm[pairI]
+                            << " gapNorm(avg/max)="
+                            << sumGapNorm[pairI]/denom
+                            << "/"
+                            << maxGapNorm[pairI]
+                            << " align(min/avg)="
+                            << minAlign[pairI]
+                            << "/"
+                            << sumAlign[pairI]/denom;
+                    }
+
+                    Info << endl;
+                }
+            }
+        }
+
+        Info
+            << "[EDGEMAPSUMMARY]"
+            << " input=" << nodesToMap.size()
+            << " protected=" << nProtected
+            << " neutralInput=" << nNeutralInput
+            << " edgeNotFound=" << nEdgeNotFound
+            << " ratioRejected=" << nRatioRejected
+            << " overDistanceRejected=" << nOverDistance
+            << " neutralOverDistance=" << nNeutralOverDistance
+            << " ordinaryOverDistance=" << nOrdinaryOverDistance
+            << " accepted=" << nAccepted
+            << " neutralAccepted=" << nNeutralAccepted
+            << " unseen=" << nUnseen
+            << " avgOverDistanceRatio="
+            <<
+            (
+                nOverDistance
+              ? sumOverRatio / scalar(nOverDistance)
+              : scalar(0)
+            )
+            << " maxOverDistanceRatio=" << maxOverRatio
+            << endl;
     }
+
+
+
+    // ------------------------------------------------------------
+    // DIAGNOSTIC ONLY:
+    // Probe the existing production edge-move path against raw signed
+    // incident-cell volumes BEFORE committing each existing move.
+    //
+    // No movement is rejected or modified here.
+    // ------------------------------------------------------------
+    {
+        const polyMeshGen& probeMesh = surfaceEngine_.mesh();
+
+        const pointFieldPMG& probePoints = probeMesh.points();
+        const faceListPMG& probeFaces = probeMesh.faces();
+        const cellListPMG& probeCells = probeMesh.cells();
+        const labelList& probeOwner = probeMesh.owner();
+
+        const VRWGraph& probePointCells =
+            probeMesh.addressingData().pointCells();
+
+        const labelList& probeBoundaryPoints =
+            surfaceEngine_.boundaryPoints();
+
+        auto probeFaceGeometry =
+        [&]
+        (
+            const face& f,
+            const label movedGlobalPtI,
+            const point& candidate,
+            const bool substituteCandidate,
+            point& fCtr,
+            vector& fArea
+        )
+        {
+            auto pt =
+            [&]
+            (
+                const label ptI
+            ) -> point
+            {
+                if
+                (
+                    substituteCandidate &&
+                    ptI == movedGlobalPtI
+                )
+                {
+                    return candidate;
+                }
+
+                return point(probePoints[ptI]);
+            };
+
+            const label nPoints = f.size();
+
+            if( nPoints == 3 )
+            {
+                const point p0 = pt(f[0]);
+                const point p1 = pt(f[1]);
+                const point p2 = pt(f[2]);
+
+                fCtr = (1.0/3.0)*(p0 + p1 + p2);
+                fArea = 0.5*((p1 - p0)^(p2 - p0));
+                return;
+            }
+
+            vector sumN = vector::zero;
+            scalar sumA = 0.0;
+            vector sumAc = vector::zero;
+
+            point fCentre = pt(f[0]);
+
+            for(label pi=1; pi<nPoints; ++pi)
+            {
+                fCentre += pt(f[pi]);
+            }
+
+            fCentre /= nPoints;
+
+            for(label pi=0; pi<nPoints; ++pi)
+            {
+                const point curPoint = pt(f[pi]);
+                const point nextPoint = pt(f.nextLabel(pi));
+
+                const vector c =
+                    curPoint + nextPoint + fCentre;
+
+                const vector n =
+                    (nextPoint - curPoint)^
+                    (fCentre - curPoint);
+
+                const scalar a = mag(n);
+
+                sumN += n;
+                sumA += a;
+                sumAc += a*c;
+            }
+
+            fCtr =
+                (1.0/3.0)*sumAc/(sumA + VSMALL);
+
+            fArea = 0.5*sumN;
+        };
+
+
+        auto probeRawCellVolume =
+        [&]
+        (
+            const label cellI,
+            const label movedGlobalPtI,
+            const point& candidate,
+            const bool substituteCandidate
+        ) -> scalar
+        {
+            const cell& c = probeCells[cellI];
+
+            List<point> localFCentres(c.size());
+            List<vector> localFAreas(c.size());
+
+            vector cEst = vector::zero;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                point fc;
+                vector fa;
+
+                probeFaceGeometry
+                (
+                    probeFaces[faceI],
+                    movedGlobalPtI,
+                    candidate,
+                    substituteCandidate,
+                    fc,
+                    fa
+                );
+
+                localFCentres[cfI] = fc;
+                localFAreas[cfI] = fa;
+
+                cEst += fc;
+            }
+
+            cEst /= scalar(c.size());
+
+            scalar cellVol = 0.0;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                scalar pyr3Vol =
+                    localFAreas[cfI] &
+                    (localFCentres[cfI] - cEst);
+
+                if( probeOwner[faceI] != cellI )
+                {
+                    pyr3Vol *= -1.0;
+                }
+
+                cellVol += pyr3Vol;
+            }
+
+            return cellVol/3.0;
+        };
+
+
+        label nAppliedMoves = 0;
+        label nMovesTouchingExistingBad = 0;
+        label nMovesCreatingNewNeg = 0;
+        label nMovesRepairingNeg = 0;
+        label nRejectedCreatingNewNeg = 0;
+
+        label nNewNegCellEvents = 0;
+        label nRepairedCellEvents = 0;
+
+        scalar minPositiveCandidateRatio = GREAT;
+
+        forAll(nodesToMap, i)
+        {
+            const label bpI = nodesToMap[i];
+
+            if( projectedDistSq[i] < scalar(0) )
+            {
+                continue;
+            }
+
+            ++nAppliedMoves;
+
+            const label globalPtI =
+                probeBoundaryPoints[bpI];
+
+            const point candidate =
+                projectedPoints[i];
+
+            bool touchesExistingBad = false;
+            bool createsNewNeg = false;
+            bool repairsNeg = false;
+
+            const label nIncidentCells =
+                probePointCells.sizeOfRow(globalPtI);
+
+            forAllRow(probePointCells, globalPtI, pcI)
+            {
+                const label cellI =
+                    probePointCells(globalPtI, pcI);
+
+                const scalar oldVol =
+                    probeRawCellVolume
+                    (
+                        cellI,
+                        globalPtI,
+                        candidate,
+                        false
+                    );
+
+                const scalar newVol =
+                    probeRawCellVolume
+                    (
+                        cellI,
+                        globalPtI,
+                        candidate,
+                        true
+                    );
+
+                if( oldVol < VSMALL )
+                {
+                    touchesExistingBad = true;
+                }
+
+                if
+                (
+                    oldVol >= VSMALL &&
+                    newVol < VSMALL
+                )
+                {
+                    createsNewNeg = true;
+                    ++nNewNegCellEvents;
+                }
+
+                if
+                (
+                    oldVol < VSMALL &&
+                    newVol >= VSMALL
+                )
+                {
+                    repairsNeg = true;
+                    ++nRepairedCellEvents;
+                }
+
+                if
+                (
+                    oldVol >= VSMALL &&
+                    newVol >= VSMALL
+                )
+                {
+                    const scalar ratio =
+                        newVol/(oldVol + VSMALL);
+
+                    minPositiveCandidateRatio =
+                        Foam::min
+                        (
+                            minPositiveCandidateRatio,
+                            ratio
+                        );
+                }
+            }
+
+            if( touchesExistingBad )
+            {
+                ++nMovesTouchingExistingBad;
+            }
+
+            if( createsNewNeg )
+            {
+                ++nMovesCreatingNewNeg;
+            }
+
+            if( repairsNeg )
+            {
+                ++nMovesRepairingNeg;
+            }
+
+            // Production edge transaction v1:
+            // never allow a currently-positive incident cell to become
+            // zero/negative. Full target or reject; no bisection yet.
+            if( createsNewNeg )
+            {
+                ++nRejectedCreatingNewNeg;
+
+                // Mark this production proposal as not committed so the
+                // existing parallel synchronization path also skips it.
+                projectedDistSq[i] = scalar(-1);
+                mappingAccepted[i] = false;
+
+                continue;
+            }
+
+            sMod.moveBoundaryVertexNoUpdate
+            (
+                bpI,
+                projectedPoints[i]
+            );
+
+            mappingAccepted[i] = true;
+        }
+
+        Info
+            << "[PRODUCTION_EDGE_VOLUME_PROBE]"
+            << " appliedMoves="
+            << nAppliedMoves
+            << " movesTouchingExistingBad="
+            << nMovesTouchingExistingBad
+            << " movesCreatingNewNeg="
+            << nMovesCreatingNewNeg
+            << " newNegCellEvents="
+            << nNewNegCellEvents
+            << " rejectedCreatingNewNeg="
+            << nRejectedCreatingNewNeg
+            << " movesRepairingNeg="
+            << nMovesRepairingNeg
+            << " repairedCellEvents="
+            << nRepairedCellEvents
+            << " minPositiveCandidateRatio="
+            <<
+            (
+                minPositiveCandidateRatio < GREAT
+              ? minPositiveCandidateRatio
+              : scalar(-1)
+            )
+            << endl;
+    }
+
+    // ------------------------------------------------------------
+    // SourceFeatureGraph v2 behavioral experiment:
+    //
+    // Recover production EDGE_NOT_FOUND points only when:
+    //   1. SourceFeatureGraph finds an admissible VIRTUAL_OPEN_SEAM,
+    //   2. the existing proposedMoveIsValid() guard passes, AND
+    //   3. every cell incident to the moved mesh point retains a
+    //      strictly positive raw signed volume using the SAME volume
+    //      convention as polyMeshGenChecks::checkCellVolumes().
+    //
+    // Existing successful/native edge mappings have already been moved
+    // by the serial pass above. Virtual recoveries are then tested and
+    // committed ONE AT A TIME. The raw volume evaluator uses live point
+    // coordinates directly, not cached face/cell geometry, so each
+    // subsequent candidate sees all earlier accepted moves.
+    //
+    // Full-target-or-reject only. No chord bisection.
+    // ------------------------------------------------------------
+    {
+        const sourceFeatureGraph& sfg = sourceFeatures();
+
+        const triSurf& sfgSurf = meshOctree_.surface();
+        const wordList& sfgPatchNames = sfgSurf.patchNames();
+        const label nSfgPatches = sfgPatchNames.size();
+
+        const polyMeshGen& sfgMesh = surfaceEngine_.mesh();
+
+        const pointFieldPMG& sfgPoints = sfgMesh.points();
+        const faceListPMG& sfgFaces = sfgMesh.faces();
+        const cellListPMG& sfgCells = sfgMesh.cells();
+        const labelList& sfgOwner = sfgMesh.owner();
+
+        // Topological addressing only. Safe to reuse while coordinates move.
+        const VRWGraph& sfgPointCells =
+            sfgMesh.addressingData().pointCells();
+
+        const labelList& sfgBoundaryPoints =
+            surfaceEngine_.boundaryPoints();
+
+        // Exact local face geometry copied from
+        // polyMeshGenAddressing::makeFaceCentresAndAreas(), except that
+        // one selected mesh point may be replaced by candidate.
+        auto sfgFaceGeometry =
+        [&]
+        (
+            const face& f,
+            const label movedGlobalPtI,
+            const point& candidate,
+            const bool substituteCandidate,
+            point& fCtr,
+            vector& fArea
+        )
+        {
+            auto pt =
+            [&]
+            (
+                const label ptI
+            ) -> point
+            {
+                if
+                (
+                    substituteCandidate &&
+                    ptI == movedGlobalPtI
+                )
+                {
+                    return candidate;
+                }
+
+                return point(sfgPoints[ptI]);
+            };
+
+            const label nPoints = f.size();
+
+            if( nPoints == 3 )
+            {
+                const point p0 = pt(f[0]);
+                const point p1 = pt(f[1]);
+                const point p2 = pt(f[2]);
+
+                fCtr = (1.0/3.0)*(p0 + p1 + p2);
+                fArea = 0.5*((p1 - p0)^(p2 - p0));
+
+                return;
+            }
+
+            vector sumN = vector::zero;
+            scalar sumA = 0.0;
+            vector sumAc = vector::zero;
+
+            point fCentre = pt(f[0]);
+
+            for(label pi=1; pi<nPoints; ++pi)
+            {
+                fCentre += pt(f[pi]);
+            }
+
+            fCentre /= nPoints;
+
+            for(label pi=0; pi<nPoints; ++pi)
+            {
+                const point curPoint = pt(f[pi]);
+                const point nextPoint = pt(f.nextLabel(pi));
+
+                const vector c =
+                    curPoint + nextPoint + fCentre;
+
+                const vector n =
+                    (nextPoint - curPoint)^
+                    (fCentre - curPoint);
+
+                const scalar a = mag(n);
+
+                sumN += n;
+                sumA += a;
+                sumAc += a*c;
+            }
+
+            fCtr =
+                (1.0/3.0)*sumAc/(sumA + VSMALL);
+
+            fArea = 0.5*sumN;
+        };
+
+        // Raw signed volume using the exact orientation convention from
+        // polyMeshGenChecks::checkCellVolumes().
+        //
+        // IMPORTANT: all faces are recalculated from current point
+        // coordinates. This deliberately avoids cached face geometry,
+        // which is stale until the normal updateGeometry() at the end
+        // of mapEdgeNodes().
+        auto sfgRawCellVolume =
+        [&]
+        (
+            const label cellI,
+            const label movedGlobalPtI,
+            const point& candidate,
+            const bool substituteCandidate
+        ) -> scalar
+        {
+            const cell& c = sfgCells[cellI];
+
+            List<point> localFCentres(c.size());
+            List<vector> localFAreas(c.size());
+
+            vector cEst = vector::zero;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                point fc;
+                vector fa;
+
+                sfgFaceGeometry
+                (
+                    sfgFaces[faceI],
+                    movedGlobalPtI,
+                    candidate,
+                    substituteCandidate,
+                    fc,
+                    fa
+                );
+
+                localFCentres[cfI] = fc;
+                localFAreas[cfI] = fa;
+
+                cEst += fc;
+            }
+
+            cEst /= scalar(c.size());
+
+            scalar cellVol = 0.0;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                scalar pyr3Vol =
+                    localFAreas[cfI] &
+                    (localFCentres[cfI] - cEst);
+
+                if( sfgOwner[faceI] != cellI )
+                {
+                    pyr3Vol *= -1.0;
+                }
+
+                cellVol += pyr3Vol;
+            }
+
+            return cellVol/3.0;
+        };
+
+
+        const label nSfgPairs =
+            nSfgPatches*nSfgPatches;
+
+        labelList acceptedByPair(nSfgPairs, 0);
+        labelList volumeRejectedByPair(nSfgPairs, 0);
+        labelList faceRejectedByPair(nSfgPairs, 0);
+
+        label nEdgeNotFoundSeen = 0;
+        label nGraphUnresolved = 0;
+        label nNativeDeferred = 0;
+        label nVirtualCandidate = 0;
+
+        label nAccepted = 0;
+
+        label nRejectedFaceOnly = 0;
+        label nRejectedVolumeOnly = 0;
+        label nRejectedFaceAndVolume = 0;
+        label nRejectedPreExistingBad = 0;
+        label nRejectedNoCells = 0;
+        label nRejectedActualMoveDistance = 0;
+
+        scalar minAcceptedVolRatio = GREAT;
+        scalar minCandidateVolRatio = GREAT;
+        scalar maxAcceptedDist = scalar(0);
+
+        forAll(nodesToMap, i)
+        {
+            // Production EDGE_NOT_FOUND only.
+            if( edgeDiagDecision[i] != 3 )
+            {
+                continue;
+            }
+
+            ++nEdgeNotFoundSeen;
+
+            const label bpI = nodesToMap[i];
+
+            if( pPatches.sizeOfRow(bpI) != 2 )
+            {
+                ++nGraphUnresolved;
+                continue;
+            }
+
+            label patchA = pPatches(bpI, 0);
+            label patchB = pPatches(bpI, 1);
+
+            if
+            (
+                patchA < 0 ||
+                patchB < 0 ||
+                patchA >= nSfgPatches ||
+                patchB >= nSfgPatches ||
+                patchA == patchB
+            )
+            {
+                ++nGraphUnresolved;
+                continue;
+            }
+
+            if( patchB < patchA )
+            {
+                const label tmp = patchA;
+                patchA = patchB;
+                patchB = tmp;
+            }
+
+            const label pairI =
+                patchA*nSfgPatches + patchB;
+
+            const label globalPtI =
+                sfgBoundaryPoints[bpI];
+
+            // COPY live position. Do not retain a reference across commit.
+            const point oldPosition =
+                sfgPoints[globalPtI];
+
+            // Geometry search follows the smoothing intent. The mesh itself
+            // remains at oldPosition until the final feature target passes
+            // the transaction.
+            const point queryPosition =
+                desiredPositions[i];
+
+            sourceFeatureGraph::featureHit hit;
+
+            const bool recovered =
+                sfg.findNearestFeaturePoint
+                (
+                    hit,
+                    queryPosition,
+                    patchA,
+                    patchB,
+                    mappingDistance[i],
+                    scalar(0.02),
+                    scalar(0.98)
+                );
+
+            if( !recovered )
+            {
+                ++nGraphUnresolved;
+                continue;
+            }
+
+            if
+            (
+                hit.type ==
+                sourceFeatureGraph::NATIVE_FEATURE
+            )
+            {
+                // Separate experiment later.
+                ++nNativeDeferred;
+                continue;
+            }
+
+            if
+            (
+                hit.type !=
+                sourceFeatureGraph::VIRTUAL_OPEN_SEAM
+            )
+            {
+                ++nGraphUnresolved;
+                continue;
+            }
+
+            // SourceFeatureGraph search distance is measured from
+            // queryPosition. For smoothing-intent callers queryPosition
+            // differs from the actual live mesh point, so independently
+            // enforce the real live-point displacement authority here.
+            const scalar actualVirtualMoveDistSq =
+                magSqr(hit.position - oldPosition);
+
+            if
+            (
+                actualVirtualMoveDistSq >
+                mappingDistance[i]
+            )
+            {
+                ++nRejectedActualMoveDistance;
+                continue;
+            }
+
+            ++nVirtualCandidate;
+
+            // Existing mapper quality proxy. This operates on the current
+            // live point state and substitutes this candidate locally.
+            const bool faceGateOK =
+                proposedMoveIsValid
+                (
+                    bpI,
+                    hit.position,
+                    oldPosition,
+                    mappingDistance[i]
+                );
+
+            // Exact raw signed-volume gate.
+            bool volumeGateOK = true;
+            bool preExistingBad = false;
+
+            scalar candidateMinRatio = GREAT;
+
+            const label nIncidentCells =
+                sfgPointCells.sizeOfRow(globalPtI);
+
+            if( nIncidentCells == 0 )
+            {
+                volumeGateOK = false;
+                ++nRejectedNoCells;
+            }
+            else
+            {
+                forAllRow(sfgPointCells, globalPtI, pcI)
+                {
+                    const label cellI =
+                        sfgPointCells(globalPtI, pcI);
+
+                    const scalar oldVol =
+                        sfgRawCellVolume
+                        (
+                            cellI,
+                            globalPtI,
+                            hit.position,
+                            false
+                        );
+
+                    const scalar newVol =
+                        sfgRawCellVolume
+                        (
+                            cellI,
+                            globalPtI,
+                            hit.position,
+                            true
+                        );
+
+                    // For this first transaction experiment, do not touch
+                    // a cell which is already zero/negative. This makes
+                    // attribution unambiguous and fail-closed.
+                    if( oldVol < VSMALL )
+                    {
+                        preExistingBad = true;
+                        volumeGateOK = false;
+                        break;
+                    }
+
+                    const scalar ratio =
+                        newVol/(oldVol + VSMALL);
+
+                    candidateMinRatio =
+                        Foam::min
+                        (
+                            candidateMinRatio,
+                            ratio
+                        );
+
+                    // Same sign criterion as checkCellVolumes().
+                    if( newVol < VSMALL )
+                    {
+                        volumeGateOK = false;
+                        break;
+                    }
+                }
+            }
+
+            if( candidateMinRatio < GREAT )
+            {
+                minCandidateVolRatio =
+                    Foam::min
+                    (
+                        minCandidateVolRatio,
+                        candidateMinRatio
+                    );
+            }
+
+            if( preExistingBad )
+            {
+                ++nRejectedPreExistingBad;
+            }
+
+            if( !faceGateOK )
+            {
+                ++faceRejectedByPair[pairI];
+            }
+
+            if( !volumeGateOK )
+            {
+                ++volumeRejectedByPair[pairI];
+            }
+
+            if( !faceGateOK || !volumeGateOK )
+            {
+                if( !faceGateOK && !volumeGateOK )
+                {
+                    ++nRejectedFaceAndVolume;
+                }
+                else if( !faceGateOK )
+                {
+                    ++nRejectedFaceOnly;
+                }
+                else
+                {
+                    ++nRejectedVolumeOnly;
+                }
+
+                continue;
+            }
+
+            // Transaction commit.
+            //
+            // Commit immediately so every later candidate is evaluated
+            // against the state containing all earlier accepted moves.
+            sMod.moveBoundaryVertexNoUpdate
+            (
+                bpI,
+                hit.position
+            );
+
+            projectedPoints[i] = hit.position;
+
+            // hit.distSq is measured from the geometric query position.
+            // Synchronization uses the already-validated actual live-point
+            // displacement.
+            projectedDistSq[i] =
+                actualVirtualMoveDistSq;
+
+            mappingAccepted[i] = true;
+
+            ++acceptedByPair[pairI];
+            ++nAccepted;
+
+            if( candidateMinRatio < GREAT )
+            {
+                minAcceptedVolRatio =
+                    Foam::min
+                    (
+                        minAcceptedVolRatio,
+                        candidateMinRatio
+                    );
+            }
+
+            maxAcceptedDist =
+                Foam::max
+                (
+                    maxAcceptedDist,
+                    Foam::sqrt
+                    (
+                        Foam::max
+                        (
+                            actualVirtualMoveDistSq,
+                            scalar(0)
+                        )
+                    )
+                );
+        }
+
+
+        for(label patchA=0; patchA<nSfgPatches; ++patchA)
+        {
+            for
+            (
+                label patchB=patchA+1;
+                patchB<nSfgPatches;
+                ++patchB
+            )
+            {
+                const label pairI =
+                    patchA*nSfgPatches + patchB;
+
+                if
+                (
+                    acceptedByPair[pairI] == 0 &&
+                    faceRejectedByPair[pairI] == 0 &&
+                    volumeRejectedByPair[pairI] == 0
+                )
+                {
+                    continue;
+                }
+
+                Info
+                    << "[SOURCE_FEATURE_VOLUME_GATE]"
+                    << " pair="
+                    << sfgPatchNames[patchA]
+                    << "|"
+                    << sfgPatchNames[patchB]
+                    << " accepted="
+                    << acceptedByPair[pairI]
+                    << " faceRejected="
+                    << faceRejectedByPair[pairI]
+                    << " volumeRejected="
+                    << volumeRejectedByPair[pairI]
+                    << endl;
+            }
+        }
+
+        Info
+            << "[SOURCE_FEATURE_VOLUME_GATE_SUMMARY]"
+            << " edgeNotFoundSeen="
+            << nEdgeNotFoundSeen
+            << " virtualCandidate="
+            << nVirtualCandidate
+            << " accepted="
+            << nAccepted
+            << " graphUnresolved="
+            << nGraphUnresolved
+            << " nativeDeferred="
+            << nNativeDeferred
+            << " rejectFaceOnly="
+            << nRejectedFaceOnly
+            << " rejectVolumeOnly="
+            << nRejectedVolumeOnly
+            << " rejectFaceAndVolume="
+            << nRejectedFaceAndVolume
+            << " rejectPreExistingBad="
+            << nRejectedPreExistingBad
+            << " rejectNoCells="
+            << nRejectedNoCells
+            << " rejectActualMoveDistance="
+            << nRejectedActualMoveDistance
+            << " minCandidateVolRatio="
+            <<
+            (
+                minCandidateVolRatio < GREAT
+              ? minCandidateVolRatio
+              : scalar(-1)
+            )
+            << " minAcceptedVolRatio="
+            <<
+            (
+                minAcceptedVolRatio < GREAT
+              ? minAcceptedVolRatio
+              : scalar(-1)
+            )
+            << " maxAcceptedDist="
+            << maxAcceptedDist
+            << endl;
+    }
+
 
     // v7: serial dump of watched incident-edge-neighbor outcomes.
     // Uses ONLY values already captured from production computation

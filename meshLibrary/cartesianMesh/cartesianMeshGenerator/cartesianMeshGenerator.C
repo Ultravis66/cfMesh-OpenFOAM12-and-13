@@ -404,14 +404,41 @@ void cartesianMeshGenerator::mapMeshToSurface()
     //- calculate mesh surface
     meshSurfaceEngine mse(mesh_);
 
+    // Cache-coherency diagnostic:
+    // intentionally instantiate polyMeshGenAddressing geometry at entry
+    // and verify that it follows subsequent surface point motion.
+    auto surfaceProjectionLineage =
+    [&](const word& stageName)
+    {
+        labelHashSet negVolCells;
+
+        polyMeshGenChecks::checkCellVolumes
+        (
+            mesh_,
+            false,
+            &negVolCells
+        );
+
+        Info << "[SURFACE_PROJECTION_LINEAGE]"
+             << " stage=" << stageName
+             << " negVol=" << negVolCells.size()
+             << endl;
+    };
+
+    surfaceProjectionLineage("entry");
+
     //- pre-map mesh surface
     meshSurfaceMapper mapper(mse, *octreePtr_);
     mapper.preMapVertices(0);
+    surfaceProjectionLineage("afterPreMapVertices");
 
     //- map mesh surface on the geometry surface
     mapper.mapVerticesOntoSurface();
+    surfaceProjectionLineage("afterMapVerticesOntoSurface");
+
     //- targeted repair of validity-rejected points before corner snap
     mapper.repairRejectedPoints();
+    surfaceProjectionLineage("afterRepairRejectedPoints");
 
     //- snap corner and edge vertices onto feature curves
     //- early pass: stabilizes features before surface optimizer runs
@@ -464,14 +491,24 @@ void cartesianMeshGenerator::mapMeshToSurface()
         }
     }
     mapper.mapCornersAndEdges();
+    surfaceProjectionLineage("afterMapCornersAndEdges");
+
     mapper.setTripleJunctionCornerFix(false);
 
     //- constrained surface smoothing: redistribute single-patch
     //- points around snapped features before untangling
     mapper.smoothSinglePatchPoints(3);
+    surfaceProjectionLineage("afterSmoothSinglePatchPoints");
 
     //- untangle surface faces
-    meshSurfaceOptimizer(mse, *octreePtr_).untangleSurface();
+    //- Keep feature-edge correction transactional during pre-BL
+    //- surface repair. Failed constrained edge remaps restore the
+    //- exact pre-smoothing position.
+    meshSurfaceOptimizer optimizer(mse, *octreePtr_);
+    optimizer.enableTransactionalFeatureOptimization();
+    optimizer.untangleSurface();
+
+    surfaceProjectionLineage("afterUntangleSurface");
 }
 
 void cartesianMeshGenerator::extractPatches()
@@ -499,26 +536,57 @@ void cartesianMeshGenerator::mapEdgesAndCorners()
         return;
     }
 
-    if( !blNoBlEdgePoints_.empty() || !blNeutralEdgePoints_.empty() )
-    {
-        meshSurfaceEdgeExtractorNonTopo
-        (
-            mesh_,
-            *octreePtr_,
-            blNoBlEdgePoints_,
-            blNoBlPointPatch_
-        );
-    }
-    else
-    {
-        meshSurfaceEdgeExtractorNonTopo(mesh_, *octreePtr_);
-    }
+    // The BL constraint sets are keyed by boundary-point index (bpI).
+    // decomposeBoundaryFaces() may change topology and point addressing,
+    // therefore pre-topology bpI values must not be consumed afterward.
+    //
+    // Stage 1: topology correction only.
+    meshSurfaceEdgeExtractorNonTopo extractor
+    (
+        mesh_,
+        *octreePtr_,
+        true
+    );
+
+    // Stage 2: re-detect constraints on the POST-topology mesh.
+    boundaryLayers blDetect(mesh_, meshDict_);
+    blDetect.detectBLNoBlTransitionEdges();
+
+    blNoBlEdgePoints_ = blDetect.blNoBlEdgePoints();
+    blNoBlPointPatch_ = blDetect.blNoBlPointPatch();
+
+    blNeutralEdgePoints_ = blDetect.blNeutralEdgePoints();
+    blNeutralPointPatch_ = blDetect.blNeutralPointPatch();
+
+    Info << "mapEdgesAndCorners: refreshed post-topology constraints:"
+         << " BL/no-BL=" << blNoBlEdgePoints_.size()
+         << " BL/neutral=" << blNeutralEdgePoints_.size()
+         << endl;
+
+    // Stage 3: remap using bpI sets generated from the SAME topology
+    // as the fresh meshSurfaceEngine inside remapBoundaryPoints().
+    extractor.remapBoundaryPoints
+    (
+        blNoBlEdgePoints_,
+        blNoBlPointPatch_,
+        blNeutralEdgePoints_,
+        blNeutralPointPatch_
+    );
 }
+
 
 void cartesianMeshGenerator::optimiseMeshSurface()
 {
     meshSurfaceEngine mse(mesh_);
-    meshSurfaceOptimizer(mse, *octreePtr_).optimizeSurface();
+
+    meshSurfaceOptimizer optimizer(mse, *octreePtr_);
+
+    // Preserve valid feature geometry transactionally during the early
+    // post-mapping surface optimization. Other optimizer call sites retain
+    // legacy behaviour until independently validated.
+    optimizer.enableTransactionalFeatureOptimization();
+
+    optimizer.optimizeSurface();
 }
 
 void cartesianMeshGenerator::detectGapPoints

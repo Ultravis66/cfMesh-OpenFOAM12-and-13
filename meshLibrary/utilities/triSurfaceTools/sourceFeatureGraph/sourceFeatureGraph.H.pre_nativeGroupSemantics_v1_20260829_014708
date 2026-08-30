@@ -1,0 +1,161 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | cfMesh: A library for mesh generation
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+-------------------------------------------------------------------------------
+License
+    This file is part of cfMesh.
+
+    cfMesh is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation; either version 3 of the License, or
+    (at your option) any later version.
+\*---------------------------------------------------------------------------*/
+
+#ifndef sourceFeatureGraph_H
+#define sourceFeatureGraph_H
+
+#include "triSurf.H"
+#include "triSurfacePartitioner.H"
+#include "DynList.H"
+
+namespace Foam
+{
+
+class sourceFeatureGraph
+{
+public:
+
+    enum hitType
+    {
+        NO_HIT = 0,
+        NATIVE_FEATURE = 1,
+        VIRTUAL_OPEN_SEAM = 2
+    };
+
+    struct featureHit
+    {
+        bool found;
+        bool admissible;
+        hitType type;
+
+        point position;
+        scalar distSq;
+
+        label patchA;
+        label patchB;
+
+        // Native triSurface edge-group ID. For virtual seams this is -1
+        // until persistent virtual components are introduced.
+        label componentId;
+
+        // Native hit: sourceEdgeA is the native feature edge and
+        // sourceEdgeB is -1.
+        //
+        // Virtual hit: sourceEdgeA/sourceEdgeB are the independently
+        // owned open source edges on the two patches.
+        label sourceEdgeA;
+        label sourceEdgeB;
+
+        // Virtual-seam diagnostics.
+        scalar sourceDistASq;
+        scalar sourceDistBSq;
+        scalar gapNorm;
+        scalar alignment;
+
+        featureHit();
+    };
+
+private:
+
+    const triSurf& surface_;
+    const triSurfacePartitioner& partitioner_;
+
+    // Open one-facet source edges indexed by owning patch.
+    List<DynList<label> > openEdgesByPatch_;
+
+    // Native cross-region source edges indexed by triSurface edge group.
+    List<DynList<label> > nativeEdgesByGroup_;
+
+    void createAddressing();
+
+    static point nearestPointOnSegment
+    (
+        const point& p,
+        const point& a,
+        const point& b
+    );
+
+    bool edgeHasPatchPair
+    (
+        const label edgeI,
+        const label patchA,
+        const label patchB
+    ) const;
+
+public:
+
+    sourceFeatureGraph
+    (
+        const triSurf& surface,
+        const triSurfacePartitioner& partitioner
+    );
+
+    ~sourceFeatureGraph();
+
+    // Find a genuine cross-region source feature belonging to patchA/B.
+    // Each edge is pair-checked even when its edge-group was returned
+    // by triSurfacePartitioner, so the query does not assume an entire
+    // group necessarily has one immutable patch pair.
+    bool findNearestNativeFeaturePoint
+    (
+        featureHit& hit,
+        const point& query,
+        const label patchA,
+        const label patchB,
+        const scalar maxDistSq
+    ) const;
+
+    // Find the closest separate open boundary on each patch and assess
+    // whether they represent a geometrically coincident virtual seam.
+    //
+    // maxGapFraction and minAlignment are geometry-policy inputs for now.
+    // They will be centralized/configured before production use.
+    bool findNearestVirtualOpenSeam
+    (
+        featureHit& hit,
+        const point& query,
+        const label patchA,
+        const label patchB,
+        const scalar maxDistSq,
+        const scalar maxGapFraction,
+        const scalar minAlignment
+    ) const;
+
+    // Unified query. Native source topology is authoritative whenever a
+    // valid native hit exists. Virtual recovery is attempted only if no
+    // admissible native hit exists.
+    bool findNearestFeaturePoint
+    (
+        featureHit& hit,
+        const point& query,
+        const label patchA,
+        const label patchB,
+        const scalar maxDistSq,
+        const scalar maxGapFraction,
+        const scalar minAlignment
+    ) const;
+
+    const List<DynList<label> >& openEdgesByPatch() const
+    {
+        return openEdgesByPatch_;
+    }
+};
+
+} // End namespace Foam
+
+#endif
+
+// ************************************************************************* //

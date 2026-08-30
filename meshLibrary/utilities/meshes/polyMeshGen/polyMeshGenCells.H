@@ -116,6 +116,13 @@ public:
         //- addressing which may be needed
         const polyMeshGenAddressing& addressingData() const;
 
+        //- True if demand-driven mesh addressing has already been created.
+        //- Does not instantiate addressing.
+        inline bool hasAddressingData() const
+        {
+            return addressingDataPtr_ != NULL;
+        }
+
         //- clear addressing data
         void clearAddressingData() const;
 

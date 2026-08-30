@@ -58,6 +58,18 @@ class meshSurfaceEngineModifier
         //- Disallow default bitwise assignment
         void operator=(const meshSurfaceEngineModifier&);
 
+        //- Raw signed volume of one cell using live mesh-point
+        //- coordinates, optionally substituting one point by a candidate.
+        //- Uses the same face-geometry/orientation convention as
+        //- polyMeshGenChecks::checkCellVolumes().
+        scalar rawCellVolumeWithPoint
+        (
+            const label cellI,
+            const label movedGlobalPtI,
+            const point& candidate,
+            const bool substituteCandidate
+        ) const;
+
 public:
     
     // Constructors
@@ -74,6 +86,18 @@ public:
 
     // Member Functions
         
+        //- Check one proposed boundary-point move against the live
+        //- volume mesh. Returns false if any currently-positive incident
+        //- cell would become non-positive. Existing bad cells may be
+        //- repaired; no relative-volume quality floor is imposed yet.
+        bool candidatePreservesPositiveCellVolumes
+        (
+            const label bpI,
+            const point& candidate,
+            bool& touchesExistingBad,
+            scalar& minPositiveRatio
+        ) const;
+
         //- relocate the selected boundary vertex
         void moveBoundaryVertexNoUpdate(const label bpI, const point& newP);
         

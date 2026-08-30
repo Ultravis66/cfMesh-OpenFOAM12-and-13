@@ -86,6 +86,12 @@ class meshSurfaceOptimizer
         //- enforce constraints
         bool enforceConstraints_;
 
+        //- Make feature-edge smoothing transactional:
+        //- rejected constrained remaps restore the pre-smoothing position.
+        //- Disabled by default so existing optimizer call sites retain
+        //- legacy behaviour unless explicitly enabled.
+        bool transactionalFeatureOptimization_;
+
         //- name of the subset contaning tangled points
         word badPointsSubsetName_;
 
@@ -298,6 +304,12 @@ public:
         //- Points which must be moved away from the required position are
         //- stored into a point subset
         void enforceConstraints(const word subsetName="badPoints");
+
+        //- Opt in to transactional feature-edge smoothing.
+        void enableTransactionalFeatureOptimization()
+        {
+            transactionalFeatureOptimization_ = true;
+        }
 
         //- constrain BL/BL junction points to preserve feature edges
         //- must be called AFTER construction since vertexType_ is already set

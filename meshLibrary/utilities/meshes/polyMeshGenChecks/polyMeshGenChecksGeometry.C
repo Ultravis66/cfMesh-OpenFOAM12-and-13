@@ -726,12 +726,38 @@ void checkFaceDotProduct
             const vector& cn = centres[nei[faceI]];
             const vector& co = centres[own[faceI]];
             const vector& s = areas[faceI];
-            // Guard against inf/nan cell centres
-            const scalar magCn = Foam::mag(cn), magCo = Foam::mag(co);
-            if( cn.x() != cn.x() || co.x() != co.x() ||
-                magCn > GREAT || magCo > GREAT )
+            // Guard against inf/nan/absurd cell centres.
+            //
+            // Components MUST be tested with cmptMag (fabs) BEFORE any vector
+            // magnitude is computed. Foam::mag(v) = sqrt(x*x+y*y+z*z), so a
+            // component near 1e+289 -- which a collapsed cell produces, the
+            // centroid being moment/volume with volume approaching zero --
+            // overflows while EVALUATING THE GUARD, raising SIGFPE before the
+            // '> GREAT' comparison is reached. Foam::mag(scalar) is fabs and
+            // never squares. sqrt(GREAT) as the per-component ceiling also
+            // keeps the mag() calls below from overflowing.
+            //
+            // Sentinel is -1.0, NOT 1.0. The consumer tests
+            // 'dDotS < cos(nonOrthWarn)'; 1.0 fails that test, so the
+            // pathological face would be silently reported as GOOD. -1.0 is
+            // below the threshold and <= SMALL, so it lands in the
+            // errorNonOrth branch and is inserted into setPtr. The checker
+            // must not crash, and must not hide the defect either.
+            const scalar cmptCeil = Foam::sqrt(GREAT);
+            bool badCentre = false;
+            for(direction cmpt=0; cmpt<vector::nComponents; ++cmpt)
             {
-                faceDotProduct[faceI] = 1.0;
+                const scalar a = cn[cmpt], b = co[cmpt];
+                if( a != a || b != b
+                 || Foam::mag(a) > cmptCeil || Foam::mag(b) > cmptCeil )
+                {
+                    badCentre = true;
+                    break;
+                }
+            }
+            if( badCentre )
+            {
+                faceDotProduct[faceI] = -1.0;
                 continue;
             }
             const vector d = cn - co;
@@ -739,9 +765,11 @@ void checkFaceDotProduct
             const scalar magS = mag(s);
 
             // Degenerate centre spacing or face area: do not let checker FPE.
+            // Same reasoning on the sentinel -- a collapsed face is a defect
+            // and must remain visible to setPtr.
             if( magD < SMALL || magS < SMALL )
             {
-                faceDotProduct[faceI] = 1.0;
+                faceDotProduct[faceI] = -1.0;
                 continue;
             }
 
@@ -1296,8 +1324,46 @@ void checkFaceSkewness
         if( changedFacePtr && !changedFacePtr->operator[](faceI) )
             continue;
 
+        // Same overflow hazard as checkFaceDotProduct: mag() squares its
+        // argument, and a collapsed cell gives a centroid component ~1e+289.
+        // findLowQualityFaces() calls this immediately after the dot-product
+        // check, so without this guard it faults on the next defective face.
+        // Component test with fabs first; sentinel is a large skewness so the
+        // face stays visible to the '>' threshold test downstream.
+        {
+            const scalar cmptCeilS = Foam::sqrt(GREAT);
+            const point& cO = centres[own[faceI]];
+            const point& cN = centres[nei[faceI]];
+            const point& fC = fCentres[faceI];
+            bool badGeom = false;
+            for(direction cmpt=0; cmpt<vector::nComponents; ++cmpt)
+            {
+                const scalar a = cO[cmpt], b = cN[cmpt], c = fC[cmpt];
+                if( a != a || b != b || c != c
+                 || Foam::mag(a) > cmptCeilS
+                 || Foam::mag(b) > cmptCeilS
+                 || Foam::mag(c) > cmptCeilS )
+                {
+                    badGeom = true;
+                    break;
+                }
+            }
+            if( badGeom )
+            {
+                faceSkewness[faceI] = GREAT;
+                continue;
+            }
+        }
+
         const scalar dOwn = mag(fCentres[faceI] - centres[own[faceI]]);
         const scalar dNei = mag(fCentres[faceI] - centres[nei[faceI]]);
+
+        // Coincident centres would divide by zero below.
+        if( (dOwn + dNei) < VSMALL )
+        {
+            faceSkewness[faceI] = GREAT;
+            continue;
+        }
 
         const point faceIntersection =
             centres[own[faceI]]*dNei/(dOwn+dNei)

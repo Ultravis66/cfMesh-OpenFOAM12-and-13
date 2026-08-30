@@ -1669,12 +1669,32 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
             }
             else
             {
+                Info << "BLGROUPCOLLISION loopI=" << patchI
+                     << " pName=" << boundaries2[pLabel].patchName()
+                     << " member=" << boundaries2[otherPatch].patchName()
+                     << " existingKey=" << patchKey_[otherPatch];
+                if( patchKey_[otherPatch] >= 0
+                 && patchKey_[otherPatch] < label(patchLabels.size()) )
+                    Info << " existingRepName="
+                         << boundaries2[patchLabels[patchKey_[otherPatch]]].patchName();
+                Info << endl;
                 treat = false;
             }
         }
 
         if( !treat )
+        {
+            Info << "BLGROUPSKIP pName=" << boundaries2[pLabel].patchName()
+                 << " group=";
+            forAll(treatPatchesWithPatch_[pLabel], gI)
+            {
+                const label m = treatPatchesWithPatch_[pLabel][gI];
+                Info << " [" << boundaries2[m].patchName()
+                     << " key=" << patchKey_[m] << "]";
+            }
+            Info << endl;
             continue;
+        }
 
         const label pKey = patchKey_[pLabel];
 

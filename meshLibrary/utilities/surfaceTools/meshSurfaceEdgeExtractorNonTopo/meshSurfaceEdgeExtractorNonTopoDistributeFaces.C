@@ -63,6 +63,18 @@ void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints()
              << protectedPoints_.size()
              << " BL/no-BL interface points" << endl;
     }
+    // BL/neutral constraints must be expressed in this mapper's fresh
+    // boundary-point addressing.
+    if( !blNeutralPoints_.empty() )
+    {
+        mapper.setBLNeutralPoints(blNeutralPoints_);
+        mapper.setBLNeutralPointPatches(blNeutralPointPatches_);
+
+        Info << "remapBoundaryPoints: protecting "
+             << blNeutralPoints_.size()
+             << " BL/neutral interface points" << endl;
+    }
+
 
     mapper.mapVerticesOntoSurfacePatches();
 
@@ -89,6 +101,25 @@ void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints()
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+
+void meshSurfaceEdgeExtractorNonTopo::remapBoundaryPoints
+(
+    const labelHashSet& protectedPoints,
+    const Map<label>& protectedPointPatches,
+    const labelHashSet& blNeutralPoints,
+    const Map<label>& blNeutralPointPatches
+)
+{
+    protectedPoints_ = protectedPoints;
+    protectedPointPatches_ = protectedPointPatches;
+
+    blNeutralPoints_ = blNeutralPoints;
+    blNeutralPointPatches_ = blNeutralPointPatches;
+
+    remapBoundaryPoints();
+}
+
 
 } // End namespace Foam
 

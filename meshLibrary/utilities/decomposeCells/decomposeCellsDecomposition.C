@@ -41,20 +41,366 @@ namespace Foam
 
 void decomposeCells::decomposeMesh(const boolList& decomposeCell)
 {
+    if( decomposeCell.size() != mesh_.cells().size() )
+    {
+        FatalErrorIn
+        (
+            "void decomposeCells::decomposeMesh(const boolList&)"
+        )   << "Incorrect decomposeCell size " << decomposeCell.size()
+            << ", mesh has " << mesh_.cells().size() << " cells"
+            << abort(FatalError);
+    }
+
+    label nRequested = 0;
+
+    forAll(decomposeCell, cellI)
+    {
+        if( decomposeCell[cellI] )
+            ++nRequested;
+    }
+
+    if( nRequested == 0 )
+    {
+        Info
+            << "DECOMPTOPPAIR requested=0"
+            << " duplicatePairs=0"
+            << " selectedCells=0"
+            << endl;
+
+        return;
+    }
+
+
+    // -----------------------------------------------------------------
+    // Phase 1:
+    // Keep the useful historical face-connectivity repair.
+    //
+    // This can split faces which would otherwise produce invalid local
+    // face connectivity, but it does not delete or renumber cells.
+    // -----------------------------------------------------------------
+
     checkFaceConnections(decomposeCell);
 
-    createPointsAndCellFaces(decomposeCell);
 
-    storeBoundaryFaces(decomposeCell);
+    if( decomposeCell.size() != mesh_.cells().size() )
+    {
+        FatalErrorIn
+        (
+            "void decomposeCells::decomposeMesh(const boolList&)"
+        )   << "Cell count changed unexpectedly during "
+            << "checkFaceConnections()"
+            << abort(FatalError);
+    }
 
-    removeDecomposedCells(decomposeCell);
+
+    const cellListPMG& cells = mesh_.cells();
+    const faceListPMG& faces = mesh_.faces();
+
+    const labelList& owner = mesh_.owner();
+    const labelList& neighbour = mesh_.neighbour();
+
+    const label nInternalFaces = mesh_.nInternalFaces();
+
+
+    // -----------------------------------------------------------------
+    // Phase 2:
+    // Preflight the historical candidate population geometrically.
+    //
+    // This does NOT mean all safe candidates will be decomposed.
+    // It merely tells the topology selector which endpoint of an
+    // offending neighbour pair is eligible for one-apex decomposition.
+    // -----------------------------------------------------------------
+
+    boolList apexSafe(decomposeCell.size(), false);
+    List<scalar> apexMargin(decomposeCell.size(), -GREAT);
+
+    label nSafeRequested = 0;
+    label nUnsafeRequested = 0;
+
+    forAll(decomposeCell, cellI)
+    {
+        if( !decomposeCell[cellI] )
+            continue;
+
+        point apex(point::zero);
+        scalar relativeMargin = -GREAT;
+
+        if
+        (
+            findValidPyramidApex
+            (
+                cellI,
+                apex,
+                relativeMargin
+            )
+        )
+        {
+            apexSafe[cellI] = true;
+            apexMargin[cellI] = relativeMargin;
+            ++nSafeRequested;
+        }
+        else
+        {
+            apexMargin[cellI] = relativeMargin;
+            ++nUnsafeRequested;
+        }
+    }
+
+
+    // -----------------------------------------------------------------
+    // Phase 3:
+    // Find the ACTUAL topology defect that requires cell decomposition:
+    //
+    //     two neighbouring cells connected through >1 internal face
+    //
+    // Process every offending pair once.  Instead of decomposing the
+    // complete broad decomposeCell mask, select ONE geometrically safe
+    // endpoint of each offending pair.
+    //
+    // If both endpoints are eligible, choose the endpoint with the
+    // larger star-kernel margin.
+    //
+    // A single selected cell can resolve several offending pairs.
+    // -----------------------------------------------------------------
+
+    boolList topologyDecomposeCell(decomposeCell.size(), false);
+
+    label nDuplicatePairs = 0;
+    label nInScopePairs = 0;
+    label nResolvedPairs = 0;
+    label nUnresolvedUnsafePairs = 0;
+    label nOutOfScopePairs = 0;
+
+    label nSelectionPrint = 0;
+    label nUnresolvedPrint = 0;
+
+
+    forAll(cells, cellI)
+    {
+        const cell& c = cells[cellI];
+
+        labelHashSet seenNeighbours;
+        labelHashSet duplicateSet;
+
+        DynList<label, 16> duplicateNeighbours;
+
+
+        forAll(c, cfI)
+        {
+            const label faceI = c[cfI];
+
+            if( faceI >= nInternalFaces )
+                continue;
+
+            label otherCell = -1;
+
+            if( owner[faceI] == cellI )
+            {
+                otherCell = neighbour[faceI];
+            }
+            else if( neighbour[faceI] == cellI )
+            {
+                otherCell = owner[faceI];
+            }
+            else
+            {
+                FatalErrorIn
+                (
+                    "void decomposeCells::decomposeMesh"
+                    "(const boolList&)"
+                )   << "Internal face " << faceI
+                    << " listed in cell " << cellI
+                    << " but owner/neighbour are "
+                    << owner[faceI] << " and "
+                    << neighbour[faceI]
+                    << abort(FatalError);
+            }
+
+
+            if( seenNeighbours.found(otherCell) )
+            {
+                if( !duplicateSet.found(otherCell) )
+                {
+                    duplicateSet.insert(otherCell);
+                    duplicateNeighbours.append(otherCell);
+                }
+            }
+            else
+            {
+                seenNeighbours.insert(otherCell);
+            }
+        }
+
+
+        forAll(duplicateNeighbours, dnI)
+        {
+            const label otherCell =
+                duplicateNeighbours[dnI];
+
+            // Process this unordered pair only once.
+            if( cellI > otherCell )
+                continue;
+
+            ++nDuplicatePairs;
+
+
+            const bool thisRequested =
+                decomposeCell[cellI];
+
+            const bool otherRequested =
+                decomposeCell[otherCell];
+
+
+            if( !thisRequested && !otherRequested )
+            {
+                ++nOutOfScopePairs;
+                continue;
+            }
+
+            ++nInScopePairs;
+
+
+            const bool thisSafe =
+                thisRequested && apexSafe[cellI];
+
+            const bool otherSafe =
+                otherRequested && apexSafe[otherCell];
+
+
+            label chosenCell = -1;
+
+
+            if( thisSafe && otherSafe )
+            {
+                // Pick the more robust one-apex decomposition.
+                if
+                (
+                    apexMargin[cellI]
+                  >= apexMargin[otherCell]
+                )
+                {
+                    chosenCell = cellI;
+                }
+                else
+                {
+                    chosenCell = otherCell;
+                }
+            }
+            else if( thisSafe )
+            {
+                chosenCell = cellI;
+            }
+            else if( otherSafe )
+            {
+                chosenCell = otherCell;
+            }
+
+
+            if( chosenCell >= 0 )
+            {
+                topologyDecomposeCell[chosenCell] = true;
+                ++nResolvedPairs;
+
+                if( nSelectionPrint < 20 )
+                {
+                    Info
+                        << "DECOMPTOPPAIR_SELECT"
+                        << " pair=("
+                        << cellI << ' ' << otherCell << ')'
+                        << " chosen=" << chosenCell
+                        << " margin="
+                        << apexMargin[chosenCell]
+                        << endl;
+
+                    ++nSelectionPrint;
+                }
+            }
+            else
+            {
+                ++nUnresolvedUnsafePairs;
+
+                if( nUnresolvedPrint < 20 )
+                {
+                    Info
+                        << "DECOMPTOPPAIR_UNRESOLVED"
+                        << " pair=("
+                        << cellI << ' ' << otherCell << ')'
+                        << " requested=("
+                        << thisRequested << ' '
+                        << otherRequested << ')'
+                        << " safe=("
+                        << thisSafe << ' '
+                        << otherSafe << ')'
+                        << " margin=("
+                        << apexMargin[cellI] << ' '
+                        << apexMargin[otherCell] << ')'
+                        << endl;
+
+                    ++nUnresolvedPrint;
+                }
+            }
+        }
+    }
+
+
+    label nSelectedCells = 0;
+
+    forAll(topologyDecomposeCell, cellI)
+    {
+        if( topologyDecomposeCell[cellI] )
+            ++nSelectedCells;
+    }
+
+
+    Info
+        << "DECOMPTOPPAIR"
+        << " requested=" << nRequested
+        << " safeRequested=" << nSafeRequested
+        << " unsafeRequested=" << nUnsafeRequested
+        << " duplicatePairs=" << nDuplicatePairs
+        << " inScopePairs=" << nInScopePairs
+        << " resolvedPairs=" << nResolvedPairs
+        << " unresolvedUnsafePairs="
+        << nUnresolvedUnsafePairs
+        << " outOfScopePairs=" << nOutOfScopePairs
+        << " selectedCells=" << nSelectedCells
+        << endl;
+
+
+    // Nothing requires safe volume decomposition.
+    if( nSelectedCells == 0 )
+    {
+        Info
+            << "DECOMPTOPPAIR: retaining all corrected "
+            << "parent polyhedra"
+            << endl;
+
+        return;
+    }
+
+
+    // -----------------------------------------------------------------
+    // Phase 4:
+    // Pyramid-decompose ONLY the minimal topology-driven cell subset.
+    //
+    // findTopVertex() independently re-runs the robust apex validation,
+    // so even this selected mask remains fail-closed.
+    // -----------------------------------------------------------------
+
+    createPointsAndCellFaces(topologyDecomposeCell);
+
+    storeBoundaryFaces(topologyDecomposeCell);
+
+    removeDecomposedCells(topologyDecomposeCell);
 
     addNewCells();
+
 
     # ifdef DEBUGDecompose
     mesh_.addressingData().checkMesh();
     # endif
 }
+
 
 void decomposeCells::checkFaceConnections(const boolList& decomposeCell)
 {

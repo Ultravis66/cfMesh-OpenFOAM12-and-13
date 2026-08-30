@@ -1,0 +1,562 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | cfMesh: A library for mesh generation
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+-------------------------------------------------------------------------------
+License
+    This file is part of cfMesh.
+
+    cfMesh is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation; either version 3 of the License, or
+    (at your option) any later version.
+\*---------------------------------------------------------------------------*/
+
+#include "sourceFeatureGraph.H"
+
+namespace Foam
+{
+
+sourceFeatureGraph::featureHit::featureHit()
+:
+    found(false),
+    admissible(false),
+    type(NO_HIT),
+    position(point::zero),
+    distSq(GREAT),
+    patchA(-1),
+    patchB(-1),
+    componentId(-1),
+    nativeGroupId(-1),
+    sourceEdgeA(-1),
+    sourceEdgeB(-1),
+    sourceDistASq(GREAT),
+    sourceDistBSq(GREAT),
+    gapNorm(GREAT),
+    alignment(0)
+{}
+
+
+point sourceFeatureGraph::nearestPointOnSegment
+(
+    const point& p,
+    const point& a,
+    const point& b
+)
+{
+    const vector d = b-a;
+    const scalar dSq = magSqr(d);
+
+    if( dSq < VSMALL )
+        return a;
+
+    scalar t = ((p-a) & d)/(dSq + VSMALL);
+
+    t = Foam::max
+    (
+        scalar(0),
+        Foam::min(scalar(1), t)
+    );
+
+    return a + t*d;
+}
+
+
+bool sourceFeatureGraph::edgeHasPatchPair
+(
+    const label edgeI,
+    const label patchA,
+    const label patchB
+) const
+{
+    const VRWGraph& edgeFacets = surface_.edgeFacets();
+
+    if( edgeI < 0 || edgeI >= edgeFacets.size() )
+        return false;
+
+    DynList<label> patches;
+
+    forAllRow(edgeFacets, edgeI, efI)
+    {
+        const label fI = edgeFacets(edgeI, efI);
+
+        if( fI < 0 || fI >= surface_.size() )
+            continue;
+
+        patches.appendIfNotIn(surface_[fI].region());
+    }
+
+    if( patches.size() != 2 )
+        return false;
+
+    return
+    (
+        (patches[0] == patchA && patches[1] == patchB) ||
+        (patches[0] == patchB && patches[1] == patchA)
+    );
+}
+
+
+void sourceFeatureGraph::createAddressing()
+{
+    const VRWGraph& edgeFacets = surface_.edgeFacets();
+    const labelList& edgeGroups = partitioner_.edgeGroups();
+
+    const label nPatches = surface_.patches().size();
+
+    openEdgesByPatch_.clear();
+    openEdgesByPatch_.setSize(nPatches);
+
+    label nGroups = 0;
+
+    forAll(edgeGroups, eI)
+    {
+        if( edgeGroups[eI] >= 0 )
+        {
+            nGroups = Foam::max
+            (
+                nGroups,
+                edgeGroups[eI] + 1
+            );
+        }
+    }
+
+    nativeEdgesByGroup_.clear();
+    nativeEdgesByGroup_.setSize(nGroups);
+
+    forAll(edgeFacets, eI)
+    {
+        const label groupI =
+            (eI < edgeGroups.size()) ? edgeGroups[eI] : -1;
+
+        if( groupI >= 0 && groupI < nGroups )
+            nativeEdgesByGroup_[groupI].append(eI);
+
+        if( edgeFacets.sizeOfRow(eI) != 1 )
+            continue;
+
+        const label fI = edgeFacets(eI, 0);
+
+        if( fI < 0 || fI >= surface_.size() )
+            continue;
+
+        const label patchI = surface_[fI].region();
+
+        if( patchI < 0 || patchI >= nPatches )
+            continue;
+
+        openEdgesByPatch_[patchI].append(eI);
+    }
+
+    label nOpen = 0;
+    label nNative = 0;
+
+    forAll(openEdgesByPatch_, patchI)
+        nOpen += openEdgesByPatch_[patchI].size();
+
+    forAll(nativeEdgesByGroup_, groupI)
+        nNative += nativeEdgesByGroup_[groupI].size();
+
+    Info
+        << "[SOURCE_FEATURE_GRAPH]"
+        << " patches=" << nPatches
+        << " nativeGroups=" << nGroups
+        << " nativeFeatureEdges=" << nNative
+        << " openEdges=" << nOpen
+        << endl;
+}
+
+
+sourceFeatureGraph::sourceFeatureGraph
+(
+    const triSurf& surface,
+    const triSurfacePartitioner& partitioner
+)
+:
+    surface_(surface),
+    partitioner_(partitioner),
+    openEdgesByPatch_(),
+    nativeEdgesByGroup_()
+{
+    createAddressing();
+}
+
+
+sourceFeatureGraph::~sourceFeatureGraph()
+{}
+
+
+bool sourceFeatureGraph::findNearestNativeFeaturePoint
+(
+    featureHit& hit,
+    const point& query,
+    const label patchA,
+    const label patchB,
+    const scalar maxDistSq
+) const
+{
+    hit = featureHit();
+
+    hit.patchA = Foam::min(patchA, patchB);
+    hit.patchB = Foam::max(patchA, patchB);
+
+    if
+    (
+        patchA < 0 ||
+        patchB < 0 ||
+        patchA == patchB
+    )
+    {
+        return false;
+    }
+
+    DynList<label> groups;
+
+    partitioner_.edgeGroupsSharedByPatches
+    (
+        patchA,
+        patchB,
+        groups
+    );
+
+    const edgeLongList& edges = surface_.edges();
+    const pointField& points = surface_.points();
+
+    scalar bestDistSq = GREAT;
+    label bestEdge = -1;
+    label bestGroup = -1;
+    point bestPoint(query);
+
+    forAll(groups, gi)
+    {
+        const label groupI = groups[gi];
+
+        if
+        (
+            groupI < 0 ||
+            groupI >= nativeEdgesByGroup_.size()
+        )
+        {
+            continue;
+        }
+
+        const DynList<label>& groupEdges =
+            nativeEdgesByGroup_[groupI];
+
+        forAll(groupEdges, geI)
+        {
+            const label edgeI = groupEdges[geI];
+
+            if
+            (
+                !edgeHasPatchPair
+                (
+                    edgeI,
+                    patchA,
+                    patchB
+                )
+            )
+            {
+                continue;
+            }
+
+            const edge& e = edges[edgeI];
+
+            const point q =
+                nearestPointOnSegment
+                (
+                    query,
+                    points[e.start()],
+                    points[e.end()]
+                );
+
+            const scalar dSq = magSqr(q-query);
+
+            if( dSq < bestDistSq )
+            {
+                bestDistSq = dSq;
+                bestEdge = edgeI;
+                bestGroup = groupI;
+                bestPoint = q;
+            }
+        }
+    }
+
+    if( bestEdge < 0 )
+        return false;
+
+    hit.found = true;
+    hit.admissible =
+        maxDistSq <= VSMALL ||
+        bestDistSq <= maxDistSq;
+
+    hit.type = NATIVE_FEATURE;
+    hit.position = bestPoint;
+    hit.distSq = bestDistSq;
+    // triSurfacePartitioner edgeGroup is a useful coarse native
+    // connectivity identifier, but is not guaranteed to preserve one
+    // immutable patch pair. Do not expose it as persistent componentId.
+    hit.componentId = -1;
+    hit.nativeGroupId = bestGroup;
+    hit.sourceEdgeA = bestEdge;
+
+    return hit.admissible;
+}
+
+
+bool sourceFeatureGraph::findNearestVirtualOpenSeam
+(
+    featureHit& hit,
+    const point& query,
+    const label patchA,
+    const label patchB,
+    const scalar maxDistSq,
+    const scalar maxGapFraction,
+    const scalar minAlignment
+) const
+{
+    hit = featureHit();
+
+    hit.patchA = Foam::min(patchA, patchB);
+    hit.patchB = Foam::max(patchA, patchB);
+
+    if
+    (
+        patchA < 0 ||
+        patchB < 0 ||
+        patchA == patchB ||
+        patchA >= openEdgesByPatch_.size() ||
+        patchB >= openEdgesByPatch_.size()
+    )
+    {
+        return false;
+    }
+
+    const DynList<label>& openA =
+        openEdgesByPatch_[patchA];
+
+    const DynList<label>& openB =
+        openEdgesByPatch_[patchB];
+
+    if( openA.size() == 0 || openB.size() == 0 )
+        return false;
+
+    const edgeLongList& edges = surface_.edges();
+    const pointField& points = surface_.points();
+
+    bool foundA = false;
+    bool foundB = false;
+
+    scalar bestASq = GREAT;
+    scalar bestBSq = GREAT;
+
+    point qA(query);
+    point qB(query);
+
+    vector dirA(vector::zero);
+    vector dirB(vector::zero);
+
+    scalar lenA = 0;
+    scalar lenB = 0;
+
+    label edgeA = -1;
+    label edgeB = -1;
+
+    forAll(openA, oi)
+    {
+        const label edgeI = openA[oi];
+        const edge& e = edges[edgeI];
+
+        const point& a = points[e.start()];
+        const point& b = points[e.end()];
+
+        const vector d = b-a;
+        const scalar len = Foam::sqrt(magSqr(d));
+
+        if( len < ROOTVSMALL )
+            continue;
+
+        const point q =
+            nearestPointOnSegment(query, a, b);
+
+        const scalar dSq = magSqr(q-query);
+
+        if( dSq < bestASq )
+        {
+            foundA = true;
+            bestASq = dSq;
+            qA = q;
+            dirA = d;
+            lenA = len;
+            edgeA = edgeI;
+        }
+    }
+
+    forAll(openB, oi)
+    {
+        const label edgeI = openB[oi];
+        const edge& e = edges[edgeI];
+
+        const point& a = points[e.start()];
+        const point& b = points[e.end()];
+
+        const vector d = b-a;
+        const scalar len = Foam::sqrt(magSqr(d));
+
+        if( len < ROOTVSMALL )
+            continue;
+
+        const point q =
+            nearestPointOnSegment(query, a, b);
+
+        const scalar dSq = magSqr(q-query);
+
+        if( dSq < bestBSq )
+        {
+            foundB = true;
+            bestBSq = dSq;
+            qB = q;
+            dirB = d;
+            lenB = len;
+            edgeB = edgeI;
+        }
+    }
+
+    if( !foundA || !foundB )
+        return false;
+
+    const scalar minLen = Foam::min(lenA, lenB);
+
+    if( minLen < ROOTVSMALL )
+        return false;
+
+    const scalar gap =
+        Foam::sqrt(magSqr(qA-qB));
+
+    const scalar gapNorm =
+        gap/(minLen + VSMALL);
+
+    const scalar alignment =
+        Foam::min
+        (
+            scalar(1),
+            Foam::mag(dirA & dirB) /
+            (lenA*lenB + VSMALL)
+        );
+
+    const point virtualPoint =
+        0.5*(qA+qB);
+
+    hit.found = true;
+    hit.type = VIRTUAL_OPEN_SEAM;
+    hit.position = virtualPoint;
+    hit.distSq = magSqr(virtualPoint-query);
+    hit.componentId = -1;
+    hit.sourceEdgeA = edgeA;
+    hit.sourceEdgeB = edgeB;
+    hit.sourceDistASq = bestASq;
+    hit.sourceDistBSq = bestBSq;
+    hit.gapNorm = gapNorm;
+    hit.alignment = alignment;
+
+    // v0 virtual-seam safeguard. Both independently-owned
+    // source edges must be locally near this query point.
+    // This matches the point-conditioned diagnostic which
+    // established the split-seam mechanism. The 0.25 value
+    // is diagnostic policy for now, not a final production
+    // tolerance.
+    const scalar sourceDistANorm =
+        Foam::sqrt(bestASq)/(lenA + VSMALL);
+
+    const scalar sourceDistBNorm =
+        Foam::sqrt(bestBSq)/(lenB + VSMALL);
+
+    const bool withinSourceScale =
+        Foam::max(sourceDistANorm, sourceDistBNorm)
+        <= scalar(0.25);
+
+    // Apply the mapper distance limit to the canonical feature target,
+    // matching native feature-target semantics. qA and qB are support
+    // projections used to establish the virtual seam; they are not the
+    // point to which the mesh vertex will be mapped.
+    const bool withinDistance =
+    (
+        maxDistSq <= VSMALL ||
+        hit.distSq <= maxDistSq
+    );
+
+    hit.admissible =
+        withinDistance &&
+        withinSourceScale &&
+        gapNorm <= maxGapFraction &&
+        alignment >= minAlignment;
+
+    return hit.admissible;
+}
+
+
+bool sourceFeatureGraph::findNearestFeaturePoint
+(
+    featureHit& hit,
+    const point& query,
+    const label patchA,
+    const label patchB,
+    const scalar maxDistSq,
+    const scalar maxGapFraction,
+    const scalar minAlignment
+) const
+{
+    featureHit nativeHit;
+
+    if
+    (
+        findNearestNativeFeaturePoint
+        (
+            nativeHit,
+            query,
+            patchA,
+            patchB,
+            maxDistSq
+        )
+    )
+    {
+        hit = nativeHit;
+        return true;
+    }
+
+    featureHit virtualHit;
+
+    if
+    (
+        findNearestVirtualOpenSeam
+        (
+            virtualHit,
+            query,
+            patchA,
+            patchB,
+            maxDistSq,
+            maxGapFraction,
+            minAlignment
+        )
+    )
+    {
+        hit = virtualHit;
+        return true;
+    }
+
+    // Preserve the most informative failed candidate for diagnostics.
+    if( virtualHit.found )
+        hit = virtualHit;
+    else if( nativeHit.found )
+        hit = nativeHit;
+    else
+        hit = featureHit();
+
+    return false;
+}
+
+} // End namespace Foam
+
+// ************************************************************************* //

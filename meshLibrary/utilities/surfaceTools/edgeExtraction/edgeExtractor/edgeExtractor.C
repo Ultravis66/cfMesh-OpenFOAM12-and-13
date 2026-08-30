@@ -2162,6 +2162,12 @@ bool edgeExtractor::checkFacePatchesGeometry()
 
         //- untangle the surface
         meshSurfaceOptimizer mso(mPart, meshOctree_);
+
+        // Feature-edge moves made while correcting inverted surface
+        // patches must remain on their geometric feature curves.
+        // Failed constrained remaps restore the pre-smoothing position.
+        mso.enableTransactionalFeatureOptimization();
+
         mso.untangleSurface(activePointLabel, 1);
 
         nCorrected = 0;

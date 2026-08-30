@@ -3310,6 +3310,90 @@ void boundaryLayers::addLayerForAllPatches()
         //- create bnd layer vertices
         createNewVertices(treatedPatches);
 
+        //- ---- BLVERTEX_AUDIT (report-only): top-vertex existence per patch ----
+        //- Column 2 of requested -> topVertexExists -> cellExists.
+        //- regularComplete: every base point has newLabelForVertex_>=0 (valid).
+        //- otherDependent : >=1 point lacked a regular top but had otherVrts_ state.
+        //- missing        : >=1 point had neither, or an out-of-range label.
+        //- coincident     : all regular tops exist but are exactly coincident (newP==p).
+        {
+            const meshSurfaceEngine& mseVA = surfaceEngine();
+            const faceList::subList& bFacesVA = mseVA.boundaryFaces();
+            const labelList& fPatchVA = mseVA.boundaryFacePatches();
+            const pointFieldPMG& ptsVA = mesh_.points();
+            const PtrList<boundaryPatch>& bndVA = mesh_.boundaries();
+            const label nPVA = bndVA.size();
+            labelList vaTot(nPVA,0), vaRegular(nPVA,0), vaOther(nPVA,0),
+                      vaMissing(nPVA,0), vaCoincident(nPVA,0);
+            forAll(bFacesVA, bfI)
+            {
+                const label pat = fPatchVA[bfI];
+                if( pat < 0 || pat >= nPVA ) continue;
+                ++vaTot[pat];
+                const face& f = bFacesVA[bfI];
+                bool allHaveSomeTop = true;
+                bool allHaveRegularTop = true;
+                bool usesOther = false;
+                bool allCoincident = true;
+                forAll(f, fpI)
+                {
+                    const label pointI = f[fpI];
+                    label topI = -1;
+                    if( pointI >= 0 && pointI < label(newLabelForVertex_.size()) )
+                        topI = newLabelForVertex_[pointI];
+                    const bool hasOther =
+                        ( otherVrts_.find(pointI) != otherVrts_.end() );
+                    if( topI < 0 )
+                    {
+                        allHaveRegularTop = false;
+                        if( hasOther )
+                        {
+                            usesOther = true;
+                            allCoincident = false;
+                        }
+                        else
+                        {
+                            allHaveSomeTop = false;
+                            allCoincident = false;
+                            break;
+                        }
+                    }
+                    else if( topI < label(ptsVA.size()) )
+                    {
+                        const scalar mv = mag(ptsVA[topI] - ptsVA[pointI]);
+                        if( mv > 100.0*VSMALL ) allCoincident = false;
+                    }
+                    else
+                    {
+                        //- mapping exists but target label is out of range: invalid
+                        allHaveSomeTop = false;
+                        allHaveRegularTop = false;
+                        allCoincident = false;
+                        break;
+                    }
+                }
+                if( !allHaveSomeTop ) { ++vaMissing[pat]; }
+                else if( allHaveRegularTop )
+                {
+                    ++vaRegular[pat];
+                    if( allCoincident ) ++vaCoincident[pat];
+                }
+                else if( usesOther ) { ++vaOther[pat]; }
+                else { ++vaMissing[pat]; }
+            }
+            Info << "BLVERTEX_AUDIT (top-vertex existence, post-createNewVertices)" << endl;
+            forAll(bndVA, p)
+            {
+                Info << "  " << bndVA[p].patchName()
+                     << ": totalFaces=" << vaTot[p]
+                     << " regularCompleteFaces=" << vaRegular[p]
+                     << " otherDependentFaces=" << vaOther[p]
+                     << " missingTopFaces=" << vaMissing[p]
+                     << " coincidentFaces=" << vaCoincident[p] << endl;
+            }
+        }
+        //- ---- end BLVERTEX_AUDIT ----
+
         //- create bnd layer cells
         createLayerCells(treatedPatches);
 

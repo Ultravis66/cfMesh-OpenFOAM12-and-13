@@ -503,6 +503,14 @@ void correctEdgesBetweenPatches::patchCorrection()
     face triF(3);
 
     label nDecomposedFaces(0);
+
+    // Diagnostic only: quantify whether face::centre() is a
+    // geometrically admissible fan apex for >4-sided patch faces.
+    label nFanApex = 0;
+    label nFanApexOutsideAabb = 0;
+    label worstFanApexBfI = -1;
+    scalar maxFanApexOffsetRatio = -1.0;
+
     forAll(bFaces, bfI)
     {
         const face& bf = bFaces[bfI];
@@ -526,16 +534,153 @@ void correctEdgesBetweenPatches::patchCorrection()
 
                     //- decompose into triangles
                     const point p = bf.centre(mesh_.points());
+
+                    // Diagnostic only: compare the OpenFOAM
+                    // area-weighted face centre with the raw vertex
+                    // cloud of this polygon.
+                    point pAvg = point::zero;
+
+                    scalar minX = GREAT;
+                    scalar minY = GREAT;
+                    scalar minZ = GREAT;
+                    scalar maxX = -GREAT;
+                    scalar maxY = -GREAT;
+                    scalar maxZ = -GREAT;
+                    scalar maxEdgeLen = 0.0;
+
+                    forAll(bf, fpI)
+                    {
+                        const point& fp =
+                            mesh_.points()[bf[fpI]];
+
+                        pAvg += fp;
+
+                        minX = Foam::min(minX, fp.x());
+                        minY = Foam::min(minY, fp.y());
+                        minZ = Foam::min(minZ, fp.z());
+
+                        maxX = Foam::max(maxX, fp.x());
+                        maxY = Foam::max(maxY, fp.y());
+                        maxZ = Foam::max(maxZ, fp.z());
+
+                        const point& fpNext =
+                            mesh_.points()
+                            [
+                                bf[bf.fcIndex(fpI)]
+                            ];
+
+                        maxEdgeLen =
+                            Foam::max
+                            (
+                                maxEdgeLen,
+                                mag(fpNext - fp)
+                            );
+                    }
+
+                    pAvg /= scalar(bf.size());
+
+                    const point aabbMin(minX, minY, minZ);
+                    const point aabbMax(maxX, maxY, maxZ);
+
+                    const scalar aabbDiag =
+                        mag(aabbMax - aabbMin);
+
+                    const scalar localScale =
+                        Foam::max
+                        (
+                            Foam::max(aabbDiag, maxEdgeLen),
+                            VSMALL
+                        );
+
+                    const scalar centreOffset =
+                        mag(p - pAvg);
+
+                    const scalar centreOffsetRatio =
+                        centreOffset/localScale;
+
+                    const bool outsideAabb =
+                    (
+                        p.x() < minX - SMALL ||
+                        p.x() > maxX + SMALL ||
+                        p.y() < minY - SMALL ||
+                        p.y() > maxY + SMALL ||
+                        p.z() < minZ - SMALL ||
+                        p.z() > maxZ + SMALL
+                    );
+
+                    ++nFanApex;
+
+                    if( outsideAabb )
+                    {
+                        ++nFanApexOutsideAabb;
+                    }
+
+                    if
+                    (
+                        centreOffsetRatio >
+                        maxFanApexOffsetRatio
+                    )
+                    {
+                        maxFanApexOffsetRatio =
+                            centreOffsetRatio;
+
+                        worstFanApexBfI = bfI;
+                    }
+
+                    if
+                    (
+                        outsideAabb ||
+                        centreOffsetRatio > 0.25
+                    )
+                    {
+                        Info
+                            << "[PATCH_APEX_DIAG]"
+                            << " bfI=" << bfI
+                            << " owner="
+                            << boundaryFaceOwners[bfI]
+                            << " patch="
+                            << facePatches[bfI]
+                            << " nVerts=" << bf.size()
+                            << " pAvg=" << pAvg
+                            << " pCtr=" << p
+                            << " aabbMin=" << aabbMin
+                            << " aabbMax=" << aabbMax
+                            << " aabbDiag=" << aabbDiag
+                            << " maxEdgeLen=" << maxEdgeLen
+                            << " centreOffset="
+                            << centreOffset
+                            << " offsetRatio="
+                            << centreOffsetRatio
+                            << " outsideAabb="
+                            << outsideAabb
+                            << endl;
+                    }
+
                     triF[2] = mesh_.points().size();
-                    mesh_.points().append(p);
-                    // GeomFix diagnostic: record new centroid point
+
+                    // Use the arithmetic vertex mean as the actual
+                    // fan apex. Unlike face::centre(), this remains
+                    // bounded by the local vertex cloud and cannot
+                    // fly hundreds of local face lengths away when
+                    // projected triangle-area contributions cancel.
+                    mesh_.points().append(pAvg);
+
+                    // Record the new apex for the existing targeted
+                    // post-topology surface projection.
                     newPatchCorrectionPoints_.append(triF[2]);
+
                     static label nCentroid = 0;
                     if( ++nCentroid <= 10 )
-                        Info << "[GeomFix] new centroid point "
-                             << triF[2] << " at " << p
-                             << " patch=" << facePatches[bfI]
-                             << endl;
+                    {
+                        Info
+                            << "[GeomFix] new centroid point "
+                            << triF[2]
+                            << " at " << pAvg
+                            << " legacyFaceCentre=" << p
+                            << " patch="
+                            << facePatches[bfI]
+                            << endl;
+                    }
 
                     forAll(bf, j)
                     {
@@ -584,6 +729,14 @@ void correctEdgesBetweenPatches::patchCorrection()
             newBoundaryPatches_.append(facePatches[bfI]);
         }
     }
+
+    Info
+        << "[PATCH_APEX_SUMMARY]"
+        << " fanApexCount=" << nFanApex
+        << " outsideAabb=" << nFanApexOutsideAabb
+        << " maxOffsetRatio=" << maxFanApexOffsetRatio
+        << " worstBfI=" << worstFanApexBfI
+        << endl;
 
     reduce(decompose_, maxOp<bool>());
 

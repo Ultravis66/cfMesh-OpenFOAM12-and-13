@@ -27,6 +27,7 @@ Description
 
 #include "demandDrivenData.H"
 #include "meshSurfaceEngineModifier.H"
+#include "polyMeshGenAddressing.H"
 #include "meshSurfaceMapper.H"
 #include "meshSurfacePartitioner.H"
 #include "meshOctree.H"
@@ -230,11 +231,6 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
     LongList<parMapperHelper> parallelBndNodes;
 
-    // Store old positions for validity-check revert
-    pointField oldPositions(nodesToMap.size());
-    forAll(nodesToMap, i)
-        oldPositions[i] = points[boundaryPoints[nodesToMap[i]]];
-
     // Build filtered node list excluding BL/no-BL protected points.
     // Protected points (boundary-point indices) must not be moved by
     // generic nearest-surface projection -- they are constrained to
@@ -260,12 +256,28 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
              << " protected BL/no-BL interface points" << endl;
     }
 
+    // Store old positions in EXACTLY the same index space as filteredNodes.
+    //
+    // The previous implementation populated oldPositions from nodesToMap
+    // before protected nodes were removed. After the first filtered entry,
+    // oldPositions[i] no longer belonged to filteredNodes[i], so a failed
+    // move could restore one boundary point to ANOTHER point's coordinate.
+    pointField oldPositions(filteredNodes.size());
+    forAll(filteredNodes, i)
+        oldPositions[i] = points[boundaryPoints[filteredNodes[i]]];
+
     // Patch-constrained projection: multi-patch points (npp > 1) get
     // their unconstrained nearest-surface result validated against their
     // patch membership set. If the returned patch is not in the set,
     // re-project into each valid patch region and keep the closest hit.
     // Single-patch interior points use the fast unconstrained path unchanged.
     const VRWGraph& ppLocal = meshPartitioner().pointPatches();
+
+    // Compute CAD targets first. In serial mode this phase performs
+    // no point motion; targets are committed transactionally below.
+    pointField projectedPoints(filteredNodes.size());
+    scalarList projectedDistSq(filteredNodes.size(), GREAT);
+    labelList projectedPatch(filteredNodes.size(), -1);
 
     # ifdef USE_OMP
     const label size = filteredNodes.size();
@@ -302,20 +314,28 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
             for( label ppI = 0; ppI < npp; ++ppI )
             {
                 if( ppLocal(bpI, ppI) == patch )
-                { patchValid = true; break; }
+                {
+                    patchValid = true;
+                    break;
+                }
             }
+
             if( !patchValid )
             {
-                scalar bestDsq   = GREAT;
-                point  bestPt    = mapPoint;
-                label  bestPatch = patch;
-                label  bestNt    = nt;
+                scalar bestDsq = GREAT;
+                point bestPt = mapPoint;
+                label bestPatch = patch;
+                label bestNt = nt;
+
                 for( label ppI = 0; ppI < npp; ++ppI )
                 {
-                    point  rPt;
+                    point rPt;
                     scalar rDsq;
-                    label  rNt;
-                    const label region = ppLocal(bpI, ppI);
+                    label rNt;
+
+                    const label region =
+                        ppLocal(bpI, ppI);
+
                     meshOctree_.findNearestSurfacePointInRegion
                     (
                         rPt,
@@ -324,51 +344,160 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
                         region,
                         points[boundaryPoints[bpI]]
                     );
-                    if( (rDsq < bestDsq - SMALL) ||
-                        (Foam::mag(rDsq - bestDsq) <= SMALL && region < bestPatch) )
+
+                    if
+                    (
+                        (rDsq < bestDsq - SMALL) ||
+                        (
+                            Foam::mag(rDsq - bestDsq) <= SMALL &&
+                            region < bestPatch
+                        )
+                    )
                     {
-                        bestDsq   = rDsq;
-                        bestPt    = rPt;
+                        bestDsq = rDsq;
+                        bestPt = rPt;
                         bestPatch = region;
-                        bestNt    = rNt;
+                        bestNt = rNt;
                     }
                 }
+
                 if( bestDsq < GREAT/10 )
                 {
                     mapPoint = bestPt;
-                    dSq      = bestDsq;
-                    patch    = bestPatch;
-                    nt       = bestNt;
+                    dSq = bestDsq;
+                    patch = bestPatch;
+                    nt = bestNt;
                 }
             }
         }
 
-        surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
+        projectedPoints[i] = mapPoint;
+        projectedDistSq[i] = dSq;
+        projectedPatch[i] = patch;
 
-        if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
+        // Preserve legacy MPI behaviour for this first experiment.
+        // Serial runs defer ALL movement to the volume transaction below.
+        if( Pstream::parRun() )
         {
-            # ifdef USE_OMP
-            # pragma omp critical
-            # endif
-            parallelBndNodes.append
+            surfaceModifier.moveBoundaryVertexNoUpdate
             (
-                parMapperHelper
-                (
-                    mapPoint,
-                    dSq,
-                    bpI,
-                    patch
-                )
+                bpI,
+                mapPoint
             );
+
+            if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
+            {
+                # ifdef USE_OMP
+                # pragma omp critical
+                # endif
+                parallelBndNodes.append
+                (
+                    parMapperHelper
+                    (
+                        mapPoint,
+                        dSq,
+                        bpI,
+                        patch
+                    )
+                );
+            }
         }
 
         # ifdef DEBUGMapping
-        Info << "Mapped point " << points[boundaryPoints[bpI]] << endl;
+        Info << "Computed mapping target " << mapPoint << endl;
         # endif
     }
 
-    //- make sure that the points are at the nearest location on the surface
-    mapToSmallestDistance(parallelBndNodes);
+    boolList transactionAccepted(filteredNodes.size(), false);
+
+    // rejectedBpI_ represents this call only.
+    rejectedBpI_.clear();
+
+    if( !Pstream::parRun() )
+    {
+        label nAccepted = 0;
+        label nVolumeRejected = 0;
+        label nTouchingExistingBad = 0;
+
+        scalar minAcceptedPositiveRatio = GREAT;
+
+        // Deterministic serial transaction:
+        // each proposal sees all previously accepted live point motion.
+        forAll(filteredNodes, i)
+        {
+            const label bpI = filteredNodes[i];
+
+            bool touchesExistingBad = false;
+            scalar minPositiveRatio = GREAT;
+
+            const bool preservesVolume =
+                surfaceModifier.candidatePreservesPositiveCellVolumes
+                (
+                    bpI,
+                    projectedPoints[i],
+                    touchesExistingBad,
+                    minPositiveRatio
+                );
+
+            if( touchesExistingBad )
+            {
+                ++nTouchingExistingBad;
+            }
+
+            if( !preservesVolume )
+            {
+                ++nVolumeRejected;
+                rejectedBpI_.append(bpI);
+                continue;
+            }
+
+            surfaceModifier.moveBoundaryVertexNoUpdate
+            (
+                bpI,
+                projectedPoints[i]
+            );
+
+            transactionAccepted[i] = true;
+            ++nAccepted;
+
+            if( minPositiveRatio < GREAT )
+            {
+                minAcceptedPositiveRatio =
+                    Foam::min
+                    (
+                        minAcceptedPositiveRatio,
+                        minPositiveRatio
+                    );
+            }
+        }
+
+        Info
+            << "[SURFACE_VOLUME_TRANSACTION]"
+            << " input=" << filteredNodes.size()
+            << " accepted=" << nAccepted
+            << " rejectedCreatingNeg=" << nVolumeRejected
+            << " touchingExistingBad=" << nTouchingExistingBad
+            << " minAcceptedPositiveRatio="
+            <<
+            (
+                minAcceptedPositiveRatio < GREAT
+              ? minAcceptedPositiveRatio
+              : scalar(-1)
+            )
+            << endl;
+    }
+    else
+    {
+        // Legacy parallel path has already moved the points above.
+        forAll(transactionAccepted, i)
+        {
+            transactionAccepted[i] = true;
+        }
+
+        //- make sure that the points are at the nearest location
+        //- on the surface across processors
+        mapToSmallestDistance(parallelBndNodes);
+    }
 
     // Validity check: serial pass after all moves complete
     // surfaceEngine_ data accessed outside OMP - thread safe
@@ -380,13 +509,30 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
         const cellListPMG& cells = surfaceEngine_.mesh().cells();
         const faceListPMG& allFaces = surfaceEngine_.mesh().faces();
         label nInvalid = 0;
-        rejectedBpI_.clear();
+        label nRollbackAccepted = 0;
+        label nRollbackBlockedVolume = 0;
+        label nRollbackTouchingExistingBad = 0;
+        scalar minRollbackAcceptedPositiveRatio = GREAT;
+        // rejectedBpI_ was cleared before the transaction above.
+        // Preserve volume-gate rejects and append any additional
+        // failures found by this legacy secondary validity check.
         // Only evaluate points that were actually moved.
         // nodesToMap includes protected/unmoved points which can have
         // pre-existing invalid faces -- flagging them seeds repairRejectedPoints()
         // with a large 2-ring neighborhood near corners/junctions.
         forAll(filteredNodes, i)
         {
+            // In serial transaction mode, volume-rejected points were
+            // never moved and must not be re-added/re-restored here.
+            if
+            (
+                !Pstream::parRun() &&
+                !transactionAccepted[i]
+            )
+            {
+                continue;
+            }
+
             const label bpI = filteredNodes[i];
             bool validMove = true;
             forAllRow(pFaces, bpI, pfI)
@@ -452,15 +598,72 @@ void meshSurfaceMapper::mapVerticesOntoSurface(const labelLongList& nodesToMap)
                 }
                 else
                 {
-                    surfaceModifier.moveBoundaryVertexNoUpdate
-                        (bpI, oldPositions[i]);
+                    bool rollbackTouchesExistingBad = false;
+                    scalar rollbackMinPositiveRatio = GREAT;
+
+                    const bool rollbackPreservesVolume =
+                        surfaceModifier.candidatePreservesPositiveCellVolumes
+                        (
+                            bpI,
+                            oldPositions[i],
+                            rollbackTouchesExistingBad,
+                            rollbackMinPositiveRatio
+                        );
+
+                    if( rollbackTouchesExistingBad )
+                    {
+                        ++nRollbackTouchingExistingBad;
+                    }
+
+                    if( rollbackPreservesVolume )
+                    {
+                        surfaceModifier.moveBoundaryVertexNoUpdate
+                        (
+                            bpI,
+                            oldPositions[i]
+                        );
+
+                        ++nRollbackAccepted;
+
+                        if( rollbackMinPositiveRatio < GREAT )
+                        {
+                            minRollbackAcceptedPositiveRatio =
+                                Foam::min
+                                (
+                                    minRollbackAcceptedPositiveRatio,
+                                    rollbackMinPositiveRatio
+                                );
+                        }
+                    }
+                    else
+                    {
+                        // The old snapshot is stale with respect to the
+                        // current sequentially-updated neighbourhood.
+                        // Retain the already volume-safe live candidate.
+                        ++nRollbackBlockedVolume;
+                    }
                 }
                 ++nInvalid;
             }
         }
         if( nInvalid > 0 )
-            Info << "[ValidityCheck] reverted " << nInvalid
-                 << " invalid surface moves" << endl;
+        {
+            Info
+                << "[VALIDITY_ROLLBACK_TRANSACTION]"
+                << " invalid=" << nInvalid
+                << " rollbackAccepted=" << nRollbackAccepted
+                << " rollbackBlockedVolume=" << nRollbackBlockedVolume
+                << " rollbackTouchingExistingBad="
+                << nRollbackTouchingExistingBad
+                << " minRollbackAcceptedPositiveRatio="
+                <<
+                (
+                    minRollbackAcceptedPositiveRatio < GREAT
+                  ? minRollbackAcceptedPositiveRatio
+                  : scalar(-1)
+                )
+                << endl;
+        }
 
         // Write validity-rejected points to VTK (targeted diagnostic)
         // Gate: only write when processing full boundary (nodesToMap
@@ -899,6 +1102,12 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
     meshSurfaceEngineModifier surfaceModifier(surfaceEngine_);
     LongList<parMapperHelper> parallelBndNodes;
 
+    // Ordinary patch-constrained surface targets are calculated first.
+    // In serial mode they are committed later through the common live
+    // signed-volume transaction.
+    pointField patchProjectedPoints(nodesToMap.size());
+    boolList patchProjectionCandidate(nodesToMap.size(), false);
+
     # ifdef USE_OMP
     const label size = nodesToMap.size();
     # pragma omp parallel for if( size > 1000 ) shared(parallelBndNodes) \
@@ -1026,30 +1235,116 @@ void meshSurfaceMapper::mapVerticesOntoSurfacePatches
             );
         }
 
-        surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
+        patchProjectedPoints[nI] = mapPoint;
+        patchProjectionCandidate[nI] = true;
 
-        if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
+        // Preserve legacy MPI behaviour for this first transaction pass.
+        // Serial execution defers movement until the live-volume gate below.
+        if( Pstream::parRun() )
         {
-            # ifdef USE_OMP
-            # pragma omp critical
-            # endif
+            surfaceModifier.moveBoundaryVertexNoUpdate(bpI, mapPoint);
+
+            if( bpAtProcsPtr && bpAtProcsPtr->sizeOfRow(bpI) )
             {
-                parallelBndNodes.append
-                (
-                    parMapperHelper
+                # ifdef USE_OMP
+                # pragma omp critical
+                # endif
+                {
+                    parallelBndNodes.append
                     (
-                        mapPoint,
-                        dSq,
-                        bpI,
-                        -1
-                    )
-                );
+                        parMapperHelper
+                        (
+                            mapPoint,
+                            dSq,
+                            bpI,
+                            -1
+                        )
+                    );
+                }
             }
         }
 
         # ifdef DEBUGMapping
-        Info << "Mapped point " << points[boundaryPoints[bpI]] << endl;
+        Info << "Computed patch mapping target " << mapPoint << endl;
         # endif
+    }
+
+    if( !Pstream::parRun() )
+    {
+        label nCandidates = 0;
+        label nAccepted = 0;
+        label nRejectedVolumeGate = 0;
+        label nTouchingExistingBad = 0;
+
+        scalar minAcceptedPositiveRatio = GREAT;
+
+        // Deterministic serial transaction. Each candidate is evaluated
+        // against the live mesh including all earlier accepted moves.
+        forAll(nodesToMap, nI)
+        {
+            if( !patchProjectionCandidate[nI] )
+                continue;
+
+            ++nCandidates;
+
+            const label bpI = nodesToMap[nI];
+
+            bool touchesExistingBad = false;
+            scalar minPositiveRatio = GREAT;
+
+            const bool preservesVolume =
+                surfaceModifier.candidatePreservesPositiveCellVolumes
+                (
+                    bpI,
+                    patchProjectedPoints[nI],
+                    touchesExistingBad,
+                    minPositiveRatio
+                );
+
+            if( touchesExistingBad )
+            {
+                ++nTouchingExistingBad;
+            }
+
+            if( !preservesVolume )
+            {
+                ++nRejectedVolumeGate;
+                continue;
+            }
+
+            surfaceModifier.moveBoundaryVertexNoUpdate
+            (
+                bpI,
+                patchProjectedPoints[nI]
+            );
+
+            ++nAccepted;
+
+            if( minPositiveRatio < GREAT )
+            {
+                minAcceptedPositiveRatio =
+                    Foam::min
+                    (
+                        minAcceptedPositiveRatio,
+                        minPositiveRatio
+                    );
+            }
+        }
+
+        Info
+            << "[PATCH_SURFACE_VOLUME_TRANSACTION]"
+            << " candidates=" << nCandidates
+            << " accepted=" << nAccepted
+            << " rejectedVolumeGate=" << nRejectedVolumeGate
+            << " touchingExistingBad=" << nTouchingExistingBad
+            << " minAcceptedPositiveRatio="
+            <<
+            (
+                minAcceptedPositiveRatio < GREAT
+              ? minAcceptedPositiveRatio
+              : scalar(-1)
+            )
+            << endl;
     }
 
     //- map vertices at inter-processor boundaries to the nearest location
@@ -1246,99 +1541,318 @@ void meshSurfaceMapper::repairRejectedPoints()
     const labelList& bPoints      = surfaceEngine_.boundaryPoints();
     const pointFieldPMG& points   = surfaceEngine_.points();
     const VRWGraph& pointPoints   = surfaceEngine_.pointPoints();
+
     meshSurfaceEngineModifier sMod(surfaceEngine_);
 
-    // Build mapping distance for movement cap
+    // Build mapping distance for movement cap.
     labelLongList allBndPts(bPoints.size());
-    forAll(allBndPts, i) allBndPts[i] = i;
+    forAll(allBndPts, i)
+    {
+        allBndPts[i] = i;
+    }
+
     scalarList mappingDist;
     findMappingDistance(allBndPts, mappingDist);
 
-    // Expand rejected set by 2 rings
+    // Expand rejected set by 2 rings.
     labelHashSet repairSet;
-    forAll(rejectedBpI_, k) repairSet.insert(rejectedBpI_[k]);
+
+    forAll(rejectedBpI_, k)
+    {
+        repairSet.insert(rejectedBpI_[k]);
+    }
+
     labelHashSet ring1(repairSet);
+
     forAllConstIter(labelHashSet, ring1, it)
+    {
         forAllRow(pointPoints, it.key(), nI)
+        {
             repairSet.insert(pointPoints(it.key(), nI));
+        }
+    }
+
     labelHashSet ring2(repairSet);
+
     forAllConstIter(labelHashSet, ring2, it)
+    {
         forAllRow(pointPoints, it.key(), nI)
+        {
             repairSet.insert(pointPoints(it.key(), nI));
+        }
+    }
 
     Info << "repairRejectedPoints: repair neighbourhood = "
          << repairSet.size() << " points" << endl;
 
-    label nMoved = 0;
-    label nSkipped = 0;
+
+    // ------------------------------------------------------------
+    // 1-DOF repair
+    //
+    // The previous implementation repaired an edge point by projecting
+    // independently to each constituent patch and choosing the nearest
+    // accepted surface point. That does NOT preserve the intersection
+    // curve: an A|B feature point could be moved onto A OR B.
+    //
+    // Route genuine two-patch edge points through mapEdgeNodes() instead.
+    // That resolves a native/virtual source feature target and applies the
+    // existing live raw-volume transaction before committing.
+    // ------------------------------------------------------------
+
+    labelLongList edgeRepairPoints;
+
+    label nLockedSkipped = 0;
+    label nUnsupportedEdge = 0;
 
     forAllConstIter(labelHashSet, repairSet, it)
     {
         const label bpI = it.key();
 
-        // Lock corners, BL/no-BL, non-manifold
-        if( cornerPts.found(bpI) ) { ++nSkipped; continue; }
-        if( !protectedPoints_.empty() &&
-             protectedPoints_.found(bpI) ) { ++nSkipped; continue; }
-
-        const point& oldPos = points[bPoints[bpI]];
-
-        if( edgePts.found(bpI) )
+        if( cornerPts.found(bpI) )
         {
-            // TWO_PATCH_EDGE: project to nearest feature curve point
-            // Use both patches -- try each, keep minimum distance
-            if( pPatches.sizeOfRow(bpI) < 2 ) continue;
-            point bestPt = oldPos;
-            scalar bestDSq = GREAT;
-            for(label pi=0; pi<pPatches.sizeOfRow(bpI); ++pi)
-            {
-                const label patch = pPatches(bpI, pi);
-                point candidate; scalar dSq; label nt;
-                meshOctree_.findNearestSurfacePointInRegion
-                    (candidate, dSq, nt, patch, oldPos);
-                if( dSq < bestDSq &&
-                    proposedMoveIsValid(bpI, candidate, oldPos,
-                        mappingDist[bpI]) )
-                { bestDSq = dSq; bestPt = candidate; }
-            }
-            if( bestPt != oldPos )
-            { sMod.moveBoundaryVertexNoUpdate(bpI, bestPt); ++nMoved; }
+            ++nLockedSkipped;
+            continue;
         }
-        else if( pPatches.sizeOfRow(bpI) == 1 )
+
+        if
+        (
+            !protectedPoints_.empty()
+         && protectedPoints_.found(bpI)
+        )
         {
-            // SINGLE_PATCH: Laplacian smooth + re-project to own patch
-            const label myPatch = pPatches(bpI, 0);
-            point avg = point::zero;
-            label nNei = 0;
-            forAllRow(pointPoints, bpI, nI)
+            ++nLockedSkipped;
+            continue;
+        }
+
+        if( !edgePts.found(bpI) )
+        {
+            continue;
+        }
+
+        // 1-DOF feature repair is defined here only for a genuine
+        // two-patch intersection. Do not invent motion for ambiguous
+        // multi-patch/non-manifold points.
+        if( pPatches.sizeOfRow(bpI) != 2 )
+        {
+            ++nUnsupportedEdge;
+            continue;
+        }
+
+        edgeRepairPoints.append(bpI);
+    }
+
+    label nEdgeAccepted = 0;
+
+    if( edgeRepairPoints.size() != 0 )
+    {
+        boolList edgeMappingAccepted;
+
+        mapEdgeNodes
+        (
+            edgeRepairPoints,
+            edgeMappingAccepted
+        );
+
+        forAll(edgeMappingAccepted, i)
+        {
+            if( edgeMappingAccepted[i] )
             {
-                const label nbI = pointPoints(bpI, nI);
-                bool sameP = false;
-                forAllRow(pPatches, nbI, ppI)
-                    if( pPatches(nbI, ppI) == myPatch )
-                        { sameP = true; break; }
-                if( sameP )
-                    { avg += points[bPoints[nbI]]; ++nNei; }
+                ++nEdgeAccepted;
             }
-            if( nNei < 2 ) continue;
-            avg /= scalar(nNei);
-            point projected; scalar dSq; label nt;
-            meshOctree_.findNearestSurfacePointInRegion
-                (projected, dSq, nt, myPatch, avg);
-            if( proposedMoveIsValid(bpI, projected, oldPos,
-                    mappingDist[bpI]) )
-            { sMod.moveBoundaryVertexNoUpdate(bpI, projected); ++nMoved; }
         }
     }
 
-    // Update geometry for all repaired points
-    labelLongList repairList;
+
+    // ------------------------------------------------------------
+    // 2-DOF single-patch repair
+    //
+    // Preserve the existing Laplacian + own-patch projection exactly.
+    // Add the shared live raw-volume transaction before committing.
+    // ------------------------------------------------------------
+
+    label nSingleCandidates = 0;
+    label nSingleAccepted = 0;
+    label nSingleRejectedFaceGate = 0;
+    label nSingleRejectedVolumeGate = 0;
+    label nSingleTouchingExistingBad = 0;
+
+    scalar minSingleAcceptedPositiveRatio = GREAT;
+
     forAllConstIter(labelHashSet, repairSet, it)
+    {
+        const label bpI = it.key();
+
+        if( cornerPts.found(bpI) )
+        {
+            continue;
+        }
+
+        if
+        (
+            !protectedPoints_.empty()
+         && protectedPoints_.found(bpI)
+        )
+        {
+            continue;
+        }
+
+        // Feature points were handled above by the 1-DOF transaction.
+        if( edgePts.found(bpI) )
+        {
+            continue;
+        }
+
+        if( pPatches.sizeOfRow(bpI) != 1 )
+        {
+            continue;
+        }
+
+        const label myPatch = pPatches(bpI, 0);
+
+        // Existing repair proposal: Laplacian average using neighbours
+        // belonging to the same patch.
+        point avg = point::zero;
+        label nNei = 0;
+
+        forAllRow(pointPoints, bpI, nI)
+        {
+            const label nbI = pointPoints(bpI, nI);
+
+            bool sameP = false;
+
+            forAllRow(pPatches, nbI, ppI)
+            {
+                if( pPatches(nbI, ppI) == myPatch )
+                {
+                    sameP = true;
+                    break;
+                }
+            }
+
+            if( sameP )
+            {
+                avg += points[bPoints[nbI]];
+                ++nNei;
+            }
+        }
+
+        if( nNei < 2 )
+        {
+            continue;
+        }
+
+        avg /= scalar(nNei);
+
+        point projected;
+        scalar dSq;
+        label nt;
+
+        meshOctree_.findNearestSurfacePointInRegion
+        (
+            projected,
+            dSq,
+            nt,
+            myPatch,
+            avg
+        );
+
+        ++nSingleCandidates;
+
+        const point oldPos =
+            points[bPoints[bpI]];
+
+        if
+        (
+            !proposedMoveIsValid
+            (
+                bpI,
+                projected,
+                oldPos,
+                mappingDist[bpI]
+            )
+        )
+        {
+            ++nSingleRejectedFaceGate;
+            continue;
+        }
+
+        bool touchesExistingBad = false;
+        scalar minPositiveRatio = GREAT;
+
+        const bool preservesVolume =
+            sMod.candidatePreservesPositiveCellVolumes
+            (
+                bpI,
+                projected,
+                touchesExistingBad,
+                minPositiveRatio
+            );
+
+        if( touchesExistingBad )
+        {
+            ++nSingleTouchingExistingBad;
+        }
+
+        if( !preservesVolume )
+        {
+            ++nSingleRejectedVolumeGate;
+            continue;
+        }
+
+        sMod.moveBoundaryVertexNoUpdate
+        (
+            bpI,
+            projected
+        );
+
+        ++nSingleAccepted;
+
+        if( minPositiveRatio < GREAT )
+        {
+            minSingleAcceptedPositiveRatio =
+                Foam::min
+                (
+                    minSingleAcceptedPositiveRatio,
+                    minPositiveRatio
+                );
+        }
+    }
+
+
+    // The edge transaction updates its own affected geometry. Refresh the
+    // complete repair neighbourhood after the single-patch commits.
+    labelLongList repairList;
+
+    forAllConstIter(labelHashSet, repairSet, it)
+    {
         repairList.append(it.key());
+    }
+
     sMod.updateGeometry(repairList);
 
-    Info << "repairRejectedPoints: moved=" << nMoved
-         << " skipped=" << nSkipped << endl;
+    Info
+        << "[REPAIR_REJECTED_TRANSACTION]"
+        << " neighbourhood=" << repairSet.size()
+        << " lockedSkipped=" << nLockedSkipped
+        << " edgeRequested=" << edgeRepairPoints.size()
+        << " edgeAccepted=" << nEdgeAccepted
+        << " edgeRejected="
+        << (edgeRepairPoints.size() - nEdgeAccepted)
+        << " unsupportedEdge=" << nUnsupportedEdge
+        << " singleCandidates=" << nSingleCandidates
+        << " singleAccepted=" << nSingleAccepted
+        << " singleRejectedFaceGate=" << nSingleRejectedFaceGate
+        << " singleRejectedVolumeGate=" << nSingleRejectedVolumeGate
+        << " singleTouchingExistingBad="
+        << nSingleTouchingExistingBad
+        << " minSingleAcceptedPositiveRatio="
+        <<
+        (
+            minSingleAcceptedPositiveRatio < GREAT
+          ? minSingleAcceptedPositiveRatio
+          : scalar(-1)
+        )
+        << endl;
 }
 
 void meshSurfaceMapper::smoothSinglePatchPoints(const label nIterations)
@@ -1364,10 +1878,20 @@ void meshSurfaceMapper::smoothSinglePatchPoints(const label nIterations)
 
     label nMoved = 0;
     label nRejected = 0;
+    label nRejectedFaceGate = 0;
+    label nRejectedVolumeGate = 0;
+    label nTouchingExistingBad = 0;
+
+    scalar minAcceptedPositiveRatio = GREAT;
 
     for(label iter = 0; iter < nIterations; ++iter)
     {
-        nMoved = 0; nRejected = 0;
+        nMoved = 0;
+        nRejected = 0;
+        nRejectedFaceGate = 0;
+        nRejectedVolumeGate = 0;
+        nTouchingExistingBad = 0;
+        minAcceptedPositiveRatio = GREAT;
         forAll(bPoints, bpI)
         {
             // Lock: corners, edge points, BL/no-BL, non-manifold
@@ -1409,23 +1933,101 @@ void meshSurfaceMapper::smoothSinglePatchPoints(const label nIterations)
                 avg
             );
 
-            // Accept only if quality valid
-            const point& oldPos = points[bPoints[bpI]];
-            if( proposedMoveIsValid(bpI, projected, oldPos,
-                                    mappingDist[bpI]) )
+            // First retain the existing local surface/pyramid gate.
+            const point oldPos =
+                points[bPoints[bpI]];
+
+            if
+            (
+                !proposedMoveIsValid
+                (
+                    bpI,
+                    projected,
+                    oldPos,
+                    mappingDist[bpI]
+                )
+            )
             {
-                sMod.moveBoundaryVertexNoUpdate(bpI, projected);
+                ++nRejected;
+                ++nRejectedFaceGate;
+                continue;
+            }
+
+            if( !Pstream::parRun() )
+            {
+                bool touchesExistingBad = false;
+                scalar minPositiveRatio = GREAT;
+
+                const bool preservesVolume =
+                    sMod.candidatePreservesPositiveCellVolumes
+                    (
+                        bpI,
+                        projected,
+                        touchesExistingBad,
+                        minPositiveRatio
+                    );
+
+                if( touchesExistingBad )
+                {
+                    ++nTouchingExistingBad;
+                }
+
+                if( !preservesVolume )
+                {
+                    ++nRejected;
+                    ++nRejectedVolumeGate;
+                    continue;
+                }
+
+                sMod.moveBoundaryVertexNoUpdate
+                (
+                    bpI,
+                    projected
+                );
+
                 ++nMoved;
+
+                if( minPositiveRatio < GREAT )
+                {
+                    minAcceptedPositiveRatio =
+                        Foam::min
+                        (
+                            minAcceptedPositiveRatio,
+                            minPositiveRatio
+                        );
+                }
             }
             else
             {
-                ++nRejected;
+                // Preserve legacy MPI behaviour until shared-point
+                // transactional synchronization is explicitly audited.
+                sMod.moveBoundaryVertexNoUpdate
+                (
+                    bpI,
+                    projected
+                );
+
+                ++nMoved;
             }
         }
         sMod.updateGeometry(allBndPts);
-        Info << "  smoothSinglePatchPoints iter " << iter
-             << ": moved=" << nMoved
-             << " rejected=" << nRejected << endl;
+        Info
+            << "[SINGLE_PATCH_SMOOTH_TRANSACTION]"
+            << " iter=" << iter
+            << " moved=" << nMoved
+            << " rejected=" << nRejected
+            << " rejectedFaceGate=" << nRejectedFaceGate
+            << " rejectedVolumeGate=" << nRejectedVolumeGate
+            << " touchingExistingBad=" << nTouchingExistingBad
+            << " minAcceptedPositiveRatio="
+            <<
+            (
+                minAcceptedPositiveRatio < GREAT
+              ? minAcceptedPositiveRatio
+              : scalar(-1)
+            )
+            << endl;
+
         if( nMoved == 0 ) break;
     }
 }

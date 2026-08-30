@@ -35,6 +35,8 @@ SourceFiles
 #ifndef meshSurfaceMapper_H
 #define meshSurfaceMapper_H
 
+#include "boolList.H"
+
 #include "labelList.H"
 #include "pointField.H"
 #include "labelLongList.H"
@@ -54,6 +56,7 @@ class meshOctree;
 class meshSurfaceEngine;
 class meshSurfacePartitioner;
 class triSurfacePartitioner;
+class sourceFeatureGraph;
 
 /*---------------------------------------------------------------------------*\
                     Class meshSurfaceMapper Declaration
@@ -153,6 +156,11 @@ class meshSurfaceMapper
         //- triSurface partitioner
         mutable triSurfacePartitioner* surfPartitionerPtr_;
 
+        //- Unified source-geometry feature representation.
+        //- Lazily constructed from meshOctree_.surface().
+        //- Infrastructure only; no mapping behaviour change.
+        mutable sourceFeatureGraph* sourceFeatureGraphPtr_;
+
         //- minimum pyramid height for validity check (default 1e-10)
         scalar snapMinPyramidHeight_ = 1e-10;
 
@@ -192,7 +200,13 @@ class meshSurfaceMapper
             return *surfPartitionerPtr_;
         }
 
-        //- delete surfaceEnginePartitionerPtr_ and surfPartitionerPtr_
+        //- create source feature graph
+        void createSourceFeatureGraph() const;
+
+        //- return lazily constructed source feature graph
+        const sourceFeatureGraph& sourceFeatures() const;
+
+        //- delete demand-driven mapper addressing
         void clearOut();
 
     // Private member functions
@@ -381,6 +395,27 @@ public:
         //- projects selected edge vertices onto their nearest
         //- locations on the surface mesh
         void mapEdgeNodes(const labelLongList& nodesToMap);
+
+        //- Same feature-edge mapping, additionally reporting whether each
+        //- requested point completed a valid constrained mapping.
+        //- mappingAccepted is indexed like nodesToMap.
+        void mapEdgeNodes
+        (
+            const labelLongList& nodesToMap,
+            boolList& mappingAccepted
+        );
+
+        //- Map edge nodes using desiredPositions only as the geometric
+        //- smoothing/search intent. The live mesh point is not moved before
+        //- feature resolution. Final feature targets are committed against
+        //- the current live volume state.
+        //- desiredPositions is indexed like nodesToMap.
+        void mapEdgeNodes
+        (
+            const labelLongList& nodesToMap,
+            const pointField& desiredPositions,
+            boolList& mappingAccepted
+        );
 
         //- projects surface vertices onto the surface with respect
         //- to the surface patch they belong to. Edges and corner are respected

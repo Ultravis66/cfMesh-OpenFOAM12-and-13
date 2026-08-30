@@ -70,6 +70,13 @@ class meshSurfaceEdgeExtractorNonTopo
         //- BL-side patch index per protected point
         Map<label> protectedPointPatches_;
 
+
+        //- BL/neutral boundary-point indices in the CURRENT
+        //- meshSurfaceEngine boundary-point addressing
+        labelHashSet blNeutralPoints_;
+
+        //- BL-side patch index per BL/neutral point
+        Map<label> blNeutralPointPatches_;
     // Private member functions
 
         //- decompose faces with more than one edge at the same feature edge
@@ -103,12 +110,33 @@ public:
             const labelHashSet& protectedPoints,
             const Map<label>& protectedPointPatches
         );
+        //- Staged Cartesian path:
+        //- perform topology correction now, optionally defer remapping
+        //- until boundary-point constraints have been re-detected.
+        meshSurfaceEdgeExtractorNonTopo
+        (
+            polyMeshGen& mesh,
+            const meshOctree& octree,
+            const bool deferRemap
+        );
+
 
     // Destructor
 
         ~meshSurfaceEdgeExtractorNonTopo();
 
-    // Member Functions
+
+
+        //- Remap after topology correction using constraint sets expressed
+        //- in the CURRENT boundary-point addressing.
+        void remapBoundaryPoints
+        (
+            const labelHashSet& protectedPoints,
+            const Map<label>& protectedPointPatches,
+            const labelHashSet& blNeutralPoints,
+            const Map<label>& blNeutralPointPatches
+        );
+// Member Functions
 };
 
 

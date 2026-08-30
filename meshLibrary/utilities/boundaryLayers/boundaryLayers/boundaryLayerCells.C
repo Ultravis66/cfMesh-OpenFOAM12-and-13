@@ -780,6 +780,22 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << endl;
     }
 
+    // ---- BLCELLGEOM_AUDIT counters (report-only) ----
+    const label clqNP = mesh_.boundaries().size();
+    labelList clqTot(clqNP,0);
+    labelList clqPlainInvalid(clqNP,0), clqPatchInvalid(clqNP,0);
+    labelList clqPlainSame(clqNP,0),    clqPatchSame(clqNP,0);
+    labelList clqPlainNear(clqNP,0),    clqPatchNear(clqNP,0);
+    labelList clqDifferent(clqNP,0),    clqCapTouched(clqNP,0);
+    labelList clqPlainFullColl(clqNP,0), clqPatchFullColl(clqNP,0);
+    labelList clqPlainPartial(clqNP,0),  clqPatchPartial(clqNP,0);
+    labelList clqPlainHealthy(clqNP,0),  clqPatchHealthy(clqNP,0);
+    scalarField clqPlainMin(clqNP,GREAT), clqPatchMin(clqNP,GREAT);
+    scalarField clqPlainSum(clqNP,0.0),   clqPatchSum(clqNP,0.0);
+    labelList clqPlainNvalid(clqNP,0),    clqPatchNvalid(clqNP,0);
+    label clqHubExamples = 0;
+    // ---- end BLCELLGEOM_AUDIT counters ----
+
     forAll(bFaces, bfI)
     {
         if( treatPatches[boundaryFacePatches[bfI]] )
@@ -788,6 +804,106 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
             const label pKey = patchKey_[boundaryFacePatches[bfI]];
             const label bfIPatch = boundaryFacePatches[bfI];
+
+            // ---- BLCELLGEOM_AUDIT per-face measurement ----
+            {
+                const label clqNPts = mesh_.points().size();
+
+                if( bfIPatch < 0 || bfIPatch >= clqNP )
+                {
+                    Info << "BLCELLGEOM_AUDIT INVALID_PATCH"
+                         << " bfI=" << bfI
+                         << " bfIPatch=" << bfIPatch << endl;
+                    continue;
+                }
+
+                const label pp = bfIPatch;
+                label pInv=0,pSame=0,pNear=0,qInv=0,qSame=0,qNear=0,nDiff=0,nCap=0;
+                forAll(f, pI)
+                {
+                    const label base = f[pI];
+                    const label plain = findNewNodeLabel(base, pKey);
+                    const label patchL = findNewNodeLabelForPatch(base, bfIPatch, pKey);
+                    if( plain != patchL ) ++nDiff;
+                    const std::pair<label,label> capKey(base, bfIPatch);
+                    if( capSideVrtMap_.find(capKey) != capSideVrtMap_.end() ) ++nCap;
+                    if( plain < 0 || plain >= clqNPts )
+                    {
+                        ++pInv;
+                    }
+                    else
+                    {
+                        const scalar d = (base>=0 && base<clqNPts)
+                            ? mag(mesh_.points()[plain]-mesh_.points()[base])
+                            : scalar(0);
+                        if( plain == base ) ++pSame;
+                        else if( d < scalar(1e-10) ) ++pNear;
+                        clqPlainMin[pp] = Foam::min(clqPlainMin[pp], d);
+                        clqPlainSum[pp] += d;
+                        ++clqPlainNvalid[pp];
+                    }
+                    if( patchL < 0 || patchL >= clqNPts )
+                    {
+                        ++qInv;
+                    }
+                    else
+                    {
+                        const scalar d = (base>=0 && base<clqNPts)
+                            ? mag(mesh_.points()[patchL]-mesh_.points()[base])
+                            : scalar(0);
+                        if( patchL == base ) ++qSame;
+                        else if( d < scalar(1e-10) ) ++qNear;
+                        clqPatchMin[pp] = Foam::min(clqPatchMin[pp], d);
+                        clqPatchSum[pp] += d;
+                        ++clqPatchNvalid[pp];
+                    }
+                }
+                const label nv = f.size();
+                ++clqTot[pp];
+                clqPlainInvalid[pp]+=pInv; clqPatchInvalid[pp]+=qInv;
+                clqPlainSame[pp]+=pSame;   clqPatchSame[pp]+=qSame;
+                clqPlainNear[pp]+=pNear;   clqPatchNear[pp]+=qNear;
+                clqDifferent[pp]+=nDiff;   clqCapTouched[pp]+=(nCap>0?1:0);
+                const label pBad = pInv + pSame + pNear;
+                const label qBad = qInv + qSame + qNear;
+
+                if( pBad == nv ) ++clqPlainFullColl[pp];
+                else if( pBad == 0 ) ++clqPlainHealthy[pp];
+                else ++clqPlainPartial[pp];
+
+                if( qBad == nv ) ++clqPatchFullColl[pp];
+                else if( qBad == 0 ) ++clqPatchHealthy[pp];
+                else ++clqPatchPartial[pp];
+                const word clqPnm =
+                    (bfIPatch>=0 && bfIPatch<label(patchNames_.size()))
+                    ? patchNames_[bfIPatch] : word("?");
+                if( clqPnm == word("hub") && clqHubExamples < 5 )
+                {
+                    ++clqHubExamples;
+                    Info << "BLCELLGEOM_HUBEX face=" << bfI << " pKey=" << pKey;
+                    forAll(f, pI)
+                    {
+                        const label base=f[pI];
+                        const label plain=findNewNodeLabel(base,pKey);
+                        const label patchL=findNewNodeLabelForPatch(base,bfIPatch,pKey);
+                        scalar dp =
+                            (plain>=0 && plain<clqNPts && base>=0 && base<clqNPts)
+                            ? mag(mesh_.points()[plain]-mesh_.points()[base])
+                            : scalar(-1);
+
+                        scalar dq =
+                            (patchL>=0 && patchL<clqNPts && base>=0 && base<clqNPts)
+                            ? mag(mesh_.points()[patchL]-mesh_.points()[base])
+                            : scalar(-1);
+
+                        Info << " | base=" << base
+                             << " plain=" << plain << "(d=" << dp << ")"
+                             << " patch=" << patchL << "(d=" << dq << ")";
+                    }
+                    Info << endl;
+                }
+            }
+            // ---- end BLCELLGEOM_AUDIT per-face measurement ----
             //- Patch-aware top vertex resolver: checks capSideVrtMap_
             //- keyed by (meshPointI, patchI) first, then falls back
             //- to findNewNodeLabel. Required because hub+blade share
@@ -1889,6 +2005,69 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         }
     }
 
+    // ---- BLCELLGEOM_AUDIT summary (report-only) ----
+    Info << "BLCELLGEOM_AUDIT (base->top distance, both resolvers, at cell build)"
+         << endl;
+
+    forAll(clqTot, p)
+    {
+        if( clqTot[p] == 0 )
+            continue;
+
+        const word pnm =
+            (p >= 0 && p < label(patchNames_.size()))
+            ? patchNames_[p]
+            : word("?");
+
+        const scalar pMean =
+            clqPlainNvalid[p] > 0
+            ? clqPlainSum[p] / clqPlainNvalid[p]
+            : scalar(0);
+
+        const scalar qMean =
+            clqPatchNvalid[p] > 0
+            ? clqPatchSum[p] / clqPatchNvalid[p]
+            : scalar(0);
+
+        const scalar pMin =
+            clqPlainNvalid[p] > 0
+            ? clqPlainMin[p]
+            : scalar(-1);
+
+        const scalar qMin =
+            clqPatchNvalid[p] > 0
+            ? clqPatchMin[p]
+            : scalar(-1);
+
+        Info << "  " << pnm
+             << ": faces=" << clqTot[p]
+
+             << " | PLAIN"
+             << " inv=" << clqPlainInvalid[p]
+             << " same=" << clqPlainSame[p]
+             << " near=" << clqPlainNear[p]
+             << " fullColl=" << clqPlainFullColl[p]
+             << " partial=" << clqPlainPartial[p]
+             << " healthy=" << clqPlainHealthy[p]
+             << " minD=" << pMin
+             << " meanD=" << pMean
+
+             << " | PATCH"
+             << " inv=" << clqPatchInvalid[p]
+             << " same=" << clqPatchSame[p]
+             << " near=" << clqPatchNear[p]
+             << " fullColl=" << clqPatchFullColl[p]
+             << " partial=" << clqPatchPartial[p]
+             << " healthy=" << clqPatchHealthy[p]
+             << " minD=" << qMin
+             << " meanD=" << qMean
+
+             << " | resolverDiff=" << clqDifferent[p]
+             << " capTouched=" << clqCapTouched[p]
+             << endl;
+    }
+    // ---- end BLCELLGEOM_AUDIT summary ----
+
     //- data for parallel execution
     boolList procPoint;
     LongList<DynList<label, 4> > pointProcFaces;
@@ -2460,6 +2639,155 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << endl;
     }
 
+    // FINALCELL_CLOSURE_AUDIT
+    // Diagnostic only. Audit every queued cell shell before and after
+    // GLOBAL_NORMAL_TOP_SUBST. INTERFACEAUDIT validates face pairing,
+    // but cannot detect a face that is absent from a cell altogether.
+    auto auditQueuedCellClosure =
+    [&](const char* stage)
+    {
+        label nBadCells = 0;
+        label nBadEdgesTotal = 0;
+        label nMalformedFacesTotal = 0;
+
+        for(label cellI=0; cellI<cellsToAdd.size(); ++cellI)
+        {
+            std::map<std::pair<label,label>, label> edgeUse;
+
+            bool malformedFace = false;
+            label nMalformedFaces = 0;
+
+            for
+            (
+                label faceI=0;
+                faceI<cellsToAdd.sizeOfGraph(cellI);
+                ++faceI
+            )
+            {
+                const label nVerts =
+                    cellsToAdd.sizeOfRow(cellI, faceI);
+
+                if( nVerts < 3 )
+                {
+                    malformedFace = true;
+                    ++nMalformedFaces;
+                    continue;
+                }
+
+                for(label pI=0; pI<nVerts; ++pI)
+                {
+                    const label a =
+                        cellsToAdd(cellI, faceI, pI);
+
+                    const label b =
+                        cellsToAdd
+                        (
+                            cellI,
+                            faceI,
+                            (pI+1)%nVerts
+                        );
+
+                    if( a == b )
+                    {
+                        malformedFace = true;
+                    }
+
+                    ++edgeUse
+                    [
+                        std::make_pair
+                        (
+                            Foam::min(a,b),
+                            Foam::max(a,b)
+                        )
+                    ];
+                }
+            }
+
+            label nBadEdges = 0;
+
+            for
+            (
+                std::map<std::pair<label,label>, label>
+                    ::const_iterator iter=edgeUse.begin();
+                iter!=edgeUse.end();
+                ++iter
+            )
+            {
+                if( iter->second != 2 )
+                {
+                    ++nBadEdges;
+                }
+            }
+
+            if( malformedFace || nBadEdges )
+            {
+                ++nBadCells;
+                nBadEdgesTotal += nBadEdges;
+                nMalformedFacesTotal += nMalformedFaces;
+
+                if( nBadCells <= 100 )
+                {
+                    Info
+                        << "FINALCELL_CLOSURE_BAD"
+                        << " stage=" << stage
+                        << " queuedCell=" << cellI
+                        << " predictedCell="
+                        << (nOldCells + cellI)
+                        << " nFaces="
+                        << cellsToAdd.sizeOfGraph(cellI)
+                        << " malformedFaces="
+                        << nMalformedFaces
+                        << " badEdges="
+                        << nBadEdges
+                        << endl;
+
+                    label nPrintedEdges = 0;
+
+                    for
+                    (
+                        std::map<std::pair<label,label>, label>
+                            ::const_iterator iter=edgeUse.begin();
+                        iter!=edgeUse.end();
+                        ++iter
+                    )
+                    {
+                        if
+                        (
+                            iter->second != 2
+                         && nPrintedEdges < 20
+                        )
+                        {
+                            ++nPrintedEdges;
+
+                            Info
+                                << "FINALCELL_CLOSURE_EDGE"
+                                << " stage=" << stage
+                                << " queuedCell=" << cellI
+                                << " predictedCell="
+                                << (nOldCells + cellI)
+                                << " a=" << iter->first.first
+                                << " b=" << iter->first.second
+                                << " use=" << iter->second
+                                << endl;
+                        }
+                    }
+                }
+            }
+        }
+
+        Info
+            << "FINALCELL_CLOSURE_AUDIT"
+            << " stage=" << stage
+            << " queuedCells=" << cellsToAdd.size()
+            << " badCells=" << nBadCells
+            << " badEdgesTotal=" << nBadEdgesTotal
+            << " malformedFacesTotal="
+            << nMalformedFacesTotal
+            << endl;
+    };
+
+    auditQueuedCellClosure("preSubst");
+
     //- create mesh modifier
     if( !globalNormalTopSubst.empty() )
     {
@@ -2615,6 +2943,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
              << endl;
     }
 
+    auditQueuedCellClosure("postSubst");
+
     polyMeshGenModifier meshModifier(mesh_);
 
     //- Diagnostic only: audit the addCells() face-pairing contract.
@@ -2641,6 +2971,69 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
             }
         };
 
+        // Canonical polygon key preserving cyclic edge connectivity.
+        //
+        // Equivalent:
+        //   (a b c d)
+        //   (b c d a)
+        //   (d c b a)
+        //
+        // Not equivalent:
+        //   (a c b d)
+        //
+        // The previous sorted-label key discarded edge adjacency and
+        // could therefore declare topologically different polygons equal.
+        auto canonicalFaceKey =
+        [](FaceKey k) -> FaceKey
+        {
+            if( k.size() < 2 )
+                return k;
+
+            const label n = label(k.size());
+
+            FaceKey best;
+            bool haveBest = false;
+
+            // Test all cyclic rotations in both directions.
+            for(label reverse=0; reverse<2; ++reverse)
+            {
+                for(label startI=0; startI<n; ++startI)
+                {
+                    FaceKey candidate;
+                    candidate.reserve(k.size());
+
+                    for(label offset=0; offset<n; ++offset)
+                    {
+                        label idx;
+
+                        if( !reverse )
+                        {
+                            idx = (startI + offset) % n;
+                        }
+                        else
+                        {
+                            idx = startI - offset;
+
+                            while( idx < 0 )
+                                idx += n;
+
+                            idx %= n;
+                        }
+
+                        candidate.push_back(k[idx]);
+                    }
+
+                    if( !haveBest || candidate < best )
+                    {
+                        best = candidate;
+                        haveBest = true;
+                    }
+                }
+            }
+
+            return best;
+        };
+
         std::unordered_map<FaceKey, label, FaceKeyHash> queuedUse;
         std::unordered_map<FaceKey, label, FaceKeyHash> boundaryUse;
         std::unordered_map<FaceKey, label, FaceKeyHash> existingUse;
@@ -2657,7 +3050,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                     k.push_back(cellsToAdd(cI, fI, pI));
                 }
 
-                std::sort(k.begin(), k.end());
+                k = canonicalFaceKey(k);
                 ++queuedUse[k];
             }
         }
@@ -2672,7 +3065,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 k.push_back(newBoundaryFaces(fI, pI));
             }
 
-            std::sort(k.begin(), k.end());
+            k = canonicalFaceKey(k);
             ++boundaryUse[k];
         }
 
@@ -2690,7 +3083,7 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
                 k.push_back(f[pI]);
             }
 
-            std::sort(k.begin(), k.end());
+            k = canonicalFaceKey(k);
             ++existingUse[k];
         }
 
@@ -2784,10 +3177,142 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
 
     }
 
+    // POSTCOMMIT_ZIPUP_AUDIT
+    //
+    // Diagnostic only. Whole-mesh topological cell-closure audit.
+    // A valid closed polyhedral shell requires every undirected edge
+    // of every cell to occur exactly twice across that cell's faces.
+    //
+    // This intentionally duplicates the essential checkCellsZipUp()
+    // invariant locally so this forensic diagnostic has no dependency
+    // on polyMeshGenChecks linkage/namespace details.
+    auto auditMeshZipUp =
+    [&](const char* stage)
+    {
+        const cellListPMG& auditCells = mesh_.cells();
+        const faceListPMG& auditFaces = mesh_.faces();
+
+        labelLongList badCellIds;
+
+        label nBadEdgesTotal = 0;
+        label nBadFaceRefs = 0;
+        label nDegenerateFaces = 0;
+
+        forAll(auditCells, cellI)
+        {
+            const cell& c = auditCells[cellI];
+
+            std::map<std::pair<label,label>, label> edgeUse;
+
+            bool cellBad = false;
+            label nBadEdgesCell = 0;
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                if( faceI < 0 || faceI >= auditFaces.size() )
+                {
+                    cellBad = true;
+                    ++nBadFaceRefs;
+                    continue;
+                }
+
+                const face& f = auditFaces[faceI];
+
+                if( f.size() < 3 )
+                {
+                    cellBad = true;
+                    ++nDegenerateFaces;
+                    continue;
+                }
+
+                forAll(f, pI)
+                {
+                    const label a = f[pI];
+                    const label b = f[(pI+1)%f.size()];
+
+                    if( a == b )
+                    {
+                        cellBad = true;
+                    }
+
+                    ++edgeUse
+                    [
+                        std::make_pair
+                        (
+                            Foam::min(a,b),
+                            Foam::max(a,b)
+                        )
+                    ];
+                }
+            }
+
+            for
+            (
+                std::map<std::pair<label,label>, label>
+                    ::const_iterator iter=edgeUse.begin();
+                iter!=edgeUse.end();
+                ++iter
+            )
+            {
+                if( iter->second != 2 )
+                {
+                    cellBad = true;
+                    ++nBadEdgesCell;
+                }
+            }
+
+            if( cellBad )
+            {
+                badCellIds.append(cellI);
+                nBadEdgesTotal += nBadEdgesCell;
+            }
+        }
+
+        Info << "POSTCOMMIT_ZIPUP"
+             << " stage=" << stage
+             << " cells=" << auditCells.size()
+             << " badCells=" << badCellIds.size()
+             << " badEdgesTotal=" << nBadEdgesTotal
+             << " badFaceRefs=" << nBadFaceRefs
+             << " degenerateFaces=" << nDegenerateFaces
+             << endl;
+
+        if( badCellIds.size() )
+        {
+            Info << "POSTCOMMIT_ZIPUP_IDS"
+                 << " stage=" << stage
+                 << " ids=(";
+
+            const label nPrint =
+                Foam::min(label(badCellIds.size()), label(100));
+
+            for(label i=0; i<nPrint; ++i)
+            {
+                if( i ) Info << ',';
+                Info << badCellIds[i];
+            }
+
+            if( badCellIds.size() > nPrint )
+                Info << ",...";
+
+            Info << ')' << endl;
+        }
+    };
+
+    auditMeshZipUp("preAdd");
+
     meshModifier.addCells(cellsToAdd);
 
+    auditMeshZipUp("postAdd");
+
     cellsToAdd.clear();
+
     meshModifier.reorderBoundaryFaces();
+
+    auditMeshZipUp("postReorder");
+
     meshModifier.replaceBoundary
     (
         patchNames_,
@@ -2795,6 +3320,8 @@ void boundaryLayers::createLayerCells(const labelList& patchLabels)
         newBoundaryOwners,
         newBoundaryPatches
     );
+
+    auditMeshZipUp("postReplace");
 
     PtrList<boundaryPatch>& boundaries = meshModifier.boundariesAccess();
     forAll(boundaries, patchI)

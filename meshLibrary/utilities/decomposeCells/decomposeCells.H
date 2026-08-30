@@ -77,6 +77,16 @@ class decomposeCells
             DynList<DynList<label, 2>, 64>& edgeFaces
         ) const;
 
+        //- Find a geometrically safe common apex without mutating the mesh.
+        //  Returns true only when the cell has a comfortably positive
+        //  star-kernel margin suitable for one-apex pyramid decomposition.
+        bool findValidPyramidApex
+        (
+            const label cellI,
+            point& apex,
+            scalar& relativeMargin
+        ) const;
+
         //- find the apex of the pyramids
         label findTopVertex
         (

@@ -29,6 +29,7 @@ Description
 #include "demandDrivenData.H"
 #include "meshSurfaceEngine.H"
 #include "decomposeCells.H"
+#include "polyMeshGenChecks.H"
 
 // #define DEBUGSearch
 
@@ -99,13 +100,43 @@ correctEdgesBetweenPatches::correctEdgesBetweenPatches(polyMeshGen& mesh)
         patchTypes_[patchI] = boundaries[patchI].patchType();
     }
 
+    // Diagnostic only: isolate where the original cfMesh
+    // correctEdgesBetweenPatches topology pipeline first creates
+    // non-positive cells.
+    auto topologyLineage =
+    [&](const word& stageName)
+    {
+        labelHashSet negVolCells;
+
+        polyMeshGenChecks::checkCellVolumes
+        (
+            mesh_,
+            false,
+            &negVolCells
+        );
+
+        Info
+            << "[CORRECT_EDGES_TOPOLOGY_LINEAGE]"
+            << " stage=" << stageName
+            << " negVol=" << negVolCells.size()
+            << endl;
+    };
+
+    topologyLineage("entry");
+
     //decomposeProblematicFaces();
 
     decomposeConcaveFaces();
 
+    topologyLineage("afterDecomposeConcaveFaces");
+
     patchCorrection();
 
+    topologyLineage("afterPatchCorrection");
+
     decomposeCorrectedCells();
+
+    topologyLineage("afterDecomposeCorrectedCells");
 }
 
 // * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //

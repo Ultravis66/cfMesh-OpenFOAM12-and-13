@@ -71,6 +71,28 @@ meshSurfaceEdgeExtractorNonTopo::meshSurfaceEdgeExtractorNonTopo
     remapBoundaryPoints();
 }
 
+// Staged constructor for callers which must rebuild boundary-point
+// constraint addressing after topology modification.
+meshSurfaceEdgeExtractorNonTopo::meshSurfaceEdgeExtractorNonTopo
+(
+    polyMeshGen& mesh,
+    const meshOctree& octree,
+    const bool deferRemap
+)
+:
+    mesh_(mesh),
+    meshOctree_(octree)
+{
+    decomposeBoundaryFaces();
+
+    if( !deferRemap )
+    {
+        remapBoundaryPoints();
+    }
+}
+
+
+
 meshSurfaceEdgeExtractorNonTopo::~meshSurfaceEdgeExtractorNonTopo()
 {}
 
