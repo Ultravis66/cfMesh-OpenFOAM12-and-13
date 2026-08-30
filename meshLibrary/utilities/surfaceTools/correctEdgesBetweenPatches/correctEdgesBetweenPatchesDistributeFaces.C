@@ -867,14 +867,10 @@ void correctEdgesBetweenPatches::patchCorrection()
                     }
 
                     // The exact fan candidate is geometrically coherent.
-                    // Only now mark this face/cell for topology change.
+                    // Record it, but defer ALL decomposition state until
+                    // the complete prospective owner cell has passed the
+                    // transaction gate.
                     store = false;
-                    ++nDecomposedFaces;
-                    decomposeCell_
-                    [
-                        boundaryFaceOwners[bfI]
-                    ] = true;
-                    decompose_ = true;
 
                     fanDiagBfI.append(bfI);
                     fanDiagOwner.append(boundaryFaceOwners[bfI]);
@@ -1254,11 +1250,20 @@ void correctEdgesBetweenPatches::patchCorrection()
     };
 
 
-    labelHashSet quadOwnerSet;
+    labelHashSet correctionOwnerSet;
 
     forAll(quadDiagOwner, qI)
-        quadOwnerSet.insert(quadDiagOwner[qI]);
+        correctionOwnerSet.insert(quadDiagOwner[qI]);
 
+    forAll(fanDiagOwner, fI)
+        correctionOwnerSet.insert(fanDiagOwner[fI]);
+
+
+    label nCorrectionOwnerGroups = 0;
+
+    label nFanOnlyOwnerGroups = 0;
+    label nFanOnlyAcceptedGroups = 0;
+    label nFanOnlyPreservedGroups = 0;
 
     label nQuadOwnerGroups = 0;
     label nQuadLegacySafeGroups = 0;
@@ -1269,7 +1274,7 @@ void correctEdgesBetweenPatches::patchCorrection()
     const label maxEnumeratedQuadsPerOwner = 8;
 
 
-    forAllConstIter(labelHashSet, quadOwnerSet, ownIt)
+    forAllConstIter(labelHashSet, correctionOwnerSet, ownIt)
     {
         const label ownerCell = ownIt.key();
 
@@ -1284,8 +1289,54 @@ void correctEdgesBetweenPatches::patchCorrection()
         const label nQuads =
             ownerQuadBfI.size();
 
+        ++nCorrectionOwnerGroups;
+
         if( nQuads == 0 )
+        {
+            ++nFanOnlyOwnerGroups;
+
+            const scalar proposedVolume =
+                prospectiveOwnerVolume
+                (
+                    ownerCell,
+                    ownerQuadBfI,
+                    0,
+                    false
+                );
+
+            if( proposedVolume >= VSMALL )
+            {
+                ++nFanOnlyAcceptedGroups;
+            }
+            else
+            {
+                // Fail closed.  No point has been allocated yet, so
+                // preserving these polygons leaves no orphan geometry
+                // and no partial topology mutation.
+                forAll(fanDiagOwner, fI)
+                {
+                    if( fanDiagOwner[fI] == ownerCell )
+                    {
+                        patchCorrectionType
+                        [
+                            fanDiagBfI[fI]
+                        ] = 0;
+                    }
+                }
+
+                ++nFanOnlyPreservedGroups;
+
+                Info
+                    << "[PATCH_FAN_OWNER_TRANSACTION]"
+                    << " owner=" << ownerCell
+                    << " action=preserve"
+                    << " proposedVol="
+                    << proposedVolume
+                    << endl;
+            }
+
             continue;
+        }
 
         ++nQuadOwnerGroups;
 
@@ -1487,6 +1538,41 @@ void correctEdgesBetweenPatches::patchCorrection()
                 << endl;
         }
     }
+
+
+    label nCommittedFanFaces = 0;
+
+    forAll(fanDiagBfI, fI)
+    {
+        const label bfI =
+            fanDiagBfI[fI];
+
+        if( patchCorrectionType[bfI] != 1 )
+            continue;
+
+        ++nCommittedFanFaces;
+        ++nDecomposedFaces;
+
+        decomposeCell_
+        [
+            boundaryFaceOwners[bfI]
+        ] = true;
+
+        decompose_ = true;
+    }
+
+
+    Info
+        << "[PATCH_CORRECTION_TRANSACTION_SUMMARY]"
+        << " ownerGroups=" << nCorrectionOwnerGroups
+        << " fanOnlyGroups=" << nFanOnlyOwnerGroups
+        << " fanOnlyAccepted="
+        << nFanOnlyAcceptedGroups
+        << " fanOnlyPreserved="
+        << nFanOnlyPreservedGroups
+        << " committedFanFaces="
+        << nCommittedFanFaces
+        << endl;
 
 
     Info
