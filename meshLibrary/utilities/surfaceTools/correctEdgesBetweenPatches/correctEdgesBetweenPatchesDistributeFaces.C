@@ -529,6 +529,20 @@ void correctEdgesBetweenPatches::patchCorrection()
     DynamicList<label> quadDiagA;
     DynamicList<label> quadDiagB;
 
+    // General patch-correction transaction state.
+    //
+    // 0 = unchanged
+    // 1 = >4-sided arithmetic-apex fan
+    // 2 = quad split
+    labelList patchCorrectionType(bFaces.size(), 0);
+    labelList quadCorrectionCorner(bFaces.size(), -1);
+    labelList fanCorrectionApexPoint(bFaces.size(), -1);
+
+    // 0 = legacy i--i+2 diagonal
+    // 1 = alternate (i+1)--(i-1) diagonal
+    // -1 = preserve original quad
+    labelList quadCorrectionChoice(bFaces.size(), 0);
+
     forAll(bFaces, bfI)
     {
         const face& bf = bFaces[bfI];
@@ -689,6 +703,9 @@ void correctEdgesBetweenPatches::patchCorrection()
                     // projected triangle-area contributions cancel.
                     mesh_.points().append(pAvg);
 
+                    patchCorrectionType[bfI] = 1;
+                    fanCorrectionApexPoint[bfI] = triF[2];
+
                     // Record the new apex for the existing targeted
                     // post-topology surface projection.
                     newPatchCorrectionPoints_.append(triF[2]);
@@ -721,106 +738,22 @@ void correctEdgesBetweenPatches::patchCorrection()
                 else if( bf.size() == 4 )
                 {
                     store = false;
-                    ++nDecomposedFaces;
-                    decomposeCell_[boundaryFaceOwners[bfI]] = true;
-                    decompose_ = true;
 
-                    // Diagnostic only: the legacy quad split chooses
-                    // the diagonal from the detected feature-corner
-                    // vertex i to the opposite vertex i+2.
+                    // Defer the actual diagonal choice until all corrected
+                    // quads belonging to the same owner cell are known.
+                    // Choices belonging to one owner are evaluated together
+                    // against the exact prospective owner-cell volume.
+                    patchCorrectionType[bfI] = 2;
+                    quadCorrectionCorner[bfI] = i;
+
+                    // Retain provenance while this algorithm is being
+                    // validated.
                     quadDiagBfI.append(bfI);
                     quadDiagOwner.append(boundaryFaceOwners[bfI]);
                     quadDiagPatch.append(facePatches[bfI]);
                     quadDiagCorner.append(i);
                     quadDiagA.append(bf[i]);
                     quadDiagB.append(bf[(i+2)%4]);
-
-                    // Forensic experiment: the residual negative
-                    // owners were traced exactly to these three quad
-                    // decompositions. Test the alternate diagonal only
-                    // on those faces.
-                    const bool useAlternateDiagonal =
-                    (
-                        bfI == 124493
-                     || bfI == 219116
-                     || bfI == 511093
-                    );
-
-                    if( useAlternateDiagonal )
-                    {
-                        Info
-                            << "[QUAD_ALT_FORENSIC]"
-                            << " bfI=" << bfI
-                            << " owner=" << boundaryFaceOwners[bfI]
-                            << " patch=" << facePatches[bfI]
-                            << " legacyDiagonal="
-                            << bf[i] << "|" << bf[(i+2)%4]
-                            << " alternateDiagonal="
-                            << bf.nextLabel(i)
-                            << "|" << bf.prevLabel(i)
-                            << endl;
-
-                        // Alternate diagonal:
-                        // (i+1) -------- (i-1)
-                        //
-                        // Preserve original polygon orientation.
-                        triF[0] = bf[i];
-                        triF[1] = bf.nextLabel(i);
-                        triF[2] = bf.prevLabel(i);
-
-                        newBoundaryFaces_.appendList(triF);
-                        newBoundaryOwners_.append
-                        (
-                            boundaryFaceOwners[bfI]
-                        );
-                        newBoundaryPatches_.append
-                        (
-                            facePatches[bfI]
-                        );
-
-                        triF[0] = bf.nextLabel(i);
-                        triF[1] = bf[(i+2)%4];
-                        triF[2] = bf.prevLabel(i);
-
-                        newBoundaryFaces_.appendList(triF);
-                        newBoundaryOwners_.append
-                        (
-                            boundaryFaceOwners[bfI]
-                        );
-                        newBoundaryPatches_.append
-                        (
-                            facePatches[bfI]
-                        );
-                    }
-                    else
-                    {
-                        // Legacy diagonal i -- i+2.
-                        triF[0] = bf[i];
-
-                        triF[1] = bf.nextLabel(i);
-                        triF[2] = bf[(i+2)%4];
-                        newBoundaryFaces_.appendList(triF);
-                        newBoundaryOwners_.append
-                        (
-                            boundaryFaceOwners[bfI]
-                        );
-                        newBoundaryPatches_.append
-                        (
-                            facePatches[bfI]
-                        );
-
-                        triF[1] = bf[(i+2)%4];
-                        triF[2] = bf.prevLabel(i);
-                        newBoundaryFaces_.appendList(triF);
-                        newBoundaryOwners_.append
-                        (
-                            boundaryFaceOwners[bfI]
-                        );
-                        newBoundaryPatches_.append
-                        (
-                            facePatches[bfI]
-                        );
-                    }
 
                     break;
                 }
@@ -835,6 +768,698 @@ void correctEdgesBetweenPatches::patchCorrection()
             newBoundaryPatches_.append(facePatches[bfI]);
         }
     }
+
+
+    // -----------------------------------------------------------------
+    // General quad-diagonal transaction.
+    //
+    // Boundary replacement reconstructs the physical boundary faces in
+    // every affected owner cell.  Therefore choose all quad diagonals
+    // belonging to an owner together, before replaceBoundary() mutates
+    // anything.
+    //
+    // The prospective volume below duplicates the face-centre/face-area
+    // representation and raw signed-volume arithmetic used by
+    // polyMeshGenChecks::checkCellVolumes().
+    // -----------------------------------------------------------------
+
+    const faceListPMG& allFaces = mesh_.faces();
+    const cellListPMG& allCells = mesh_.cells();
+    const labelList& allOwners = mesh_.owner();
+    const pointFieldPMG& allPoints = mesh_.points();
+
+    const label boundaryStart =
+        mesh_.boundaries()[0].patchStart();
+
+    const label boundaryEnd =
+        boundaryStart + bFaces.size();
+
+
+    auto calcVirtualFaceGeometry =
+    [&]
+    (
+        const face& vf,
+        point& fc,
+        vector& fa
+    )
+    {
+        const label nPoints = vf.size();
+
+        if( nPoints == 3 )
+        {
+            fc =
+                (1.0/3.0)
+               *(
+                    allPoints[vf[0]]
+                  + allPoints[vf[1]]
+                  + allPoints[vf[2]]
+                );
+
+            fa =
+                0.5
+               *(
+                    (allPoints[vf[1]] - allPoints[vf[0]])
+                  ^ (allPoints[vf[2]] - allPoints[vf[0]])
+                );
+
+            return;
+        }
+
+        vector sumN = vector::zero;
+        scalar sumA = 0.0;
+        vector sumAc = vector::zero;
+
+        point fCentre = allPoints[vf[0]];
+
+        for(label pi=1; pi<nPoints; ++pi)
+            fCentre += allPoints[vf[pi]];
+
+        fCentre /= scalar(nPoints);
+
+        for(label pi=0; pi<nPoints; ++pi)
+        {
+            const point& nextPoint =
+                allPoints[vf[(pi+1)%nPoints]];
+
+            const vector c =
+                allPoints[vf[pi]]
+              + nextPoint
+              + fCentre;
+
+            const vector n =
+                (nextPoint - allPoints[vf[pi]])
+              ^ (fCentre - allPoints[vf[pi]]);
+
+            const scalar a = mag(n);
+
+            sumN += n;
+            sumA += a;
+            sumAc += a*c;
+        }
+
+        fc =
+            (1.0/3.0)
+           *sumAc/(sumA + VSMALL);
+
+        fa = 0.5*sumN;
+    };
+
+
+    auto appendFaceGeometry =
+    [&]
+    (
+        const face& vf,
+        const bool reverseOrientation,
+        DynamicList<point>& centres,
+        DynamicList<vector>& areas
+    )
+    {
+        point fc(point::zero);
+        vector fa(vector::zero);
+
+        calcVirtualFaceGeometry(vf, fc, fa);
+
+        if( reverseOrientation )
+            fa = -fa;
+
+        centres.append(fc);
+        areas.append(fa);
+    };
+
+
+    auto prospectiveOwnerVolume =
+    [&]
+    (
+        const label ownerCell,
+        const DynamicList<label>& ownerQuadBfI,
+        const label choiceMask,
+        const bool preserveAllQuads
+    ) -> scalar
+    {
+        DynamicList<point> centres;
+        DynamicList<vector> areas;
+
+        const cell& c = allCells[ownerCell];
+
+        forAll(c, cfI)
+        {
+            const label faceI = c[cfI];
+
+            const bool physicalBoundary =
+            (
+                faceI >= boundaryStart
+             && faceI < boundaryEnd
+            );
+
+            if( !physicalBoundary )
+            {
+                appendFaceGeometry
+                (
+                    allFaces[faceI],
+                    allOwners[faceI] != ownerCell,
+                    centres,
+                    areas
+                );
+
+                continue;
+            }
+
+
+            const label bfI =
+                faceI - boundaryStart;
+
+            const face& bf = bFaces[bfI];
+
+            if( patchCorrectionType[bfI] == 0 )
+            {
+                appendFaceGeometry
+                (
+                    bf,
+                    false,
+                    centres,
+                    areas
+                );
+
+                continue;
+            }
+
+
+            if( patchCorrectionType[bfI] == 1 )
+            {
+                const label apexPoint =
+                    fanCorrectionApexPoint[bfI];
+
+                if( apexPoint < 0 )
+                    return -GREAT;
+
+                face tf(3);
+
+                forAll(bf, j)
+                {
+                    tf[0] = bf[j];
+                    tf[1] = bf.nextLabel(j);
+                    tf[2] = apexPoint;
+
+                    appendFaceGeometry
+                    (
+                        tf,
+                        false,
+                        centres,
+                        areas
+                    );
+                }
+
+                continue;
+            }
+
+
+            // Quad correction.
+            if( preserveAllQuads )
+            {
+                appendFaceGeometry
+                (
+                    bf,
+                    false,
+                    centres,
+                    areas
+                );
+
+                continue;
+            }
+
+
+            label localQuadI = -1;
+
+            forAll(ownerQuadBfI, qI)
+            {
+                if( ownerQuadBfI[qI] == bfI )
+                {
+                    localQuadI = qI;
+                    break;
+                }
+            }
+
+            if( localQuadI < 0 )
+                return -GREAT;
+
+
+            const label i =
+                quadCorrectionCorner[bfI];
+
+            if( i < 0 )
+                return -GREAT;
+
+
+            const bool alternate =
+                (choiceMask & (label(1) << localQuadI));
+
+            face t0(3);
+            face t1(3);
+
+            if( !alternate )
+            {
+                // Legacy diagonal i -- i+2.
+                t0[0] = bf[i];
+                t0[1] = bf.nextLabel(i);
+                t0[2] = bf[(i+2)%4];
+
+                t1[0] = bf[i];
+                t1[1] = bf[(i+2)%4];
+                t1[2] = bf.prevLabel(i);
+            }
+            else
+            {
+                // Alternate diagonal (i+1) -- (i-1).
+                t0[0] = bf[i];
+                t0[1] = bf.nextLabel(i);
+                t0[2] = bf.prevLabel(i);
+
+                t1[0] = bf.nextLabel(i);
+                t1[1] = bf[(i+2)%4];
+                t1[2] = bf.prevLabel(i);
+            }
+
+            appendFaceGeometry
+            (
+                t0,
+                false,
+                centres,
+                areas
+            );
+
+            appendFaceGeometry
+            (
+                t1,
+                false,
+                centres,
+                areas
+            );
+        }
+
+
+        if( centres.size() == 0 )
+            return -GREAT;
+
+
+        point cEst(point::zero);
+
+        forAll(centres, fI)
+            cEst += centres[fI];
+
+        cEst /= scalar(centres.size());
+
+
+        scalar cellVol = 0.0;
+
+        forAll(centres, fI)
+        {
+            cellVol +=
+                areas[fI] & (centres[fI] - cEst);
+        }
+
+        return cellVol/3.0;
+    };
+
+
+    labelHashSet quadOwnerSet;
+
+    forAll(quadDiagOwner, qI)
+        quadOwnerSet.insert(quadDiagOwner[qI]);
+
+
+    label nQuadOwnerGroups = 0;
+    label nQuadLegacySafeGroups = 0;
+    label nQuadAlternateGroups = 0;
+    label nQuadAlternateFaces = 0;
+    label nQuadPreservedGroups = 0;
+
+    const label maxEnumeratedQuadsPerOwner = 8;
+
+
+    forAllConstIter(labelHashSet, quadOwnerSet, ownIt)
+    {
+        const label ownerCell = ownIt.key();
+
+        DynamicList<label> ownerQuadBfI;
+
+        forAll(quadDiagOwner, qI)
+        {
+            if( quadDiagOwner[qI] == ownerCell )
+                ownerQuadBfI.append(quadDiagBfI[qI]);
+        }
+
+        const label nQuads =
+            ownerQuadBfI.size();
+
+        if( nQuads == 0 )
+            continue;
+
+        ++nQuadOwnerGroups;
+
+
+        if( nQuads > maxEnumeratedQuadsPerOwner )
+        {
+            const scalar preserveVol =
+                prospectiveOwnerVolume
+                (
+                    ownerCell,
+                    ownerQuadBfI,
+                    0,
+                    true
+                );
+
+            if( preserveVol < VSMALL )
+            {
+                FatalErrorIn
+                (
+                    "void correctEdgesBetweenPatches::patchCorrection()"
+                )
+                    << "Cannot preserve positive owner cell "
+                    << ownerCell
+                    << " when quad transaction exceeds complexity guard."
+                    << " nQuads=" << nQuads
+                    << " preserveVol=" << preserveVol
+                    << abort(FatalError);
+            }
+
+            forAll(ownerQuadBfI, qI)
+            {
+                const label bfI = ownerQuadBfI[qI];
+
+                patchCorrectionType[bfI] = 0;
+                quadCorrectionChoice[bfI] = -1;
+            }
+
+            ++nQuadPreservedGroups;
+
+            Info
+                << "[PATCH_QUAD_OWNER_TRANSACTION]"
+                << " owner=" << ownerCell
+                << " nQuads=" << nQuads
+                << " action=preserve"
+                << " reason=complexityGuard"
+                << " preserveVol=" << preserveVol
+                << endl;
+
+            continue;
+        }
+
+
+        const scalar legacyVolume =
+            prospectiveOwnerVolume
+            (
+                ownerCell,
+                ownerQuadBfI,
+                0,
+                false
+            );
+
+
+        label selectedMask = -1;
+        scalar selectedVolume = -GREAT;
+
+
+        // Preserve historical behaviour whenever it is already valid.
+        if( legacyVolume >= VSMALL )
+        {
+            selectedMask = 0;
+            selectedVolume = legacyVolume;
+            ++nQuadLegacySafeGroups;
+        }
+        else
+        {
+            const label nCombinations =
+                label(1) << nQuads;
+
+            for
+            (
+                label mask=1;
+                mask<nCombinations;
+                ++mask
+            )
+            {
+                const scalar candidateVolume =
+                    prospectiveOwnerVolume
+                    (
+                        ownerCell,
+                        ownerQuadBfI,
+                        mask,
+                        false
+                    );
+
+                if
+                (
+                    candidateVolume >= VSMALL
+                 && candidateVolume > selectedVolume
+                )
+                {
+                    selectedMask = mask;
+                    selectedVolume = candidateVolume;
+                }
+            }
+        }
+
+
+        if( selectedMask < 0 )
+        {
+            // Fail closed: retain the original quads rather than creating
+            // a known non-positive owner cell.
+            const scalar preserveVol =
+                prospectiveOwnerVolume
+                (
+                    ownerCell,
+                    ownerQuadBfI,
+                    0,
+                    true
+                );
+
+            if( preserveVol < VSMALL )
+            {
+                FatalErrorIn
+                (
+                    "void correctEdgesBetweenPatches::patchCorrection()"
+                )
+                    << "No positive quad decomposition or preservation "
+                    << "exists for owner " << ownerCell
+                    << ". legacyVol=" << legacyVolume
+                    << " preserveVol=" << preserveVol
+                    << abort(FatalError);
+            }
+
+            forAll(ownerQuadBfI, qI)
+            {
+                const label bfI = ownerQuadBfI[qI];
+
+                patchCorrectionType[bfI] = 0;
+                quadCorrectionChoice[bfI] = -1;
+            }
+
+            ++nQuadPreservedGroups;
+
+            Info
+                << "[PATCH_QUAD_OWNER_TRANSACTION]"
+                << " owner=" << ownerCell
+                << " nQuads=" << nQuads
+                << " action=preserve"
+                << " legacyVol=" << legacyVolume
+                << " preserveVol=" << preserveVol
+                << endl;
+
+            continue;
+        }
+
+
+        label nAlternateThisOwner = 0;
+
+        forAll(ownerQuadBfI, qI)
+        {
+            const label bfI = ownerQuadBfI[qI];
+
+            const label choice =
+                (
+                    selectedMask
+                  & (label(1) << qI)
+                )
+              ? 1
+              : 0;
+
+            quadCorrectionChoice[bfI] = choice;
+
+            if( choice == 1 )
+            {
+                ++nAlternateThisOwner;
+                ++nQuadAlternateFaces;
+            }
+
+            ++nDecomposedFaces;
+        }
+
+        decomposeCell_[ownerCell] = true;
+        decompose_ = true;
+
+
+        if( selectedMask != 0 )
+        {
+            ++nQuadAlternateGroups;
+
+            Info
+                << "[PATCH_QUAD_OWNER_TRANSACTION]"
+                << " owner=" << ownerCell
+                << " nQuads=" << nQuads
+                << " action=alternate"
+                << " selectedMask=" << selectedMask
+                << " alternateFaces=" << nAlternateThisOwner
+                << " legacyVol=" << legacyVolume
+                << " selectedVol=" << selectedVolume
+                << endl;
+        }
+    }
+
+
+    Info
+        << "[PATCH_QUAD_TRANSACTION_SUMMARY]"
+        << " ownerGroups=" << nQuadOwnerGroups
+        << " legacySafeGroups=" << nQuadLegacySafeGroups
+        << " alternateGroups=" << nQuadAlternateGroups
+        << " alternateFaces=" << nQuadAlternateFaces
+        << " preservedGroups=" << nQuadPreservedGroups
+        << endl;
+
+
+    // -----------------------------------------------------------------
+    // Rebuild the complete proposed boundary exactly once using the
+    // owner-cell-selected quad choices.
+    // -----------------------------------------------------------------
+
+    newBoundaryFaces_.clear();
+    newBoundaryOwners_.clear();
+    newBoundaryPatches_.clear();
+
+
+    forAll(bFaces, bfI)
+    {
+        const face& bf = bFaces[bfI];
+
+        if( patchCorrectionType[bfI] == 0 )
+        {
+            newBoundaryFaces_.appendList(bf);
+            newBoundaryOwners_.append
+            (
+                boundaryFaceOwners[bfI]
+            );
+            newBoundaryPatches_.append
+            (
+                facePatches[bfI]
+            );
+
+            continue;
+        }
+
+
+        if( patchCorrectionType[bfI] == 1 )
+        {
+            const label apexPoint =
+                fanCorrectionApexPoint[bfI];
+
+            if( apexPoint < 0 )
+            {
+                FatalErrorIn
+                (
+                    "void correctEdgesBetweenPatches::patchCorrection()"
+                )
+                    << "Missing fan apex for boundary face "
+                    << bfI
+                    << abort(FatalError);
+            }
+
+            face tf(3);
+            tf[2] = apexPoint;
+
+            forAll(bf, j)
+            {
+                tf[0] = bf[j];
+                tf[1] = bf.nextLabel(j);
+
+                newBoundaryFaces_.appendList(tf);
+                newBoundaryOwners_.append
+                (
+                    boundaryFaceOwners[bfI]
+                );
+                newBoundaryPatches_.append
+                (
+                    facePatches[bfI]
+                );
+            }
+
+            continue;
+        }
+
+
+        const label i =
+            quadCorrectionCorner[bfI];
+
+        const label choice =
+            quadCorrectionChoice[bfI];
+
+        if( i < 0 || (choice != 0 && choice != 1) )
+        {
+            FatalErrorIn
+            (
+                "void correctEdgesBetweenPatches::patchCorrection()"
+            )
+                << "Invalid committed quad state for bfI="
+                << bfI
+                << " corner=" << i
+                << " choice=" << choice
+                << abort(FatalError);
+        }
+
+
+        face t0(3);
+        face t1(3);
+
+        if( choice == 0 )
+        {
+            t0[0] = bf[i];
+            t0[1] = bf.nextLabel(i);
+            t0[2] = bf[(i+2)%4];
+
+            t1[0] = bf[i];
+            t1[1] = bf[(i+2)%4];
+            t1[2] = bf.prevLabel(i);
+        }
+        else
+        {
+            t0[0] = bf[i];
+            t0[1] = bf.nextLabel(i);
+            t0[2] = bf.prevLabel(i);
+
+            t1[0] = bf.nextLabel(i);
+            t1[1] = bf[(i+2)%4];
+            t1[2] = bf.prevLabel(i);
+        }
+
+        newBoundaryFaces_.appendList(t0);
+        newBoundaryOwners_.append
+        (
+            boundaryFaceOwners[bfI]
+        );
+        newBoundaryPatches_.append
+        (
+            facePatches[bfI]
+        );
+
+        newBoundaryFaces_.appendList(t1);
+        newBoundaryOwners_.append
+        (
+            boundaryFaceOwners[bfI]
+        );
+        newBoundaryPatches_.append
+        (
+            facePatches[bfI]
+        );
+    }
+
 
     Info
         << "[PATCH_APEX_SUMMARY]"
