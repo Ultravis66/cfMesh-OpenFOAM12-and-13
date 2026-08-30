@@ -31,6 +31,7 @@ Description
 #include "meshSurfaceEngine.H"
 #include "decomposeFaces.H"
 #include "labelLongList.H"
+#include "polyMeshGenChecks.H"
 
 //#define DEBUGDecompose
 
@@ -50,6 +51,29 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
             << ", mesh has " << mesh_.cells().size() << " cells"
             << abort(FatalError);
     }
+
+    // Diagnostic only. Check volumes only at complete mesh states.
+    // Do not inspect between parent removal and child addition.
+    auto decomposeVolumeLineage =
+    [&](const word& stageName)
+    {
+        labelHashSet negVolCells;
+
+        polyMeshGenChecks::checkCellVolumes
+        (
+            mesh_,
+            false,
+            &negVolCells
+        );
+
+        Info
+            << "[DECOMPOSE_VOLUME_LINEAGE]"
+            << " stage=" << stageName
+            << " negVol=" << negVolCells.size()
+            << endl;
+    };
+
+    decomposeVolumeLineage("entry");
 
     label nRequested = 0;
 
@@ -80,6 +104,8 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
     // -----------------------------------------------------------------
 
     checkFaceConnections(decomposeCell);
+
+    decomposeVolumeLineage("afterCheckFaceConnections");
 
 
     if( decomposeCell.size() != mesh_.cells().size() )
@@ -135,9 +161,34 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
             )
         )
         {
-            apexSafe[cellI] = true;
-            apexMargin[cellI] = relativeMargin;
-            ++nSafeRequested;
+            scalar minChildVolume = GREAT;
+
+            if
+            (
+                exactPyramidChildrenPositive
+                (
+                    cellI,
+                    apex,
+                    minChildVolume
+                )
+            )
+            {
+                apexSafe[cellI] = true;
+                apexMargin[cellI] = relativeMargin;
+                ++nSafeRequested;
+            }
+            else
+            {
+                apexMargin[cellI] = relativeMargin;
+                ++nUnsafeRequested;
+
+                Info
+                    << "[DECOMPOSE_EXACT_CHILD_REJECT]"
+                    << " cell=" << cellI
+                    << " apexMargin=" << relativeMargin
+                    << " minChildVolume=" << minChildVolume
+                    << endl;
+            }
         }
         else
         {
@@ -352,6 +403,26 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
     }
 
 
+    label nSelectedPrint = 0;
+
+    forAll(topologyDecomposeCell, cellI)
+    {
+        if
+        (
+            topologyDecomposeCell[cellI]
+         && nSelectedPrint < 50
+        )
+        {
+            Info
+                << "[DECOMPOSE_SELECTED_PARENT]"
+                << " cell=" << cellI
+                << " apexMargin=" << apexMargin[cellI]
+                << endl;
+
+            ++nSelectedPrint;
+        }
+    }
+
     Info
         << "DECOMPTOPPAIR"
         << " requested=" << nRequested
@@ -393,7 +464,57 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
 
     removeDecomposedCells(topologyDecomposeCell);
 
+    // Diagnostic only: addCells() appends facesOfNewCells_ in order.
+    const label firstNewCell = mesh_.cells().size();
+    const label nChildRecords = facesOfNewCells_.size();
+
+    Info
+        << "[DECOMPOSE_CHILD_RANGE]"
+        << " firstNewCell=" << firstNewCell
+        << " nChildRecords=" << nChildRecords
+        << endl;
+
     addNewCells();
+
+    // Diagnostic only: identify the exact final negative children and
+    // map their final cell labels back to facesOfNewCells_ record IDs.
+    labelHashSet postAddNegVolCells;
+
+    polyMeshGenChecks::checkCellVolumes
+    (
+        mesh_,
+        false,
+        &postAddNegVolCells
+    );
+
+    for
+    (
+        label cellI=0;
+        cellI<mesh_.cells().size();
+        ++cellI
+    )
+    {
+        if( !postAddNegVolCells.found(cellI) )
+            continue;
+
+        const label record =
+            cellI - firstNewCell;
+
+        const bool isNewChild =
+        (
+            record >= 0
+         && record < nChildRecords
+        );
+
+        Info
+            << "[DECOMPOSE_BAD_CHILD]"
+            << " cell=" << cellI
+            << " isNewChild=" << isNewChild
+            << " record=" << record
+            << endl;
+    }
+
+    decomposeVolumeLineage("afterAddNewCells");
 
 
     # ifdef DEBUGDecompose

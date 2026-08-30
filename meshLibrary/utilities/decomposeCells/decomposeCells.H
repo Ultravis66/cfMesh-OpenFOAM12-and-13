@@ -87,6 +87,17 @@ class decomposeCells
             scalar& relativeMargin
         ) const;
 
+        //- Validate the EXACT pyramid children which would be committed
+        //  for this apex.  Uses the same polygon face-centre/area
+        //  representation and raw signed-volume arithmetic as the final
+        //  mesh volume checker.
+        bool exactPyramidChildrenPositive
+        (
+            const label cellI,
+            const point& apex,
+            scalar& minChildVolume
+        ) const;
+
         //- find the apex of the pyramids
         label findTopVertex
         (

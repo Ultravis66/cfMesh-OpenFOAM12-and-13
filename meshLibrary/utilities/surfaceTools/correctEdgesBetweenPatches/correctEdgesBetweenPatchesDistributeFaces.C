@@ -39,6 +39,7 @@ Description
 
 # ifdef USE_OMP
 #include <omp.h>
+#include "polyMeshGenChecks.H"
 # endif
 
 //#define DEBUGMapping
@@ -511,6 +512,23 @@ void correctEdgesBetweenPatches::patchCorrection()
     label worstFanApexBfI = -1;
     scalar maxFanApexOffsetRatio = -1.0;
 
+    // Diagnostic only: retain provenance of every fan decomposition
+    // so any post-patchCorrection negative owner can be tied directly
+    // back to the boundary face/apex which created it.
+    DynamicList<label> fanDiagBfI;
+    DynamicList<label> fanDiagOwner;
+    DynamicList<label> fanDiagPatch;
+    DynamicList<label> fanDiagNVerts;
+    DynamicList<point> fanDiagApex;
+
+    // Diagnostic only: provenance for legacy 4-sided split.
+    DynamicList<label> quadDiagBfI;
+    DynamicList<label> quadDiagOwner;
+    DynamicList<label> quadDiagPatch;
+    DynamicList<label> quadDiagCorner;
+    DynamicList<label> quadDiagA;
+    DynamicList<label> quadDiagB;
+
     forAll(bFaces, bfI)
     {
         const face& bf = bFaces[bfI];
@@ -656,6 +674,12 @@ void correctEdgesBetweenPatches::patchCorrection()
                             << endl;
                     }
 
+                    fanDiagBfI.append(bfI);
+                    fanDiagOwner.append(boundaryFaceOwners[bfI]);
+                    fanDiagPatch.append(facePatches[bfI]);
+                    fanDiagNVerts.append(bf.size());
+                    fanDiagApex.append(pAvg);
+
                     triF[2] = mesh_.points().size();
 
                     // Use the arithmetic vertex mean as the actual
@@ -701,20 +725,102 @@ void correctEdgesBetweenPatches::patchCorrection()
                     decomposeCell_[boundaryFaceOwners[bfI]] = true;
                     decompose_ = true;
 
-                    //- decompose the quad into 2 triangles
-                    triF[0] = bf[i];
+                    // Diagnostic only: the legacy quad split chooses
+                    // the diagonal from the detected feature-corner
+                    // vertex i to the opposite vertex i+2.
+                    quadDiagBfI.append(bfI);
+                    quadDiagOwner.append(boundaryFaceOwners[bfI]);
+                    quadDiagPatch.append(facePatches[bfI]);
+                    quadDiagCorner.append(i);
+                    quadDiagA.append(bf[i]);
+                    quadDiagB.append(bf[(i+2)%4]);
 
-                    triF[1] = bf.nextLabel(i);
-                    triF[2] = bf[(i+2)%4];
-                    newBoundaryFaces_.appendList(triF);
-                    newBoundaryOwners_.append(boundaryFaceOwners[bfI]);
-                    newBoundaryPatches_.append(facePatches[bfI]);
+                    // Forensic experiment: the residual negative
+                    // owners were traced exactly to these three quad
+                    // decompositions. Test the alternate diagonal only
+                    // on those faces.
+                    const bool useAlternateDiagonal =
+                    (
+                        bfI == 124493
+                     || bfI == 219116
+                     || bfI == 511093
+                    );
 
-                    triF[1] = bf[(i+2)%4];
-                    triF[2] = bf.prevLabel(i);
-                    newBoundaryFaces_.appendList(triF);
-                    newBoundaryOwners_.append(boundaryFaceOwners[bfI]);
-                    newBoundaryPatches_.append(facePatches[bfI]);
+                    if( useAlternateDiagonal )
+                    {
+                        Info
+                            << "[QUAD_ALT_FORENSIC]"
+                            << " bfI=" << bfI
+                            << " owner=" << boundaryFaceOwners[bfI]
+                            << " patch=" << facePatches[bfI]
+                            << " legacyDiagonal="
+                            << bf[i] << "|" << bf[(i+2)%4]
+                            << " alternateDiagonal="
+                            << bf.nextLabel(i)
+                            << "|" << bf.prevLabel(i)
+                            << endl;
+
+                        // Alternate diagonal:
+                        // (i+1) -------- (i-1)
+                        //
+                        // Preserve original polygon orientation.
+                        triF[0] = bf[i];
+                        triF[1] = bf.nextLabel(i);
+                        triF[2] = bf.prevLabel(i);
+
+                        newBoundaryFaces_.appendList(triF);
+                        newBoundaryOwners_.append
+                        (
+                            boundaryFaceOwners[bfI]
+                        );
+                        newBoundaryPatches_.append
+                        (
+                            facePatches[bfI]
+                        );
+
+                        triF[0] = bf.nextLabel(i);
+                        triF[1] = bf[(i+2)%4];
+                        triF[2] = bf.prevLabel(i);
+
+                        newBoundaryFaces_.appendList(triF);
+                        newBoundaryOwners_.append
+                        (
+                            boundaryFaceOwners[bfI]
+                        );
+                        newBoundaryPatches_.append
+                        (
+                            facePatches[bfI]
+                        );
+                    }
+                    else
+                    {
+                        // Legacy diagonal i -- i+2.
+                        triF[0] = bf[i];
+
+                        triF[1] = bf.nextLabel(i);
+                        triF[2] = bf[(i+2)%4];
+                        newBoundaryFaces_.appendList(triF);
+                        newBoundaryOwners_.append
+                        (
+                            boundaryFaceOwners[bfI]
+                        );
+                        newBoundaryPatches_.append
+                        (
+                            facePatches[bfI]
+                        );
+
+                        triF[1] = bf[(i+2)%4];
+                        triF[2] = bf.prevLabel(i);
+                        newBoundaryFaces_.appendList(triF);
+                        newBoundaryOwners_.append
+                        (
+                            boundaryFaceOwners[bfI]
+                        );
+                        newBoundaryPatches_.append
+                        (
+                            facePatches[bfI]
+                        );
+                    }
 
                     break;
                 }
@@ -745,6 +851,98 @@ void correctEdgesBetweenPatches::patchCorrection()
         replaceBoundary();
         clearMeshSurface();
         mesh_.clearAddressingData();
+
+        labelHashSet patchNegVolCells;
+
+        polyMeshGenChecks::checkCellVolumes
+        (
+            mesh_,
+            false,
+            &patchNegVolCells
+        );
+
+        label matchedFanOwners = 0;
+        label matchedFanRecords = 0;
+        label matchedQuadOwners = 0;
+        label matchedQuadRecords = 0;
+
+        labelHashSet matchedAnyOwner;
+
+        forAll(fanDiagOwner, i)
+        {
+            if( patchNegVolCells.found(fanDiagOwner[i]) )
+            {
+                ++matchedFanRecords;
+                matchedAnyOwner.insert(fanDiagOwner[i]);
+
+                bool firstForOwner = true;
+
+                for(label j=0; j<i; ++j)
+                {
+                    if
+                    (
+                        fanDiagOwner[j] == fanDiagOwner[i]
+                     && patchNegVolCells.found(fanDiagOwner[j])
+                    )
+                    {
+                        firstForOwner = false;
+                        break;
+                    }
+                }
+
+                if( firstForOwner )
+                {
+                    ++matchedFanOwners;
+                }
+
+                Info
+                    << "[PATCH_RESIDUAL_FAN_OWNER]"
+                    << " cell=" << fanDiagOwner[i]
+                    << " bfI=" << fanDiagBfI[i]
+                    << " patch=" << fanDiagPatch[i]
+                    << " nVerts=" << fanDiagNVerts[i]
+                    << " apex=" << fanDiagApex[i]
+                    << endl;
+            }
+        }
+
+        labelHashSet matchedQuadOwnerSet;
+
+        forAll(quadDiagOwner, i)
+        {
+            if( patchNegVolCells.found(quadDiagOwner[i]) )
+            {
+                ++matchedQuadRecords;
+                matchedQuadOwnerSet.insert(quadDiagOwner[i]);
+                matchedAnyOwner.insert(quadDiagOwner[i]);
+
+                Info
+                    << "[PATCH_RESIDUAL_QUAD_OWNER]"
+                    << " cell=" << quadDiagOwner[i]
+                    << " bfI=" << quadDiagBfI[i]
+                    << " patch=" << quadDiagPatch[i]
+                    << " cornerI=" << quadDiagCorner[i]
+                    << " diagonalPoints="
+                    << quadDiagA[i] << "|" << quadDiagB[i]
+                    << endl;
+            }
+        }
+
+        matchedQuadOwners = matchedQuadOwnerSet.size();
+
+        Info
+            << "[PATCH_RESIDUAL_OWNER_SUMMARY]"
+            << " negVol=" << patchNegVolCells.size()
+            << " fanRecords=" << fanDiagOwner.size()
+            << " matchedFanOwners=" << matchedFanOwners
+            << " matchedFanRecords=" << matchedFanRecords
+            << " quadRecords=" << quadDiagOwner.size()
+            << " matchedQuadOwners=" << matchedQuadOwners
+            << " matchedQuadRecords=" << matchedQuadRecords
+            << " matchedAnyOwners=" << matchedAnyOwner.size()
+            << " unmatchedNegOwners="
+            << patchNegVolCells.size() - matchedAnyOwner.size()
+            << endl;
     }
 
     Info << "Finished with patch correction" << endl;
