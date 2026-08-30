@@ -921,9 +921,21 @@ void decomposeCells::checkFaceConnections(const boolList& decomposeCell)
     }
 
 
-    //- Historical repair: each marked polygon is fan-decomposed around
-    //- one newly-created interior point.
-    decomposeFaces(mesh_).decomposeMeshFaces(decomposeFace);
+    // EXPERIMENT:
+    // Keep the connectivity diagnostic above, but preserve the original
+    // polygon interfaces rather than fan-decomposing each marked face.
+    //
+    // The historical fan operation converts one owner/neighbour interface
+    // into N triangular interfaces between the same two cells, thereby
+    // creating duplicate-neighbour topology which is subsequently repaired
+    // by whole-cell pyramid decomposition.
+    Info
+        << "[EXPERIMENT_SKIP_CHECKFACECONNECTIONS_FAN]"
+        << " preserving "
+        << "marked polygon interfaces"
+        << endl;
+
+    //decomposeFaces(mesh_).decomposeMeshFaces(decomposeFace);
 }
 
 void decomposeCells::createPointsAndCellFaces(const boolList& decomposeCell)
