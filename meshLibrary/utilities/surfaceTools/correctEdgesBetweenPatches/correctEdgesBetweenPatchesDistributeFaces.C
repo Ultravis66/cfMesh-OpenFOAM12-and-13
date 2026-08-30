@@ -512,6 +512,17 @@ void correctEdgesBetweenPatches::patchCorrection()
     label worstFanApexBfI = -1;
     scalar maxFanApexOffsetRatio = -1.0;
 
+    // Diagnostic only: test whether the arithmetic-mean fan is
+    // orientation-coherent. A reversed fan triangle indicates that
+    // the bounded apex is not geometrically admissible as a simple
+    // star fan for this polygon.
+    label nFanCoherenceChecked = 0;
+    label nFanWithReverse = 0;
+    label nFanWithNearFold = 0;
+    label nFanRejected = 0;
+    scalar worstFanMinAlignment = 1.0;
+    label worstFanAlignmentBfI = -1;
+
     // Diagnostic only: retain provenance of every fan decomposition
     // so any post-patchCorrection negative owner can be tied directly
     // back to the boundary face/apex which created it.
@@ -559,10 +570,9 @@ void correctEdgesBetweenPatches::patchCorrection()
             {
                 if( bf.size() > 4 )
                 {
-                    store = false;
-                    ++nDecomposedFaces;
-                    decomposeCell_[boundaryFaceOwners[bfI]] = true;
-                    decompose_ = true;
+                    // Defer topology mutation state until the bounded
+                    // arithmetic-mean fan has passed its geometric
+                    // coherence test.
 
                     //- decompose into triangles
                     const point p = bf.centre(mesh_.points());
@@ -623,6 +633,130 @@ void correctEdgesBetweenPatches::patchCorrection()
                             Foam::max(aabbDiag, maxEdgeLen),
                             VSMALL
                         );
+
+                    // Evaluate orientation coherence of the
+                    // exact arithmetic-mean fan which would be created.
+                    vector aggregateFanArea = vector::zero;
+
+                    forAll(bf, fpI)
+                    {
+                        const point& fp =
+                            mesh_.points()[bf[fpI]];
+
+                        const point& fpNext =
+                            mesh_.points()
+                            [
+                                bf[bf.fcIndex(fpI)]
+                            ];
+
+                        aggregateFanArea +=
+                            0.5
+                           *((fpNext - fp) ^ (pAvg - fp));
+                    }
+
+                    scalar minFanAlignment = 1.0;
+                    label nReverseTriangles = 0;
+                    label nNearFoldTriangles = 0;
+
+                    const scalar aggregateMag =
+                        mag(aggregateFanArea);
+
+                    if( aggregateMag > VSMALL )
+                    {
+                        forAll(bf, fpI)
+                        {
+                            const point& fp =
+                                mesh_.points()[bf[fpI]];
+
+                            const point& fpNext =
+                                mesh_.points()
+                                [
+                                    bf[bf.fcIndex(fpI)]
+                                ];
+
+                            const vector triArea =
+                                0.5
+                               *((fpNext - fp) ^ (pAvg - fp));
+
+                            const scalar triMag =
+                                mag(triArea);
+
+                            scalar alignment = -1.0;
+
+                            if( triMag > VSMALL )
+                            {
+                                alignment =
+                                    (triArea & aggregateFanArea)
+                                   /(triMag*aggregateMag);
+                            }
+
+                            minFanAlignment =
+                                Foam::min
+                                (
+                                    minFanAlignment,
+                                    alignment
+                                );
+
+                            if( alignment <= 0.0 )
+                            {
+                                ++nReverseTriangles;
+                            }
+                            else if( alignment < 0.1 )
+                            {
+                                ++nNearFoldTriangles;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        minFanAlignment = -1.0;
+                        nReverseTriangles = bf.size();
+                    }
+
+                    ++nFanCoherenceChecked;
+
+                    if( nReverseTriangles != 0 )
+                        ++nFanWithReverse;
+
+                    if( nNearFoldTriangles != 0 )
+                        ++nFanWithNearFold;
+
+                    if
+                    (
+                        minFanAlignment <
+                        worstFanMinAlignment
+                    )
+                    {
+                        worstFanMinAlignment =
+                            minFanAlignment;
+
+                        worstFanAlignmentBfI =
+                            bfI;
+                    }
+
+                    if
+                    (
+                        nReverseTriangles != 0
+                     || nNearFoldTriangles != 0
+                    )
+                    {
+                        Info
+                            << "[PATCH_FAN_COHERENCE]"
+                            << " bfI=" << bfI
+                            << " owner="
+                            << boundaryFaceOwners[bfI]
+                            << " patch="
+                            << facePatches[bfI]
+                            << " nVerts=" << bf.size()
+                            << " minAlignment="
+                            << minFanAlignment
+                            << " reverse="
+                            << nReverseTriangles
+                            << " nearFold="
+                            << nNearFoldTriangles
+                            << " pAvg=" << pAvg
+                            << endl;
+                    }
 
                     const scalar centreOffset =
                         mag(p - pAvg);
@@ -687,6 +821,50 @@ void correctEdgesBetweenPatches::patchCorrection()
                             << outsideAabb
                             << endl;
                     }
+
+                    // Production admissibility gate:
+                    //
+                    // A bounded apex is not sufficient by itself.
+                    // Every oriented triangle in the proposed fan must
+                    // agree with the aggregate fan orientation.  The
+                    // diagnostic assigns alignment=-1 for degenerate
+                    // triangles or a degenerate aggregate fan, so those
+                    // cases also fail closed here.
+                    if( nReverseTriangles != 0 )
+                    {
+                        ++nFanRejected;
+
+                        Info
+                            << "[PATCH_FAN_REJECT]"
+                            << " bfI=" << bfI
+                            << " owner="
+                            << boundaryFaceOwners[bfI]
+                            << " patch="
+                            << facePatches[bfI]
+                            << " nVerts=" << bf.size()
+                            << " minAlignment="
+                            << minFanAlignment
+                            << " reverse="
+                            << nReverseTriangles
+                            << " nearFold="
+                            << nNearFoldTriangles
+                            << " action=preserveOriginal"
+                            << endl;
+
+                        // store remains true, so the original polygon is
+                        // retained by the normal unchanged-face path.
+                        break;
+                    }
+
+                    // The exact fan candidate is geometrically coherent.
+                    // Only now mark this face/cell for topology change.
+                    store = false;
+                    ++nDecomposedFaces;
+                    decomposeCell_
+                    [
+                        boundaryFaceOwners[bfI]
+                    ] = true;
+                    decompose_ = true;
 
                     fanDiagBfI.append(bfI);
                     fanDiagOwner.append(boundaryFaceOwners[bfI]);
@@ -1467,6 +1645,12 @@ void correctEdgesBetweenPatches::patchCorrection()
         << " outsideAabb=" << nFanApexOutsideAabb
         << " maxOffsetRatio=" << maxFanApexOffsetRatio
         << " worstBfI=" << worstFanApexBfI
+        << " coherenceChecked=" << nFanCoherenceChecked
+        << " fansWithReverse=" << nFanWithReverse
+        << " fansWithNearFold=" << nFanWithNearFold
+        << " rejected=" << nFanRejected
+        << " worstMinAlignment=" << worstFanMinAlignment
+        << " worstAlignmentBfI=" << worstFanAlignmentBfI
         << endl;
 
     reduce(decompose_, maxOp<bool>());
