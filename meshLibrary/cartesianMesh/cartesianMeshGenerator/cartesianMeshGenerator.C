@@ -7794,6 +7794,14 @@ void cartesianMeshGenerator::generateMesh()
                 label nFinalDuplicatePairs = 0;
                 label nFinalDuplicateMasterCells = 0;
 
+                // Diagnostic-only classification of the complete shared-face
+                // patch between each repeated-neighbour cell pair.
+                label nSharedPatchSingleDisk = 0;
+                label nSharedPatchWithInteriorVerts = 0;
+                label nSharedPatchNoInteriorVerts = 0;
+                label nSharedPatchNonManifold = 0;
+                label nSharedPatchBadPerimeter = 0;
+
 
                 forAll(finalCells, cellI)
                 {
@@ -7895,7 +7903,7 @@ void cartesianMeshGenerator::generateMesh()
                             ++nFinalDuplicatePairs;
 
 
-                            label nSharedFaces = 0;
+                            DynList<label> sharedFaceIds;
 
                             forAll(c, cfJ)
                             {
@@ -7933,8 +7941,584 @@ void cartesianMeshGenerator::generateMesh()
                                 }
 
                                 if( nbr == otherCell )
-                                    ++nSharedFaces;
+                                    sharedFaceIds.append(fJ);
                             }
+
+
+                            const label nSharedFaces =
+                                sharedFaceIds.size();
+
+
+                            // ------------------------------------------------
+                            // Classify the shared-face patch as a small
+                            // topological surface.
+                            //
+                            // We deliberately use tiny linear-search lists
+                            // here.  These patches contain only a handful of
+                            // faces, and this keeps the diagnostic independent
+                            // of any extra addressing/cache machinery.
+                            // ------------------------------------------------
+
+                            DynList<label> uniquePatchVerts;
+
+                            DynList<label> edgeA;
+                            DynList<label> edgeB;
+                            DynList<label> edgeUseCount;
+
+                            label nTriFaces = 0;
+                            label nQuadFaces = 0;
+                            label nNgonFaces = 0;
+
+
+                            forAll(sharedFaceIds, sfI)
+                            {
+                                const face& sf =
+                                    finalFaces
+                                    [
+                                        sharedFaceIds[sfI]
+                                    ];
+
+                                if( sf.size() == 3 )
+                                    ++nTriFaces;
+                                else if( sf.size() == 4 )
+                                    ++nQuadFaces;
+                                else
+                                    ++nNgonFaces;
+
+
+                                forAll(sf, fpI)
+                                {
+                                    const label pI = sf[fpI];
+
+                                    bool foundPoint = false;
+
+                                    forAll
+                                    (
+                                        uniquePatchVerts,
+                                        upI
+                                    )
+                                    {
+                                        if
+                                        (
+                                            uniquePatchVerts[upI]
+                                         == pI
+                                        )
+                                        {
+                                            foundPoint = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if( !foundPoint )
+                                    {
+                                        uniquePatchVerts.append
+                                        (
+                                            pI
+                                        );
+                                    }
+
+
+                                    label a = sf[fpI];
+                                    label b =
+                                        sf
+                                        [
+                                            (fpI + 1)
+                                          % sf.size()
+                                        ];
+
+                                    if( b < a )
+                                    {
+                                        const label tmp = a;
+                                        a = b;
+                                        b = tmp;
+                                    }
+
+
+                                    label foundEdge = -1;
+
+                                    forAll(edgeA, eI)
+                                    {
+                                        if
+                                        (
+                                            edgeA[eI] == a
+                                         && edgeB[eI] == b
+                                        )
+                                        {
+                                            foundEdge = eI;
+                                            break;
+                                        }
+                                    }
+
+
+                                    if( foundEdge < 0 )
+                                    {
+                                        edgeA.append(a);
+                                        edgeB.append(b);
+                                        edgeUseCount.append(1);
+                                    }
+                                    else
+                                    {
+                                        ++edgeUseCount[foundEdge];
+                                    }
+                                }
+                            }
+
+
+                            label nPerimeterEdges = 0;
+                            label nInternalPatchEdges = 0;
+                            label nNonManifoldEdges = 0;
+
+                            DynList<label> perimeterVerts;
+                            DynList<label> perimeterDegree;
+
+
+                            forAll(edgeA, eI)
+                            {
+                                if( edgeUseCount[eI] == 1 )
+                                {
+                                    ++nPerimeterEdges;
+
+                                    const label ep[2] =
+                                    {
+                                        edgeA[eI],
+                                        edgeB[eI]
+                                    };
+
+                                    for
+                                    (
+                                        label endI = 0;
+                                        endI < 2;
+                                        ++endI
+                                    )
+                                    {
+                                        const label pI =
+                                            ep[endI];
+
+                                        label pvI = -1;
+
+                                        forAll
+                                        (
+                                            perimeterVerts,
+                                            j
+                                        )
+                                        {
+                                            if
+                                            (
+                                                perimeterVerts[j]
+                                             == pI
+                                            )
+                                            {
+                                                pvI = j;
+                                                break;
+                                            }
+                                        }
+
+                                        if( pvI < 0 )
+                                        {
+                                            perimeterVerts.append
+                                            (
+                                                pI
+                                            );
+
+                                            perimeterDegree.append
+                                            (
+                                                1
+                                            );
+                                        }
+                                        else
+                                        {
+                                            ++perimeterDegree[pvI];
+                                        }
+                                    }
+                                }
+                                else if
+                                (
+                                    edgeUseCount[eI] == 2
+                                )
+                                {
+                                    ++nInternalPatchEdges;
+                                }
+                                else
+                                {
+                                    ++nNonManifoldEdges;
+                                }
+                            }
+
+
+                            label nBadPerimeterDegree = 0;
+
+                            forAll
+                            (
+                                perimeterDegree,
+                                pvI
+                            )
+                            {
+                                if
+                                (
+                                    perimeterDegree[pvI]
+                                 != 2
+                                )
+                                {
+                                    ++nBadPerimeterDegree;
+                                }
+                            }
+
+
+                            // Count connected components of the face patch
+                            // using shared EDGES, not merely shared vertices.
+                            auto facesSharePatchEdge =
+                            [&]
+                            (
+                                const face& fa,
+                                const face& fb
+                            ) -> bool
+                            {
+                                forAll(fa, ai)
+                                {
+                                    label a0 = fa[ai];
+                                    label a1 =
+                                        fa
+                                        [
+                                            (ai + 1)
+                                          % fa.size()
+                                        ];
+
+                                    if( a1 < a0 )
+                                    {
+                                        const label tmp = a0;
+                                        a0 = a1;
+                                        a1 = tmp;
+                                    }
+
+                                    forAll(fb, bi)
+                                    {
+                                        label b0 = fb[bi];
+                                        label b1 =
+                                            fb
+                                            [
+                                                (bi + 1)
+                                              % fb.size()
+                                            ];
+
+                                        if( b1 < b0 )
+                                        {
+                                            const label tmp = b0;
+                                            b0 = b1;
+                                            b1 = tmp;
+                                        }
+
+                                        if
+                                        (
+                                            a0 == b0
+                                         && a1 == b1
+                                        )
+                                        {
+                                            return true;
+                                        }
+                                    }
+                                }
+
+                                return false;
+                            };
+
+
+                            label nFaceComponents = 0;
+
+                            boolList faceVisited
+                            (
+                                nSharedFaces,
+                                false
+                            );
+
+
+                            forAll(sharedFaceIds, seedI)
+                            {
+                                if( faceVisited[seedI] )
+                                    continue;
+
+                                ++nFaceComponents;
+
+                                DynList<label> queue;
+                                queue.append(seedI);
+                                faceVisited[seedI] = true;
+
+                                label qHead = 0;
+
+                                while
+                                (
+                                    qHead
+                                  < queue.size()
+                                )
+                                {
+                                    const label curI =
+                                        queue[qHead++];
+
+                                    const face& curF =
+                                        finalFaces
+                                        [
+                                            sharedFaceIds[curI]
+                                        ];
+
+                                    forAll
+                                    (
+                                        sharedFaceIds,
+                                        testI
+                                    )
+                                    {
+                                        if
+                                        (
+                                            faceVisited[testI]
+                                        )
+                                        {
+                                            continue;
+                                        }
+
+                                        const face& testF =
+                                            finalFaces
+                                            [
+                                                sharedFaceIds
+                                                [
+                                                    testI
+                                                ]
+                                            ];
+
+                                        if
+                                        (
+                                            facesSharePatchEdge
+                                            (
+                                                curF,
+                                                testF
+                                            )
+                                        )
+                                        {
+                                            faceVisited[testI] =
+                                                true;
+
+                                            queue.append(testI);
+                                        }
+                                    }
+                                }
+                            }
+
+
+                            // Count connected components of the perimeter
+                            // graph.  If every perimeter vertex has degree 2,
+                            // each component is a closed loop.
+                            label nPerimeterLoops = 0;
+
+                            boolList perimeterVisited
+                            (
+                                perimeterVerts.size(),
+                                false
+                            );
+
+
+                            forAll
+                            (
+                                perimeterVerts,
+                                seedPV
+                            )
+                            {
+                                if
+                                (
+                                    perimeterVisited[seedPV]
+                                )
+                                {
+                                    continue;
+                                }
+
+                                ++nPerimeterLoops;
+
+                                DynList<label> queue;
+                                queue.append(seedPV);
+                                perimeterVisited[seedPV] =
+                                    true;
+
+                                label qHead = 0;
+
+                                while
+                                (
+                                    qHead
+                                  < queue.size()
+                                )
+                                {
+                                    const label curPV =
+                                        queue[qHead++];
+
+                                    const label curPoint =
+                                        perimeterVerts[curPV];
+
+                                    forAll(edgeA, eI)
+                                    {
+                                        if
+                                        (
+                                            edgeUseCount[eI]
+                                         != 1
+                                        )
+                                        {
+                                            continue;
+                                        }
+
+                                        label otherPoint = -1;
+
+                                        if
+                                        (
+                                            edgeA[eI]
+                                         == curPoint
+                                        )
+                                        {
+                                            otherPoint =
+                                                edgeB[eI];
+                                        }
+                                        else if
+                                        (
+                                            edgeB[eI]
+                                         == curPoint
+                                        )
+                                        {
+                                            otherPoint =
+                                                edgeA[eI];
+                                        }
+                                        else
+                                        {
+                                            continue;
+                                        }
+
+
+                                        label otherPV = -1;
+
+                                        forAll
+                                        (
+                                            perimeterVerts,
+                                            j
+                                        )
+                                        {
+                                            if
+                                            (
+                                                perimeterVerts[j]
+                                             == otherPoint
+                                            )
+                                            {
+                                                otherPV = j;
+                                                break;
+                                            }
+                                        }
+
+
+                                        if
+                                        (
+                                            otherPV >= 0
+                                         && !perimeterVisited
+                                            [
+                                                otherPV
+                                            ]
+                                        )
+                                        {
+                                            perimeterVisited
+                                            [
+                                                otherPV
+                                            ] = true;
+
+                                            queue.append
+                                            (
+                                                otherPV
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+
+                            const label nUniqueVerts =
+                                uniquePatchVerts.size();
+
+                            const label nUniqueEdges =
+                                edgeA.size();
+
+                            const label nPerimeterVerts =
+                                perimeterVerts.size();
+
+                            const label nInteriorVerts =
+                                nUniqueVerts
+                              - nPerimeterVerts;
+
+                            // Euler characteristic of this face complex.
+                            const label eulerCharacteristic =
+                                nUniqueVerts
+                              - nUniqueEdges
+                              + nSharedFaces;
+
+
+                            const bool singleDisk =
+                            (
+                                nSharedFaces > 0
+                             && nFaceComponents == 1
+                             && nNonManifoldEdges == 0
+                             && nBadPerimeterDegree == 0
+                             && nPerimeterLoops == 1
+                             && eulerCharacteristic == 1
+                            );
+
+
+                            if( singleDisk )
+                                ++nSharedPatchSingleDisk;
+
+                            if( nInteriorVerts > 0 )
+                                ++nSharedPatchWithInteriorVerts;
+                            else
+                                ++nSharedPatchNoInteriorVerts;
+
+                            if( nNonManifoldEdges > 0 )
+                                ++nSharedPatchNonManifold;
+
+                            if
+                            (
+                                nBadPerimeterDegree > 0
+                             || nPerimeterLoops != 1
+                            )
+                            {
+                                ++nSharedPatchBadPerimeter;
+                            }
+
+
+                            Info
+                                << "[FINAL_SHARED_PATCH]"
+                                << " pair=("
+                                << cellI << ' '
+                                << otherCell << ')'
+                                << " faces="
+                                << nSharedFaces
+                                << " tri="
+                                << nTriFaces
+                                << " quad="
+                                << nQuadFaces
+                                << " ngon="
+                                << nNgonFaces
+                                << " verts="
+                                << nUniqueVerts
+                                << " edges="
+                                << nUniqueEdges
+                                << " perimeterEdges="
+                                << nPerimeterEdges
+                                << " internalEdges="
+                                << nInternalPatchEdges
+                                << " nonManifoldEdges="
+                                << nNonManifoldEdges
+                                << " perimeterVerts="
+                                << nPerimeterVerts
+                                << " interiorVerts="
+                                << nInteriorVerts
+                                << " badPerimeterDegree="
+                                << nBadPerimeterDegree
+                                << " faceComponents="
+                                << nFaceComponents
+                                << " perimeterLoops="
+                                << nPerimeterLoops
+                                << " chi="
+                                << eulerCharacteristic
+                                << " singleDisk="
+                                << singleDisk
+                                << endl;
 
 
                             const point centreA =
@@ -7989,6 +8573,16 @@ void cartesianMeshGenerator::generateMesh()
                     << nFinalDuplicatePairs
                     << " masterCells="
                     << nFinalDuplicateMasterCells
+                    << " singleDisk="
+                    << nSharedPatchSingleDisk
+                    << " withInteriorVerts="
+                    << nSharedPatchWithInteriorVerts
+                    << " noInteriorVerts="
+                    << nSharedPatchNoInteriorVerts
+                    << " nonManifold="
+                    << nSharedPatchNonManifold
+                    << " badPerimeter="
+                    << nSharedPatchBadPerimeter
                     << endl;
             }
             //- Post-BL Rescue Rung: surface-constrained local repair
