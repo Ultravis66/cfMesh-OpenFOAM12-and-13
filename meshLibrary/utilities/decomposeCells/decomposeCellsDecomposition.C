@@ -95,6 +95,141 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
     }
 
 
+    // Diagnostic only:
+    // Count repeated-neighbour topology using the same lower-labelled
+    // master-cell convention as OpenFOAM checkUpperTriangular().
+    //
+    // References are acquired fresh on every call because
+    // checkFaceConnections() rebuilds the face/cell topology.
+    auto duplicatePairLineage =
+    [&]
+    (
+        const word& stageName
+    )
+    {
+        const cellListPMG& dCells =
+            mesh_.cells();
+
+        const labelList& dOwner =
+            mesh_.owner();
+
+        const labelList& dNeighbour =
+            mesh_.neighbour();
+
+        const label dNInternal =
+            mesh_.nInternalFaces();
+
+
+        label nDuplicatePairs = 0;
+        label nMasterCells = 0;
+
+
+        forAll(dCells, cellI)
+        {
+            const cell& c = dCells[cellI];
+
+            labelHashSet seenNeighbours;
+            labelHashSet duplicateNeighbours;
+
+            bool hasDuplicate = false;
+
+
+            forAll(c, cfI)
+            {
+                const label faceI = c[cfI];
+
+                if( faceI >= dNInternal )
+                    continue;
+
+
+                label otherCell = -1;
+
+                if( dOwner[faceI] == cellI )
+                {
+                    otherCell =
+                        dNeighbour[faceI];
+                }
+                else if
+                (
+                    dNeighbour[faceI] == cellI
+                )
+                {
+                    otherCell =
+                        dOwner[faceI];
+                }
+                else
+                {
+                    FatalErrorIn
+                    (
+                        "decomposeCells duplicatePairLineage"
+                    )
+                        << "Internal face " << faceI
+                        << " listed in cell " << cellI
+                        << " but owner/neighbour are "
+                        << dOwner[faceI] << " and "
+                        << dNeighbour[faceI]
+                        << abort(FatalError);
+                }
+
+
+                // Match OpenFOAM: lower-labelled cell owns
+                // the unordered pair check.
+                if( cellI >= otherCell )
+                    continue;
+
+
+                if
+                (
+                    seenNeighbours.found
+                    (
+                        otherCell
+                    )
+                )
+                {
+                    if
+                    (
+                        !duplicateNeighbours.found
+                        (
+                            otherCell
+                        )
+                    )
+                    {
+                        duplicateNeighbours.insert
+                        (
+                            otherCell
+                        );
+
+                        ++nDuplicatePairs;
+                        hasDuplicate = true;
+                    }
+                }
+                else
+                {
+                    seenNeighbours.insert
+                    (
+                        otherCell
+                    );
+                }
+            }
+
+
+            if( hasDuplicate )
+                ++nMasterCells;
+        }
+
+
+        Info
+            << "[DECOMPOSE_DUPLICATE_LINEAGE]"
+            << " stage=" << stageName
+            << " uniquePairs=" << nDuplicatePairs
+            << " masterCells=" << nMasterCells
+            << endl;
+    };
+
+
+    duplicatePairLineage("entry");
+
+
     // -----------------------------------------------------------------
     // Phase 1:
     // Keep the useful historical face-connectivity repair.
@@ -106,6 +241,8 @@ void decomposeCells::decomposeMesh(const boolList& decomposeCell)
     checkFaceConnections(decomposeCell);
 
     decomposeVolumeLineage("afterCheckFaceConnections");
+
+    duplicatePairLineage("afterCheckFaceConnections");
 
 
     if( decomposeCell.size() != mesh_.cells().size() )
@@ -704,7 +841,88 @@ void decomposeCells::checkFaceConnections(const boolList& decomposeCell)
         }
     }
 
-    //- decompose faces which would cause invalid connections
+    // Diagnostic only:
+    // classify exactly which original faces are about to be fan-decomposed.
+    {
+        const label nInternal =
+            mesh_.nInternalFaces();
+
+        label nMarkedInternal = 0;
+        label nMarkedNonInternal = 0;
+
+        label nInternalTri = 0;
+        label nInternalQuad = 0;
+        label nInternalPent = 0;
+        label nInternalHex = 0;
+        label nInternalHept = 0;
+        label nInternalGt7 = 0;
+
+        label nProducedInternalTriangles = 0;
+
+
+        forAll(decomposeFace, faceI)
+        {
+            if( !decomposeFace[faceI] )
+                continue;
+
+
+            if( faceI < nInternal )
+            {
+                ++nMarkedInternal;
+
+                const label nVerts =
+                    faces[faceI].size();
+
+                nProducedInternalTriangles +=
+                    nVerts;
+
+
+                if( nVerts == 3 )
+                    ++nInternalTri;
+                else if( nVerts == 4 )
+                    ++nInternalQuad;
+                else if( nVerts == 5 )
+                    ++nInternalPent;
+                else if( nVerts == 6 )
+                    ++nInternalHex;
+                else if( nVerts == 7 )
+                    ++nInternalHept;
+                else
+                    ++nInternalGt7;
+            }
+            else
+            {
+                ++nMarkedNonInternal;
+            }
+        }
+
+
+        Info
+            << "[CHECKFACECONNECTIONS_MARKED]"
+            << " internalFaces="
+            << nMarkedInternal
+            << " nonInternalFaces="
+            << nMarkedNonInternal
+            << " tri="
+            << nInternalTri
+            << " quad="
+            << nInternalQuad
+            << " pent="
+            << nInternalPent
+            << " hex="
+            << nInternalHex
+            << " hept="
+            << nInternalHept
+            << " gt7="
+            << nInternalGt7
+            << " producedInternalTriangles="
+            << nProducedInternalTriangles
+            << endl;
+    }
+
+
+    //- Historical repair: each marked polygon is fan-decomposed around
+    //- one newly-created interior point.
     decomposeFaces(mesh_).decomposeMeshFaces(decomposeFace);
 }
 

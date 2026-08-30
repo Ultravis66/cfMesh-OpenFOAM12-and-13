@@ -115,10 +115,138 @@ correctEdgesBetweenPatches::correctEdgesBetweenPatches(polyMeshGen& mesh)
             &negVolCells
         );
 
+        // Diagnostic only:
+        // reproduce OpenFOAM's repeated-neighbour semantics at each
+        // correctEdgesBetweenPatches topology checkpoint.
+        const cellListPMG& lineageCells =
+            mesh_.cells();
+
+        const labelList& lineageOwner =
+            mesh_.owner();
+
+        const labelList& lineageNeighbour =
+            mesh_.neighbour();
+
+        const label lineageNInternal =
+            mesh_.nInternalFaces();
+
+        label lineageDuplicatePairs = 0;
+        label lineageMasterCells = 0;
+
+
+        forAll(lineageCells, cellI)
+        {
+            const cell& c =
+                lineageCells[cellI];
+
+            labelHashSet seenNeighbours;
+            labelHashSet duplicateNeighbours;
+
+            bool masterHasDuplicate = false;
+
+
+            forAll(c, cfI)
+            {
+                const label faceI =
+                    c[cfI];
+
+                if( faceI >= lineageNInternal )
+                    continue;
+
+
+                label otherCell = -1;
+
+                if
+                (
+                    lineageOwner[faceI]
+                 == cellI
+                )
+                {
+                    otherCell =
+                        lineageNeighbour[faceI];
+                }
+                else if
+                (
+                    lineageNeighbour[faceI]
+                 == cellI
+                )
+                {
+                    otherCell =
+                        lineageOwner[faceI];
+                }
+                else
+                {
+                    FatalErrorIn
+                    (
+                        "correctEdgesBetweenPatches "
+                        "topologyLineage"
+                    )
+                        << "Internal face "
+                        << faceI
+                        << " listed in cell "
+                        << cellI
+                        << " but owner/neighbour are "
+                        << lineageOwner[faceI]
+                        << " and "
+                        << lineageNeighbour[faceI]
+                        << abort(FatalError);
+                }
+
+
+                // Match OpenFOAM's lower-labelled master-cell
+                // convention so each unordered pair is counted once.
+                if( cellI >= otherCell )
+                    continue;
+
+
+                if
+                (
+                    seenNeighbours.found
+                    (
+                        otherCell
+                    )
+                )
+                {
+                    if
+                    (
+                        !duplicateNeighbours.found
+                        (
+                            otherCell
+                        )
+                    )
+                    {
+                        duplicateNeighbours.insert
+                        (
+                            otherCell
+                        );
+
+                        ++lineageDuplicatePairs;
+                        masterHasDuplicate = true;
+                    }
+                }
+                else
+                {
+                    seenNeighbours.insert
+                    (
+                        otherCell
+                    );
+                }
+            }
+
+
+            if( masterHasDuplicate )
+                ++lineageMasterCells;
+        }
+
+
         Info
             << "[CORRECT_EDGES_TOPOLOGY_LINEAGE]"
             << " stage=" << stageName
             << " negVol=" << negVolCells.size()
+            << " duplicatePairs="
+            << lineageDuplicatePairs
+            << " duplicateMasterCells="
+            << lineageMasterCells
             << endl;
     };
 
