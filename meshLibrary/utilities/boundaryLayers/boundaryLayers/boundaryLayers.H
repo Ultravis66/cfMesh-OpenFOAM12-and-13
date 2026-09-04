@@ -211,6 +211,35 @@ class boundaryLayers
         //- findNewNodeLabel() checks this first before otherVrts_/newLabelForVertex_.
         //- Empty = no behavior change (step 1).
         mutable std::map<std::pair<label,label>, label> capSideVrtMap_;
+        //- CFMitch v2 pre-cell height-field diagnostics.
+        //- Enabled only by the constraintPlanner architecture.
+        bool cfmitchHeightDiagnostics_;
+
+        //- CFMitch v2.3 symmetric graph height compatibility solver.
+        //
+        //- The first implementation is deliberately monotone:
+        //- it may reduce an unconstrained smooth-wall hair height,
+        //- but it never increases one beyond the geometry-derived
+        //- as-born height.
+        bool   cfmitchHeightSmoothing_;
+        scalar cfmitchHeightMaxEdgeRatio_;
+        scalar cfmitchHeightMaxMoveFraction_;
+        label  cfmitchHeightSmoothingIterations_;
+
+        //- CFMitch v2.8 BL/neutral birth-height guard.
+        //
+        //- At an unscaled BL/neutral EDGENODE the extrusion direction is
+        //- the established pure treated-wall normal.  The historical
+        //- projected-neighbour distance may become arbitrarily small when
+        //- a boundary-neighbour edge is nearly tangential to that normal.
+        //
+        //- A positive value floors that projected candidate by this
+        //- fraction of the shortest eligible neighbour half-edge length.
+        //
+        //- The caller still preserves any pre-existing smaller distance
+        //- ceiling.  Zero disables the guard completely.
+        scalar cfmitchNeutralProjectionFloor_;
+
         //- Gate for contact-line policy (meshDict: useContactLinePolicy)
         bool useContactLinePolicy_;
         bool useContactLineHeightSmoother_;
@@ -409,6 +438,66 @@ class boundaryLayers
 
 public:
 
+        //- Enable CFMitch v2 height-field diagnostics.
+        //- This does not alter the extrusion geometry.
+        void setCFMitchHeightDiagnostics(const bool enabled)
+        {
+            cfmitchHeightDiagnostics_ = enabled;
+        }
+
+        //- Configure the CFMitch v2.8 BL/neutral projected-height floor.
+        //
+        //- Zero disables the guard.  Values are expected in [0,1].
+        void setCFMitchNeutralProjectionFloor(const scalar floorFraction)
+        {
+            cfmitchNeutralProjectionFloor_ = floorFraction;
+        }
+
+        //- Configure the CFMitch v2.1 smooth-wall height solver.
+        void setCFMitchHeightSmoothing
+        (
+            const bool enabled,
+            const scalar maxEdgeRatio,
+            const scalar maxMoveFraction,
+            const label iterations
+        )
+        {
+            cfmitchHeightSmoothing_ = enabled;
+            cfmitchHeightMaxEdgeRatio_ = maxEdgeRatio;
+            cfmitchHeightMaxMoveFraction_ = maxMoveFraction;
+            cfmitchHeightSmoothingIterations_ = iterations;
+        }
+
+        //- Write the as-born BL hair-height field immediately after
+        //- extrusion coordinate swap and before any height smoother
+        //- or rollback modifies it.
+        void writeCFMitchHeightAtlas
+        (
+            const word& passName,
+            const labelList& bPoints,
+            const VRWGraph& pointPoints,
+            const boolList& treatPatches,
+            const labelList& boundaryFacePatches,
+            const VRWGraph& pointFaces
+        ) const;
+
+
+        //- CFMitch v2.3 symmetric log-height graph projection.
+        //
+        //- Only clean single-BL-patch points participate.
+        //- Only smooth<->smooth same-patch graph edges are considered.
+        //- Heights can only decrease.
+        void applyCFMitchHeightCompatibility
+        (
+            const word& passName,
+            const labelList& bPoints,
+            const VRWGraph& pointPoints,
+            const boolList& treatPatches,
+            const labelList& boundaryFacePatches,
+            const VRWGraph& pointFaces
+        );
+
+
     // Constructors
 
         //- Construct from mesh reference
@@ -552,7 +641,16 @@ public:
         //- Build per-point contact class from edge-based atlas
         //- Call before blblSharp suppression block
         void buildBLContactPointPolicy() const;
-        void smoothContactLineHeights(const word& passName, const labelList& bPoints, const VRWGraph& pointPoints);
+        void smoothContactLineHeights
+        (
+            const word& passName,
+            const labelList& bPoints,
+            const VRWGraph& pointPoints,
+            const boolList& treatPatches,
+            const faceList::subList& bFaces,
+            const VRWGraph& pointFaces,
+            const labelList& boundaryFacePatches
+        );
 
         //- Build HardBLBL cap cell candidate map (no geometry change)
         void buildBLCapCellCandidates() const;

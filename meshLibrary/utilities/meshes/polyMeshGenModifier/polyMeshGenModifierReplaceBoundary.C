@@ -114,18 +114,43 @@ void polyMeshGenModifier::replaceBoundary
     }
 
     //- change cells according to the new face ordering
-    List<direction> nFacesInCell(cells.size(), direction(0));
+    //
+    // CFMitch V4.7:
+    // direction is an 8-bit counter and silently wraps after 255.
+    // Variable-layer retreat can legitimately create retained polyhedral
+    // cells with more than 255 faces.  Use label so boundary replacement
+    // cannot truncate those cells modulo 256.
+    List<label> nFacesInCell(cells.size(), label(0));
+
+    label maxOriginalFacesInCell = 0;
+    label nOriginalCellsAbove255 = 0;
+
     forAll(cells, cellI)
     {
         const cell& c = cells[cellI];
 
+        if( c.size() > maxOriginalFacesInCell )
+            maxOriginalFacesInCell = c.size();
+
+        if( c.size() > 255 )
+            ++nOriginalCellsAbove255;
+
         cell newC(c.size());
         forAll(c, fI)
-        if( newFaceLabel[c[fI]] != -1 )
-            newC[nFacesInCell[cellI]++] = newFaceLabel[c[fI]];
+        {
+            if( newFaceLabel[c[fI]] != -1 )
+                newC[nFacesInCell[cellI]++] = newFaceLabel[c[fI]];
+        }
 
         cells[cellI].transfer(newC);
     }
+
+    Info
+        << "CFMITCH V4.7 REPLACEBOUNDARY WIDE COUNTER:"
+        << " maxOriginalFaces=" << maxOriginalFacesInCell
+        << " cellsAbove255=" << nOriginalCellsAbove255
+        << " counterType=label"
+        << endl;
 
     mesh_.updateFaceSubsets(newFaceLabel);
     newFaceLabel.setSize(0);

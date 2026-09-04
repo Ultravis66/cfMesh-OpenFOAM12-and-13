@@ -283,10 +283,20 @@ point boundaryLayers::createNewVertex
             const scalar magV = mag(v) + VSMALL;
             v /= magV;
 
-            // For BL/no-BL transition zone: skip projection, use pure wall normal
-            if( terminateLayersAtConcaveEdges_
+            // Scaled transition edges use the established pure wall
+            // normal.  BL/neutral edges require the same direction policy
+            // independently of layerScale_: neutral seam height may remain
+            // unscaled while the extrusion direction must not revert to the
+            // untreated-surface projection.
+            const bool scaledTransition =
+                terminateLayersAtConcaveEdges_
              && layerScale_.size() > bpI
-             && layerScale_[bpI] < 0.99 )
+             && layerScale_[bpI] < 0.99;
+
+            const bool neutralEdgePoint =
+                blNeutralEdgePoints_.found(bpI);
+
+            if( scaledTransition || neutralEdgePoint )
             {
                 const scalar magN = mag(normal) + VSMALL;
                 normal /= magN;
@@ -295,6 +305,7 @@ point boundaryLayers::createNewVertex
             {
                 normal -= (normal & v) * v;
             }
+
             const scalar magN = mag(normal) + VSMALL;
             normal /= magN;
 
@@ -332,6 +343,17 @@ point boundaryLayers::createNewVertex
             {
                 // Original non-ramp behavior.
                 const scalar distBeforeClamp = dist;
+
+                // Diagnostic only: quantify the untreated-neighbour
+                // projection distribution at BL/neutral EDGENODEs.
+                // The production selector below remains unchanged.
+                scalar neutralDiagMinProj = VGREAT;
+                scalar neutralDiagSecondProj = VGREAT;
+                scalar neutralDiagMaxProj = -VGREAT;
+                scalar neutralDiagMinHalfLen = VGREAT;
+                label neutralDiagMinBpJ = -1;
+                label neutralDiagNCandidates = 0;
+
                 forAllRow(pointPoints, bpI, ppI)
                 {
                     const label bpJ = pointPoints(bpI, ppI);
@@ -341,8 +363,163 @@ point boundaryLayers::createNewVertex
                     const vector vec = points[bPoints[bpJ]] - p;
                     const scalar prod = 0.5 * mag(vec & normal);
 
+                    if( neutralEdgePoint )
+                    {
+                        const scalar halfLen = 0.5 * mag(vec);
+
+                        ++neutralDiagNCandidates;
+                        neutralDiagMaxProj =
+                            Foam::max(neutralDiagMaxProj, prod);
+
+                        if( halfLen < neutralDiagMinHalfLen )
+                            neutralDiagMinHalfLen = halfLen;
+
+                        if( prod < neutralDiagMinProj )
+                        {
+                            neutralDiagSecondProj = neutralDiagMinProj;
+                            neutralDiagMinProj = prod;
+                            neutralDiagMinBpJ = bpJ;
+                        }
+                        else if( prod < neutralDiagSecondProj )
+                        {
+                            neutralDiagSecondProj = prod;
+                        }
+                    }
+
                     if( prod < dist )
                         dist = prod;
+                }
+
+                // ----------------------------------------------------
+                // CFMitch v2.8:
+                // BL/neutral projected-height floor.
+                //
+                // Rotor37 diagnostics showed that the remaining
+                // wall-adjacent bad-pyramid population is strongly
+                // enriched at mixed neutral/ordinary wall faces, and
+                // that the dominant discriminator is birth-height
+                // collapse rather than layerScale or direction angle.
+                //
+                // At neutral points the established direction policy is
+                // the pure treated-wall normal.  A valid neighbouring
+                // boundary edge can therefore have a near-zero projection
+                // onto that direction even when its physical length is
+                // perfectly finite.
+                //
+                // Guard only that projection-derived neutral candidate.
+                //
+                // IMPORTANT:
+                // distBeforeClamp remains a hard upper ceiling, so this
+                // can never undo a stricter distance constraint computed
+                // earlier in createNewVertex().
+                // ----------------------------------------------------
+                if
+                (
+                    neutralEdgePoint
+                 && cfmitchNeutralProjectionFloor_ > scalar(0)
+                 && neutralDiagMinProj < VGREAT
+                 && neutralDiagMinHalfLen < VGREAT
+                 && neutralDiagMinHalfLen > VSMALL
+                )
+                {
+                    const scalar floorDist =
+                        cfmitchNeutralProjectionFloor_
+                      * neutralDiagMinHalfLen;
+
+                    const scalar guardedNeutralDist =
+                        Foam::max
+                        (
+                            neutralDiagMinProj,
+                            floorDist
+                        );
+
+                    const scalar distBeforeV28 =
+                        dist;
+
+                    dist =
+                        Foam::min
+                        (
+                            distBeforeClamp,
+                            guardedNeutralDist
+                        );
+
+                    if( dist > distBeforeV28 )
+                    {
+                        static label nNeutralProjectionFloorRaised = 0;
+                        ++nNeutralProjectionFloorRaised;
+
+                        if( nNeutralProjectionFloorRaised <= 250 )
+                        {
+                            Info
+                                << "CFMITCH V2.8 NEUTRAL PROJECTION FLOOR:"
+                                << " count="
+                                << nNeutralProjectionFloorRaised
+                                << " bpI=" << bpI
+                                << " pointI=" << bPoints[bpI]
+                                << " floorFraction="
+                                << cfmitchNeutralProjectionFloor_
+                                << " minProj="
+                                << neutralDiagMinProj
+                                << " minHalfLen="
+                                << neutralDiagMinHalfLen
+                                << " floorDist="
+                                << floorDist
+                                << " distBeforeClamp="
+                                << distBeforeClamp
+                                << " oldDist="
+                                << distBeforeV28
+                                << " newDist="
+                                << dist
+                                << " growth="
+                                << (
+                                    distBeforeV28 > VSMALL
+                                  ? dist / distBeforeV28
+                                  : scalar(-1)
+                                   )
+                                << endl;
+                        }
+
+                        if( nNeutralProjectionFloorRaised == 250 )
+                        {
+                            Info
+                                << "CFMITCH V2.8 NEUTRAL PROJECTION FLOOR:"
+                                << " further raised-point diagnostics"
+                                << " suppressed"
+                                << endl;
+                        }
+                    }
+                }
+
+                if( neutralEdgePoint )
+                {
+                    const scalar minSecondRatio =
+                        ( neutralDiagSecondProj < VGREAT
+                       && neutralDiagSecondProj > VSMALL )
+                      ? neutralDiagMinProj / neutralDiagSecondProj
+                      : scalar(-1);
+
+                    const scalar minLenRatio =
+                        ( neutralDiagMinHalfLen < VGREAT
+                       && neutralDiagMinHalfLen > VSMALL )
+                      ? neutralDiagMinProj / neutralDiagMinHalfLen
+                      : scalar(-1);
+
+                    Info << "BLNEUTRALHEIGHTCAND"
+                         << " bpI=" << bpI
+                         << " pointI=" << bPoints[bpI]
+                         << " layerScale="
+                         << ((layerScale_.size() > bpI)
+                             ? layerScale_[bpI] : scalar(1))
+                         << " nCand=" << neutralDiagNCandidates
+                         << " minBpJ=" << neutralDiagMinBpJ
+                         << " minProj=" << neutralDiagMinProj
+                         << " secondProj=" << neutralDiagSecondProj
+                         << " maxProj=" << neutralDiagMaxProj
+                         << " minHalfLen=" << neutralDiagMinHalfLen
+                         << " minOverSecond=" << minSecondRatio
+                         << " minOverHalfLen=" << minLenRatio
+                         << " distSelected=" << dist
+                         << endl;
                 }
                 // CLAMPDIAG
                 {
@@ -1986,6 +2163,55 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
     //- swap coordinates of new and old points
     // Serial: OMP parallelism here causes coordinate corruption at BL/BL
     // junctions -- primary source of 67-114 bad pyramid faces per run.
+    // Build the exact union treatment mask used by createLayerCells().
+    // Do not use treatedPatch_ here: patchwise layer generation constructs
+    // its active treatment set from patchLabels/treatPatchesWithPatch_.
+    boolList contactSweepTreatPatches(mesh_.boundaries().size(), false);
+
+    forAll(patchLabels, cspI)
+    {
+        const label pLabel = patchLabels[cspI];
+
+        if
+        (
+            pLabel < 0
+         || pLabel >= label(treatPatchesWithPatch_.size())
+        )
+            continue;
+
+        forAll(treatPatchesWithPatch_[pLabel], gI)
+        {
+            const label patchI =
+                treatPatchesWithPatch_[pLabel][gI];
+
+            if
+            (
+                patchI >= 0
+             && patchI < label(contactSweepTreatPatches.size())
+            )
+                contactSweepTreatPatches[patchI] = true;
+        }
+    }
+
+    label nContactSweepTreatPatches = 0;
+    forAll(contactSweepTreatPatches, patchI)
+        if( contactSweepTreatPatches[patchI] )
+            ++nContactSweepTreatPatches;
+
+    Info << "CONTACT_SWEEP_PATCH_MASK activePatches="
+         << nContactSweepTreatPatches << endl;
+
+    // Snapshot topology references while surfaceEngine still corresponds
+    // to the pre-swap mesh state.  The contact smoother is deliberately
+    // forbidden from rebuilding surfaceEngine after coordinates are swapped.
+    const meshSurfaceEngine& mseContactSweep = surfaceEngine();
+    const faceList::subList& bFacesContactSweep =
+        mseContactSweep.boundaryFaces();
+    const VRWGraph& pointFacesContactSweep =
+        mseContactSweep.pointFaces();
+    const labelList& boundaryFacePatchesContactSweep =
+        mseContactSweep.boundaryFacePatches();
+
     forAll(bPoints, bpI)
     {
         const label pLabel = newLabelForVertex_[bPoints[bpI]];
@@ -1998,6 +2224,55 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
         }
     }
 
+    // ------------------------------------------------------------
+    // CFMitch v2: capture the raw as-born BL height field.
+    //
+    // This intentionally runs AFTER coordinate swap, so meshPtI is
+    // the extruded point and newLabelForVertex_[meshPtI] is its base,
+    // but BEFORE the historical contact-line smoother or rollback
+    // changes the geometry.
+    //
+    // Diagnostic only.
+    // ------------------------------------------------------------
+    if( cfmitchHeightDiagnostics_ )
+    {
+        writeCFMitchHeightAtlas
+        (
+            "preSmoother",
+            bPoints,
+            pointPoints,
+            contactSweepTreatPatches,
+            boundaryFacePatchesContactSweep,
+            pointFacesContactSweep
+        );
+    }
+
+    if( cfmitchHeightSmoothing_ )
+    {
+        applyCFMitchHeightCompatibility
+        (
+            "graphProjection",
+            bPoints,
+            pointPoints,
+            contactSweepTreatPatches,
+            boundaryFacePatchesContactSweep,
+            pointFacesContactSweep
+        );
+
+        if( cfmitchHeightDiagnostics_ )
+        {
+            writeCFMitchHeightAtlas
+            (
+                "postCFMitch",
+                bPoints,
+                pointPoints,
+                contactSweepTreatPatches,
+                boundaryFacePatchesContactSweep,
+                pointFacesContactSweep
+            );
+        }
+    }
+
     // Contact-line height limiter: runs after coordinate swap,
     // before rollback. Detects and limits local height spikes/collapses
     // along contact-line points. Diagnostic atlas always written;
@@ -2005,7 +2280,16 @@ void boundaryLayers::createNewVertices(const labelList& patchLabels)
     if( useContactLineHeightSmoother_ || writeContactLineHeightSmootherAtlas_ )
     {
         for( label iter=0; iter<contactLineSmootherIterations_; ++iter )
-            smoothContactLineHeights("pass2_iter" + Foam::name(iter), bPoints, pointPoints);
+            smoothContactLineHeights
+            (
+                "pass2_iter" + Foam::name(iter),
+                bPoints,
+                pointPoints,
+                contactSweepTreatPatches,
+                bFacesContactSweep,
+                pointFacesContactSweep,
+                boundaryFacePatchesContactSweep
+            );
     }
 
     // Local topology-aware layer rollback with minimum-height floor.

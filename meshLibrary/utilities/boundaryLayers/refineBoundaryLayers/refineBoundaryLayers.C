@@ -62,8 +62,11 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     is2DMesh_(false),
     specialMode_(false),
     refinementValid_(true),
+    boundaryLayerArchitecture_("legacyEnhanced"),
+    constraintPlannerMaxLayerStep_(2),
     nLayersAtBndFace_(),
     cellToBaseBndFace_(),
+    qualityMaxLayersAtFace_(),
     splitEdges_(),
     splitEdgesAtPoint_(),
     newVerticesForSplitEdge_(),
@@ -390,6 +393,19 @@ void refineBoundaryLayers::refineLayers()
 
     generateNewCells();
 
+    // CFMitch V3.5: generateNewCells() may reject a structurally invalid
+    // prism parent.  Stop immediately so the owning mesh transaction can
+    // restore its previous snapshot.
+    if( !refinementValid_ )
+    {
+        WarningIn("void refineBoundaryLayers::refineLayers()")
+            << "Boundary-layer cell generation rejected -- "
+            << "leaving refinementCompleted=false for rollback"
+            << endl;
+
+        return;
+    }
+
     done_ = true;
 
     Info << "Finished refining boundary layers" << endl;
@@ -434,6 +450,48 @@ void refineBoundaryLayers::readSettings
     if( meshDict.isDict("boundaryLayers") )
     {
         const dictionary& bndLayers = meshDict.subDict("boundaryLayers");
+
+        // CFMitch boundary-layer architecture selector.
+        // Default remains legacyEnhanced for backward compatibility.
+        if( bndLayers.found("boundaryLayerArchitecture") )
+        {
+            word architectureName;
+            bndLayers.lookup("boundaryLayerArchitecture")
+                >> architectureName;
+
+            refLayers.boundaryLayerArchitecture_ =
+                architectureName;
+        }
+
+        // CFMitch planner-specific settings.
+        if( bndLayers.isDict("constraintPlanner") )
+        {
+            const dictionary& plannerDict =
+                bndLayers.subDict("constraintPlanner");
+
+            if( plannerDict.found("maxLayerStep") )
+            {
+                const label maxLayerStep =
+                    readLabel
+                    (
+                        plannerDict.lookup("maxLayerStep")
+                    );
+
+                if( maxLayerStep < 1 )
+                {
+                    FatalErrorIn
+                    (
+                        "refineBoundaryLayers::readSettings"
+                    )
+                        << "boundaryLayers.constraintPlanner."
+                        << "maxLayerStep must be >= 1"
+                        << exit(FatalError);
+                }
+
+                refLayers.constraintPlannerMaxLayerStep_ =
+                    maxLayerStep;
+            }
+        }
 
         //- read global properties
         if( bndLayers.found("nLayers") )
@@ -536,6 +594,98 @@ void refineBoundaryLayers::readSettings
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+void refineBoundaryLayers::setQualityMaxLayersAtFaces
+(
+    const Map<label>& caps
+)
+{
+    label nImported = 0;
+    label nAdded = 0;
+    label nLowered = 0;
+    label nZero = 0;
+    label nInvalid = 0;
+
+    forAllConstIter(Map<label>, caps, it)
+    {
+        const label bfI = it.key();
+        const label requestedCap = it();
+
+        if( bfI < 0 || requestedCap < 0 )
+        {
+            ++nInvalid;
+            continue;
+        }
+
+        ++nImported;
+
+        label effectiveCap = requestedCap;
+
+        if( qualityMaxLayersAtFace_.found(bfI) )
+        {
+            const label oldCap =
+                qualityMaxLayersAtFace_[bfI];
+
+            effectiveCap =
+                Foam::min(oldCap, requestedCap);
+
+            if( effectiveCap < oldCap )
+                ++nLowered;
+
+            qualityMaxLayersAtFace_[bfI] =
+                effectiveCap;
+        }
+        else
+        {
+            qualityMaxLayersAtFace_.insert
+            (
+                bfI,
+                effectiveCap
+            );
+
+            ++nAdded;
+        }
+
+        // Merge directly into the existing final cap field.
+        //
+        // analyseLayers() already accepts zero as a valid cap and
+        // applies forcedMaxLayersAtFace_ before CFMitch resolves
+        // layer-count compatibility.
+        if( forcedMaxLayersAtFace_.found(bfI) )
+        {
+            forcedMaxLayersAtFace_[bfI] =
+                Foam::min
+                (
+                    forcedMaxLayersAtFace_[bfI],
+                    effectiveCap
+                );
+        }
+        else
+        {
+            forcedMaxLayersAtFace_.insert
+            (
+                bfI,
+                effectiveCap
+            );
+        }
+
+        if( effectiveCap == 0 )
+            ++nZero;
+    }
+
+    Info
+        << "CFMITCH V2.7 QUALITY CAP IMPORT:"
+        << " requested=" << caps.size()
+        << " imported=" << nImported
+        << " added=" << nAdded
+        << " lowered=" << nLowered
+        << " zero=" << nZero
+        << " invalid=" << nInvalid
+        << " effectiveQualityFaces="
+        << qualityMaxLayersAtFace_.size()
+        << endl;
+}
+
+
 void refineBoundaryLayers::forceSingleLayerAtFaces
 (
     const labelHashSet& faces
@@ -573,7 +723,19 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
             ring0.insert(bfI);
     }
 
-    if( ring1MaxLayers > 0 )
+    // CFMitch V4.1 -- thickness-only repair requests must also
+    // build their smoothing rings.  Ring 1 is additionally required
+    // whenever ring 2 is requested.
+    const bool ring2Requested =
+        ring2MaxLayers > 0
+     || ring2ThicknessScale < scalar(1.0) - SMALL;
+
+    const bool ring1Requested =
+        ring1MaxLayers > 0
+     || ring1ThicknessScale < scalar(1.0) - SMALL
+     || ring2Requested;
+
+    if( ring1Requested )
     {
         forAllConstIter(labelHashSet, ring0, it)
         {
@@ -588,7 +750,7 @@ void refineBoundaryLayers::forceMaxLayersAtFaces
         }
     }
 
-    if( ring2MaxLayers > 0 )
+    if( ring2Requested )
     {
         forAllConstIter(labelHashSet, ring1, it)
         {

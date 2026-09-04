@@ -645,8 +645,23 @@ void meshOptimizer::untangleBoundaryLayer()
         if( negVolCells.size() == 0 )
         {
             optimizeLowQualityFaces();
-            removeUserConstraints();
+
+            // BL_UNTANGLE_PRESERVE_LOCKS_V1
+            //
+            // The caller may explicitly lock boundary-layer points before
+            // entering untangleBoundaryLayer().  Keep those constraints
+            // active through the aggressive finite-volume untangler.
+            //
+            // Previously removeUserConstraints() was called here, which
+            // discarded the caller's BL locks immediately before
+            // untangleMeshFV().  On repaired deep-layer meshes this allowed
+            // the untangler to catastrophically distort an otherwise valid
+            // BL state.
             untangleMeshFV(2, 50, 1, true);
+
+            // User/temporary constraints are local to this operation.
+            // Clear them only after the constrained untangle has completed.
+            removeUserConstraints();
         }
         else
         {

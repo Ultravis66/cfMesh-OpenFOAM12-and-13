@@ -6,6 +6,7 @@ bndLayers = utilities/boundaryLayers
 boundaryLayers = $(bndLayers)/boundaryLayers
 detectBoundaryLayers = $(bndLayers)/detectBoundaryLayers
 extrudeLayer = $(bndLayers)/extrudeLayer
+boundaryLayerConstraintPlanner = utilities/boundaryLayers/boundaryLayerConstraintPlanner
 refineBoundaryLayers = $(bndLayers)/refineBoundaryLayers
 triangulateNonPlanarBaseFaces = $(bndLayers)/triangulateNonPlanarBaseFaces
 
@@ -274,6 +275,7 @@ $(boundaryLayers)/boundaryLayersContactLineSmoother.C
 $(extrudeLayer)/extrudeLayer.C
 $(detectBoundaryLayers)/detectBoundaryLayers.C
 $(detectBoundaryLayers)/detectBoundaryLayersFunctions.C
+$(boundaryLayerConstraintPlanner)/boundaryLayerConstraintPlanner.C
 $(refineBoundaryLayers)/refineBoundaryLayers.C
 $(refineBoundaryLayers)/refineBoundaryLayersFunctions.C
 $(refineBoundaryLayers)/refineBoundaryLayersFaces.C
@@ -471,5 +473,23 @@ $(writeAsFPMA)/writeMeshFPMA.C
 $(writeAsFPMA)/fpmaMesh.C
 
 $(workflowControls)/workflowControls.C
+
+
+# classicCfMesh boundary-layer architecture.
+# Frozen algorithmic baseline:
+#   9d60e8bb31353b281565337ac0f06545e368fdf4
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayerCells.C
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayers.C
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayersCheckTopologyOfBndFaces.C
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayersCreateVertices.C
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayersFacesAndCells.C
+utilities/boundaryLayers/classicCfMesh/classicBoundaryLayers/classicBoundaryLayersWrapperLayer.C
+
+utilities/boundaryLayers/classicCfMesh/classicRefineBoundaryLayers/classicRefineBoundaryLayers.C
+utilities/boundaryLayers/classicCfMesh/classicRefineBoundaryLayers/classicRefineBoundaryLayersCells.C
+utilities/boundaryLayers/classicCfMesh/classicRefineBoundaryLayers/classicRefineBoundaryLayersFaces.C
+utilities/boundaryLayers/classicCfMesh/classicRefineBoundaryLayers/classicRefineBoundaryLayersFunctions.C
+
+utilities/boundaryLayers/boundaryLayers/boundaryLayersCFMitchHeightAtlas.C
 
 LIB = $(FOAM_USER_LIBBIN)/libmeshLibrary

@@ -26,6 +26,7 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "cartesianMeshGenerator.H"
+#include "pyramidPointFaceRef.H"
 #include "triSurf.H"
 #include "triSurfacePatchManipulator.H"
 #include "demandDrivenData.H"
@@ -43,6 +44,8 @@ Description
 #include "topologicalCleaner.H"
 #include "boundaryLayers.H"
 #include "refineBoundaryLayers.H"
+#include "classicBoundaryLayers.H"
+#include "classicRefineBoundaryLayers.H"
 #include "detectBoundaryLayers.H"
 #include "meshSurfacePartitioner.H"
 #include "BLJunctionClassifier.H"
@@ -65,10 +68,58 @@ Description
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+#include <limits>
+
 namespace Foam
 {
 
 // * * * * * * * * * * * * Private member functions  * * * * * * * * * * * * //
+
+//- Resolve the selected boundary-layer architecture at generator level.
+//- This dispatch is deliberately independent of the CFMitch planner object:
+//- classicCfMesh must bypass the enhanced refinement implementation entirely.
+static word selectedBoundaryLayerArchitecture
+(
+    const dictionary& meshDict
+)
+{
+    word architecture("legacyEnhanced");
+
+    if( meshDict.isDict("boundaryLayers") )
+    {
+        const dictionary& bndLayers =
+            meshDict.subDict("boundaryLayers");
+
+        if( bndLayers.found("boundaryLayerArchitecture") )
+        {
+            bndLayers.lookup("boundaryLayerArchitecture")
+                >> architecture;
+        }
+    }
+
+    if
+    (
+        architecture != "classicCfMesh"
+     && architecture != "legacyEnhanced"
+     && architecture != "constraintPlanner"
+    )
+    {
+        FatalErrorIn
+        (
+            "selectedBoundaryLayerArchitecture(const dictionary&)"
+        )
+            << "Unknown boundaryLayers.boundaryLayerArchitecture '"
+            << architecture << "'" << nl
+            << "Valid values are:" << nl
+            << "    classicCfMesh" << nl
+            << "    legacyEnhanced" << nl
+            << "    constraintPlanner"
+            << exit(FatalError);
+    }
+
+    return architecture;
+}
+
 
 //- Raw signed volume of one cell, using the same unclamped
 //- construction as rawCellVolumeStats() and checkCellVolumes().
@@ -173,6 +224,303 @@ static void rawCellVolumeStats
         if( cellVol < VSMALL ) ++nBelowVS;
     }
 }
+
+
+//- OpenFOAM-equivalent hard geometry used by the CFMitch recovery
+//- controller.  This is intentionally separate from cfMesh construction
+//- geometry, whose positive surrogate cell-centre weights remain necessary
+//- for robustness while intermediate topology is being generated.
+struct CFMitchOFHardQuality
+{
+    labelHashSet badPyramidFaces;
+    labelHashSet errorNonOrthFaces;
+
+    label pyramidErrors;
+    label signedNegVolCells;
+    label severeNonOrthFaces;
+    label zeroFaceCells;
+    label centreFallbackCells;
+
+    scalar minSignedVol;
+    scalar maxNonOrth;
+
+    CFMitchOFHardQuality()
+    :
+        pyramidErrors(0),
+        signedNegVolCells(0),
+        severeNonOrthFaces(0),
+        zeroFaceCells(0),
+        centreFallbackCells(0),
+        minSignedVol(GREAT),
+        maxNonOrth(0.0)
+    {}
+};
+
+
+static void evaluateOpenFOAMHardQuality
+(
+    const polyMeshGen& mesh,
+    CFMitchOFHardQuality& result
+)
+{
+    result.badPyramidFaces.clear();
+    result.errorNonOrthFaces.clear();
+
+    result.pyramidErrors = 0;
+    result.signedNegVolCells = 0;
+    result.severeNonOrthFaces = 0;
+    result.zeroFaceCells = 0;
+    result.centreFallbackCells = 0;
+
+    result.minSignedVol = GREAT;
+    result.maxNonOrth = 0.0;
+
+    const labelList& own = mesh.owner();
+    const labelList& nei = mesh.neighbour();
+
+    const faceListPMG& faces = mesh.faces();
+    const pointFieldPMG& points = mesh.points();
+
+    const label nCells = mesh.cells().size();
+    const label nInternalFaces = mesh.nInternalFaces();
+
+    // OpenFOAM 13 face::areaAndCentre().
+    vectorField faceCtrs(faces.size(), vector::zero);
+    vectorField faceAreas(faces.size(), vector::zero);
+
+    forAll(faces, faceI)
+    {
+        const face& f = faces[faceI];
+        const label nPoints = f.size();
+
+        if( nPoints == 3 )
+        {
+            const point& p0 = points[f[0]];
+            const point& p1 = points[f[1]];
+            const point& p2 = points[f[2]];
+
+            faceAreas[faceI] =
+                (1.0/2.0)*((p1 - p0)^(p2 - p0));
+
+            faceCtrs[faceI] =
+                (1.0/3.0)*(p0 + p1 + p2);
+        }
+        else
+        {
+            point pAvg = vector::zero;
+
+            for(label pointI=0; pointI<nPoints; ++pointI)
+                pAvg += points[f[pointI]];
+
+            pAvg /= nPoints;
+
+            vector sumA = vector::zero;
+
+            for(label pointI=0; pointI<nPoints; ++pointI)
+            {
+                const point& p0 = points[f[pointI]];
+                const point& p1 = points[f.nextLabel(pointI)];
+
+                const vector a = (p1 - p0)^(pAvg - p0);
+                sumA += a;
+            }
+
+            const vector sumAHat = normalised(sumA);
+
+            scalar sumAn = 0.0;
+            vector sumAnc = vector::zero;
+
+            for(label pointI=0; pointI<nPoints; ++pointI)
+            {
+                const point& p0 = points[f[pointI]];
+                const point& p1 = points[f.nextLabel(pointI)];
+
+                const vector a = (p1 - p0)^(pAvg - p0);
+                const vector c = p0 + p1 + pAvg;
+                const scalar an = a & sumAHat;
+
+                sumAn += an;
+                sumAnc += an*c;
+            }
+
+            faceAreas[faceI] = (1.0/2.0)*sumA;
+
+            if( sumAn > vSmall )
+                faceCtrs[faceI] = (1.0/3.0)*sumAnc/sumAn;
+            else
+                faceCtrs[faceI] = pAvg;
+        }
+    }
+
+    // OpenFOAM primitiveMesh::makeCellCentresAndVols().
+    vectorField cEst(nCells, vector::zero);
+    labelList nCellFaces(nCells, 0);
+
+    forAll(own, faceI)
+    {
+        const label cellI = own[faceI];
+
+        cEst[cellI] += faceCtrs[faceI];
+        ++nCellFaces[cellI];
+    }
+
+    for(label faceI=0; faceI<nInternalFaces; ++faceI)
+    {
+        const label cellI = nei[faceI];
+
+        cEst[cellI] += faceCtrs[faceI];
+        ++nCellFaces[cellI];
+    }
+
+    forAll(cEst, cellI)
+    {
+        if( nCellFaces[cellI] > 0 )
+        {
+            cEst[cellI] /= nCellFaces[cellI];
+        }
+        else
+        {
+            ++result.zeroFaceCells;
+        }
+    }
+
+    vectorField cellCtrs(nCells, vector::zero);
+    scalarField cellVol3(nCells, 0.0);
+
+    forAll(own, faceI)
+    {
+        const label cellI = own[faceI];
+
+        const scalar pyr3Vol =
+            faceAreas[faceI]
+          & (faceCtrs[faceI] - cEst[cellI]);
+
+        const vector pc =
+            (3.0/4.0)*faceCtrs[faceI]
+          + (1.0/4.0)*cEst[cellI];
+
+        cellCtrs[cellI] += pyr3Vol*pc;
+        cellVol3[cellI] += pyr3Vol;
+    }
+
+    for(label faceI=0; faceI<nInternalFaces; ++faceI)
+    {
+        const label cellI = nei[faceI];
+
+        const scalar pyr3Vol =
+            faceAreas[faceI]
+          & (cEst[cellI] - faceCtrs[faceI]);
+
+        const vector pc =
+            (3.0/4.0)*faceCtrs[faceI]
+          + (1.0/4.0)*cEst[cellI];
+
+        cellCtrs[cellI] += pyr3Vol*pc;
+        cellVol3[cellI] += pyr3Vol;
+    }
+
+    forAll(cellCtrs, cellI)
+    {
+        if( Foam::mag(cellVol3[cellI]) > VSMALL )
+        {
+            cellCtrs[cellI] /= cellVol3[cellI];
+        }
+        else
+        {
+            cellCtrs[cellI] = cEst[cellI];
+            ++result.centreFallbackCells;
+        }
+
+        const scalar cellVol = cellVol3[cellI]/3.0;
+
+        result.minSignedVol =
+            Foam::min(result.minSignedVol, cellVol);
+
+        if( cellVol < 0.0 )
+            ++result.signedNegVolCells;
+    }
+
+    // Stock checkMesh pyramid-orientation formula.
+    forAll(faces, faceI)
+    {
+        const scalar ownPyrVol =
+            -pyramidPointFaceRef
+            (
+                faces[faceI],
+                cellCtrs[own[faceI]]
+            ).mag(points);
+
+        if( ownPyrVol < -SMALL )
+        {
+            result.badPyramidFaces.insert(faceI);
+            ++result.pyramidErrors;
+        }
+
+        if( faceI < nInternalFaces )
+        {
+            const scalar neiPyrVol =
+                pyramidPointFaceRef
+                (
+                    faces[faceI],
+                    cellCtrs[nei[faceI]]
+                ).mag(points);
+
+            if( neiPyrVol < -SMALL )
+            {
+                result.badPyramidFaces.insert(faceI);
+                ++result.pyramidErrors;
+            }
+        }
+    }
+
+    // Stock primitiveMesh internal-face orthogonality.
+    const scalar rootVSmall = Foam::sqrt(VSMALL);
+    const scalar nonOrthThreshold =
+        Foam::cos(70.0*M_PI/180.0);
+
+    scalar minOrtho = GREAT;
+
+    for(label faceI=0; faceI<nInternalFaces; ++faceI)
+    {
+        const vector d =
+            cellCtrs[nei[faceI]]
+          - cellCtrs[own[faceI]];
+
+        const vector& sA = faceAreas[faceI];
+
+        const scalar ortho =
+            (d & sA)
+          / (mag(d)*mag(sA) + rootVSmall);
+
+        minOrtho = Foam::min(minOrtho, ortho);
+
+        if( ortho < nonOrthThreshold )
+        {
+            if( ortho > SMALL )
+            {
+                ++result.severeNonOrthFaces;
+            }
+            else
+            {
+                result.errorNonOrthFaces.insert(faceI);
+            }
+        }
+    }
+
+    if( nInternalFaces > 0 )
+    {
+        const scalar clamped =
+            Foam::min
+            (
+                scalar(1.0),
+                Foam::max(scalar(-1.0), minOrtho)
+            );
+
+        result.maxNonOrth =
+            Foam::acos(clamped)*180.0/M_PI;
+    }
+}
+
 
 // Non-mutating scan for near-coincident vertices
 // Returns count of unique vertex pairs closer than tolerance
@@ -1132,8 +1480,225 @@ static void blTopoAudit(polyMeshGen& auditMesh, const word& stage)
 
 void cartesianMeshGenerator::generateBoundaryLayers()
 {
-    //- add boundary layers
+    const word architecture =
+        selectedBoundaryLayerArchitecture(meshDict_);
+
+    if( architecture == "classicCfMesh" )
+    {
+        Info
+            << "CFMITCH ARCHITECTURE: classicCfMesh"
+            << " boundary-layer generation"
+            << " baseline=9d60e8b"
+            << endl;
+
+        classicBoundaryLayers bl(mesh_);
+
+        // Modern patch selection adapter for the frozen 9d60e8b
+        // classic BL engine.
+        //
+        // Effective nLayers > 0  -> create BL topology.
+        // Effective nLayers <= 0 -> no BL topology at all.
+        //
+        // This fixes the historical behaviour where addLayerForAllPatches()
+        // created one initial layer even on patches later configured with
+        // nLayers=0.
+        const dictionary& bndLayers =
+            meshDict_.subDict("boundaryLayers");
+
+        label globalNLayers = 1;
+
+        if( bndLayers.found("nLayers") )
+            globalNLayers =
+                readLabel(bndLayers.lookup("nLayers"));
+
+        const dictionary* patchLayersPtr = NULL;
+
+        if( bndLayers.isDict("patchBoundaryLayers") )
+        {
+            patchLayersPtr =
+                &bndLayers.subDict("patchBoundaryLayers");
+        }
+
+        const PtrList<boundaryPatch>& boundaries =
+            mesh_.boundaries();
+
+        wordList activePatchNames(boundaries.size());
+        label nActive = 0;
+
+        forAll(boundaries, patchI)
+        {
+            const word& patchName =
+                boundaries[patchI].patchName();
+
+            label nLayers = globalNLayers;
+
+            if
+            (
+                patchLayersPtr
+             && patchLayersPtr->isDict(patchName)
+            )
+            {
+                const dictionary& patchDict =
+                    patchLayersPtr->subDict(patchName);
+
+                if( patchDict.found("nLayers") )
+                {
+                    nLayers =
+                        readLabel
+                        (
+                            patchDict.lookup("nLayers")
+                        );
+                }
+            }
+
+            if( nLayers > 0 )
+            {
+                activePatchNames[nActive++] =
+                    patchName;
+            }
+
+            Info
+                << "CLASSIC_PATCH_SELECTION patch="
+                << patchName
+                << " nLayers=" << nLayers
+                << " createInitialLayer="
+                << (nLayers > 0 ? "yes" : "no")
+                << endl;
+        }
+
+        activePatchNames.setSize(nActive);
+
+        Info
+            << "CLASSIC_PATCH_SELECTION activePatches="
+            << activePatchNames
+            << endl;
+
+        bl.addLayerForPatches(activePatchNames);
+
+        Info
+            << "CFMITCH ARCHITECTURE: classicCfMesh"
+            << " boundary-layer generation complete"
+            << endl;
+
+        return;
+    }
+
+    //- Enhanced/CFMitch boundary-layer generation.
+    //- Existing implementation below remains behaviorally unchanged.
     boundaryLayers bl(mesh_, meshDict_);
+
+    // CFMitch v2 pre-cell height planning.
+    // legacyEnhanced remains completely unchanged.
+    bl.setCFMitchHeightDiagnostics
+    (
+        architecture == "constraintPlanner"
+    );
+
+    bool cfmitchHeightEnabled = false;
+    scalar cfmitchHeightMaxEdgeRatio = 1.5;
+    scalar cfmitchHeightMaxMoveFraction = 0.05;
+    label cfmitchHeightIterations = 1;
+
+    // CFMitch v2.8 diagnostic-driven BL/neutral birth-height guard.
+    // Zero is behaviorally disabled and preserves legacyEnhanced.
+    scalar cfmitchNeutralProjectionFloor = 0.0;
+
+    if( architecture == "constraintPlanner" )
+    {
+        const dictionary& bndLayers =
+            meshDict_.subDict("boundaryLayers");
+
+        if( bndLayers.isDict("constraintPlanner") )
+        {
+            const dictionary& plannerDict =
+                bndLayers.subDict("constraintPlanner");
+
+            if( plannerDict.found("neutralProjectionFloor") )
+            {
+                cfmitchNeutralProjectionFloor =
+                    readScalar
+                    (
+                        plannerDict.lookup("neutralProjectionFloor")
+                    );
+
+                cfmitchNeutralProjectionFloor =
+                    Foam::max
+                    (
+                        scalar(0),
+                        Foam::min
+                        (
+                            scalar(1),
+                            cfmitchNeutralProjectionFloor
+                        )
+                    );
+            }
+
+            if( plannerDict.isDict("heightPlanner") )
+            {
+                const dictionary& heightDict =
+                    plannerDict.subDict("heightPlanner");
+
+                if( heightDict.found("enabled") )
+                    cfmitchHeightEnabled =
+                        bool(Switch(heightDict.lookup("enabled")));
+
+                if( heightDict.found("maxEdgeRatio") )
+                    cfmitchHeightMaxEdgeRatio =
+                        readScalar
+                        (
+                            heightDict.lookup("maxEdgeRatio")
+                        );
+
+                if( heightDict.found("maxMoveFraction") )
+                    cfmitchHeightMaxMoveFraction =
+                        readScalar
+                        (
+                            heightDict.lookup("maxMoveFraction")
+                        );
+
+                if( heightDict.found("iterations") )
+                    cfmitchHeightIterations =
+                        readLabel
+                        (
+                            heightDict.lookup("iterations")
+                        );
+            }
+        }
+    }
+
+    bl.setCFMitchNeutralProjectionFloor
+    (
+        cfmitchNeutralProjectionFloor
+    );
+
+    if( architecture == "constraintPlanner" )
+    {
+        Info
+            << "CFMITCH V2.8 NEUTRAL PROJECTION CONFIG:"
+            << " floor="
+            << cfmitchNeutralProjectionFloor
+            << endl;
+    }
+
+    bl.setCFMitchHeightSmoothing
+    (
+        cfmitchHeightEnabled,
+        cfmitchHeightMaxEdgeRatio,
+        cfmitchHeightMaxMoveFraction,
+        cfmitchHeightIterations
+    );
+
+    Info
+        << "CFMITCH V2.3 HEIGHT CONFIG:"
+        << " enabled=" << cfmitchHeightEnabled
+        << " maxEdgeRatio="
+        << cfmitchHeightMaxEdgeRatio
+        << " maxMoveFraction="
+        << cfmitchHeightMaxMoveFraction
+        << " iterations="
+        << cfmitchHeightIterations
+        << endl;
+
     bl.terminateLayersAtConcaveEdges();
 
     // Gap/proximity closure: detect tight BL/BL patch proximity and suppress
@@ -1143,9 +1708,133 @@ void cartesianMeshGenerator::generateBoundaryLayers()
     bl.reportBLTransitionSeeds();
     bl.buildBLTransitionPlan();
 
+    // Preserve the PRE-extrusion boundary-point index space.
+    // Neutral-edge classification is populated later, during BL creation,
+    // so do not attempt to filter neutral points here.
+    labelList blScaleMeshPointForBp;
+    boolList blScaleSimpleTwoPatchBp;
+
+    {
+        meshSurfaceEngine mseScale(mesh_);
+
+        blScaleMeshPointForBp =
+            mseScale.boundaryPoints();
+
+        blScaleSimpleTwoPatchBp.setSize
+        (
+            blScaleMeshPointForBp.size(),
+            false
+        );
+
+        const VRWGraph& scalePointFaces =
+            mseScale.pointFaces();
+
+        const labelList& scaleFacePatch =
+            mseScale.boundaryFacePatches();
+
+        forAll(blScaleMeshPointForBp, bpI)
+        {
+            labelHashSet pointPatches;
+
+            forAllRow(scalePointFaces, bpI, pfI)
+            {
+                const label bfI =
+                    scalePointFaces(bpI, pfI);
+
+                if
+                (
+                    bfI < 0
+                 || bfI >= label(scaleFacePatch.size())
+                )
+                    continue;
+
+                const label patchI =
+                    scaleFacePatch[bfI];
+
+                if( patchI >= 0 )
+                    pointPatches.insert(patchI);
+            }
+
+            if( pointPatches.size() == 2 )
+                blScaleSimpleTwoPatchBp[bpI] = true;
+        }
+    }
+
     bl.addLayerForAllPatches();
-    // Capture layerScale for post-replaceBoundaries coverage report
+
+    // Capture FINAL layerScale after all BL taper systems have acted.
     blLayerScale_ = bl.layerScale();
+
+    // Neutral-edge classification now exists. Convert reduced, simple
+    // BL/neutral points from boundary-point space into stable mesh-point
+    // labels for refineBoundaryLayers.
+    blNeutralLayerScaleAtMeshPoint_.clear();
+
+    const labelHashSet& neutralBp =
+        bl.blNeutralEdgePoints();
+
+    label nNeutralSimple = 0;
+    label nNeutralReduced = 0;
+    label nNeutralNonSimple = 0;
+
+    forAllConstIter(labelHashSet, neutralBp, it)
+    {
+        const label bpI = it.key();
+
+        if
+        (
+            bpI < 0
+         || bpI >= label(blScaleMeshPointForBp.size())
+         || bpI >= label(blScaleSimpleTwoPatchBp.size())
+         || bpI >= label(blLayerScale_.size())
+        )
+            continue;
+
+        if( !blScaleSimpleTwoPatchBp[bpI] )
+        {
+            ++nNeutralNonSimple;
+            continue;
+        }
+
+        ++nNeutralSimple;
+
+        const scalar scale =
+            Foam::max
+            (
+                scalar(0),
+                Foam::min
+                (
+                    scalar(1),
+                    blLayerScale_[bpI]
+                )
+            );
+
+        if( scale >= scalar(1) - SMALL )
+            continue;
+
+        const label meshPtI =
+            blScaleMeshPointForBp[bpI];
+
+        if( meshPtI < 0 )
+            continue;
+
+        blNeutralLayerScaleAtMeshPoint_.insert
+        (
+            meshPtI,
+            scale
+        );
+
+        ++nNeutralReduced;
+    }
+
+    Info << "BL/neutral stable scale handoff:"
+         << " totalNeutral=" << neutralBp.size()
+         << " simplePoints=" << nNeutralSimple
+         << " reducedPoints=" << nNeutralReduced
+         << " nonSimple=" << nNeutralNonSimple
+         << " mapSize="
+         << blNeutralLayerScaleAtMeshPoint_.size()
+         << endl;
     blTopoAudit(mesh_, "POST_ADDLAYER");
 
     // Capture junction points for handoff to refineBoundaryLayers
@@ -1170,9 +1859,50 @@ void cartesianMeshGenerator::generateBoundaryLayers()
 
 void cartesianMeshGenerator::refBoundaryLayers()
 {
+    if
+    (
+        meshDict_.isDict("boundaryLayers")
+     && selectedBoundaryLayerArchitecture(meshDict_) == "classicCfMesh"
+    )
+    {
+        Info
+            << "CFMITCH ARCHITECTURE: classicCfMesh"
+            << " boundary-layer refinement"
+            << " baseline=9d60e8b"
+            << endl;
+
+        classicRefineBoundaryLayers refLayers(mesh_);
+
+        classicRefineBoundaryLayers::readSettings
+        (
+            meshDict_,
+            refLayers
+        );
+
+        refLayers.refineLayers();
+
+        labelLongList pointsInLayer;
+        refLayers.pointsInBndLayer(pointsInLayer);
+
+        meshOptimizer mOpt(mesh_);
+        mOpt.lockPoints(pointsInLayer);
+
+        Info
+            << "CFMITCH ARCHITECTURE: classicCfMesh"
+            << " boundary-layer refinement complete"
+            << " lockedPoints=" << pointsInLayer.size()
+            << endl;
+
+        return;
+    }
+
     if( meshDict_.isDict("boundaryLayers") )
     {
         refineBoundaryLayers refLayers(mesh_);
+refLayers.setNeutralLayerScaleAtMeshPoint
+(
+    blNeutralLayerScaleAtMeshPoint_
+);
 
         refineBoundaryLayers::readSettings(meshDict_, refLayers);
 
@@ -1788,7 +2518,57 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         nPointsBeforeBL_ = mesh_.points().size();
         blTopoAudit(mesh_, "PRE_REFBL");
+
         refLayers.refineLayers();
+
+        const bool initialRefinementValid =
+            refLayers.refinementValid();
+
+        const bool initialRefinementCompleted =
+            refLayers.refinementCompleted();
+
+        if( !initialRefinementValid )
+        {
+            Info
+                << "CFMITCH V3.6 INITIAL REFBL REJECTED:"
+                << " refinementValid="
+                << (initialRefinementValid ? "yes" : "no")
+                << " refinementCompleted="
+                << (initialRefinementCompleted ? "yes" : "no")
+                << " -- restoring clean Q0 before validation"
+                << endl;
+
+            if
+            (
+                !preRefBLSnap.valid
+             || !restorePreRefBLSnapshot(preRefBLSnap)
+            )
+            {
+                FatalErrorIn
+                (
+                    "cartesianMeshGenerator::"
+                    "refBoundaryLayers()"
+                )
+                    << "CFMitch V3.6 could not restore Q0 "
+                    << "after rejected initial boundary-layer "
+                    << "refinement"
+                    << exit(FatalError);
+            }
+
+            nPointsBeforeBL_ = mesh_.points().size();
+            blPoints_.clear();
+
+            Info
+                << "CFMITCH V3.6 INITIAL REFBL ROLLBACK:"
+                << " restoredPoints="
+                << mesh_.points().size()
+                << " -- continuing from clean unrefined "
+                << "base-layer state"
+                << endl;
+
+            return;
+        }
+
         blTopoAudit(mesh_, "POST_REFBL_PASS1");
 
         // Post-refBL provenance diagnostic.
@@ -2139,6 +2919,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                         if( restorePreRefBLSnapshot(preRefBLSnap) )
                         {
                             refineBoundaryLayers refLayers2(mesh_);
+refLayers2.setNeutralLayerScaleAtMeshPoint
+(
+    blNeutralLayerScaleAtMeshPoint_
+);
                             refineBoundaryLayers::readSettings
                                 (meshDict_, refLayers2);
                             refLayers2.setBlblJunctionPoints
@@ -2762,12 +3546,230 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 }
                             }
 
-                            if( haveClassifierPlans )
+                            // CFMitch v2.7:
+                            // transfer birth-time geometric layer ceilings
+                            // from Q1 into the fresh Q2 construction.
+                            const Map<label>&
+                                q1QualityMaxLayersAtFaces =
+                                    refLayers.
+                                        qualityMaxLayersAtFaces();
+
+                            Info
+                                << "CFMITCH V2.7 QUALITY REPLAN:"
+                                << " pass=Q2"
+                                << " importedFaces="
+                                << q1QualityMaxLayersAtFaces.size()
+                                << endl;
+
+                            if( q1QualityMaxLayersAtFaces.size() )
+                            {
+                                refLayers2.setQualityMaxLayersAtFaces
+                                (
+                                    q1QualityMaxLayersAtFaces
+                                );
+                            }
+
+                            // -------------------------------------------------
+                            // CFMitch V4.1 -- height-first quality repair.
+                            //
+                            // Preserve the completed pass-1 layer counts and
+                            // compress only the local extrusion heights.  This
+                            // avoids forcing an abrupt 16-to-3 tensor-product
+                            // transition through refineEdgeHexCell.
+                            //
+                            // Disabled by default.  The first controlled test
+                            // enables it only in the propeller meshDict.
+                            // -------------------------------------------------
+                            bool heightFirstQualityRepair = false;
+
+                            scalar heightFirstSeedScale = 0.75;
+                            scalar heightFirstRing1Scale = 0.85;
+                            scalar heightFirstRing2Scale = 0.95;
+
+                            if( meshDict_.isDict("boundaryLayers") )
+                            {
+                                const dictionary& v41Bnd =
+                                    meshDict_.subDict("boundaryLayers");
+
+                                if
+                                (
+                                    v41Bnd.found
+                                    (
+                                        "heightFirstQualityRepair"
+                                    )
+                                )
+                                {
+                                    heightFirstQualityRepair =
+                                        bool
+                                        (
+                                            Switch
+                                            (
+                                                v41Bnd.lookup
+                                                (
+                                                    "heightFirstQualityRepair"
+                                                )
+                                            )
+                                        );
+                                }
+
+                                if
+                                (
+                                    v41Bnd.found
+                                    (
+                                        "heightFirstSeedScale"
+                                    )
+                                )
+                                {
+                                    heightFirstSeedScale =
+                                        readScalar
+                                        (
+                                            v41Bnd.lookup
+                                            (
+                                                "heightFirstSeedScale"
+                                            )
+                                        );
+                                }
+
+                                if
+                                (
+                                    v41Bnd.found
+                                    (
+                                        "heightFirstRing1Scale"
+                                    )
+                                )
+                                {
+                                    heightFirstRing1Scale =
+                                        readScalar
+                                        (
+                                            v41Bnd.lookup
+                                            (
+                                                "heightFirstRing1Scale"
+                                            )
+                                        );
+                                }
+
+                                if
+                                (
+                                    v41Bnd.found
+                                    (
+                                        "heightFirstRing2Scale"
+                                    )
+                                )
+                                {
+                                    heightFirstRing2Scale =
+                                        readScalar
+                                        (
+                                            v41Bnd.lookup
+                                            (
+                                                "heightFirstRing2Scale"
+                                            )
+                                        );
+                                }
+                            }
+
+                            heightFirstSeedScale =
+                                Foam::max
+                                (
+                                    scalar(0.05),
+                                    Foam::min
+                                    (
+                                        scalar(1.0),
+                                        heightFirstSeedScale
+                                    )
+                                );
+
+                            heightFirstRing1Scale =
+                                Foam::max
+                                (
+                                    heightFirstSeedScale,
+                                    Foam::min
+                                    (
+                                        scalar(1.0),
+                                        heightFirstRing1Scale
+                                    )
+                                );
+
+                            heightFirstRing2Scale =
+                                Foam::max
+                                (
+                                    heightFirstRing1Scale,
+                                    Foam::min
+                                    (
+                                        scalar(1.0),
+                                        heightFirstRing2Scale
+                                    )
+                                );
+
+                            Info
+                                << "CFMITCH V4.1 HEIGHT-FIRST REPAIR:"
+                                << " enabled="
+                                << (
+                                       heightFirstQualityRepair
+                                     ? "yes"
+                                     : "no"
+                                   )
+                                << " classifierPlans="
+                                << (haveClassifierPlans ? "yes" : "no")
+                                << " provenanceSeeds="
+                                << provenanceSeedBfI.size()
+                                << " scales=("
+                                << heightFirstSeedScale << " "
+                                << heightFirstRing1Scale << " "
+                                << heightFirstRing2Scale << ")"
+                                << endl;
+
+                            if( heightFirstQualityRepair )
+                            {
+                                if( haveClassifierPlans )
+                                {
+                                    forAllIter
+                                    (
+                                        Map<BLRepairPlan>,
+                                        plans,
+                                        pit
+                                    )
+                                    {
+                                        const BLRepairPlan& plan = pit();
+
+                                        if( plan.active() )
+                                        {
+                                            refLayers2.
+                                                forceMaxLayersAtFaces
+                                                (
+                                                    plan.seedBfI_,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    heightFirstSeedScale,
+                                                    heightFirstRing1Scale,
+                                                    heightFirstRing2Scale,
+                                                    pit.key()
+                                                );
+                                        }
+                                    }
+                                }
+                                else if( provenanceSeedBfI.size() )
+                                {
+                                    refLayers2.forceMaxLayersAtFaces
+                                    (
+                                        provenanceSeedBfI,
+                                        0,
+                                        0,
+                                        0,
+                                        heightFirstSeedScale,
+                                        heightFirstRing1Scale,
+                                        heightFirstRing2Scale
+                                    );
+                                }
+                            }
+                            else if( haveClassifierPlans )
                             {
                                 forAllIter(Map<BLRepairPlan>, plans, pit)
                                 {
                                     const BLRepairPlan& plan = pit();
+
                                     if( plan.active() )
+                                    {
                                         refLayers2.forceMaxLayersAtFaces
                                         (
                                             plan.seedBfI_,
@@ -2779,17 +3781,62 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                             plan.ring2_.thicknessScale,
                                             pit.key()
                                         );
+                                    }
                                 }
                             }
                             else
                             {
-                                Info << "Two-pass BL repair: using fallback "
-                                     << "provenance seed plan" << endl;
+                                Info
+                                    << "Two-pass BL repair: using fallback "
+                                    << "provenance seed plan"
+                                    << endl;
+
                                 refLayers2.forceMaxLayersAtFaces
                                 (
                                     provenanceSeedBfI,
-                                    3, 4, 0,
-                                    0.60, 0.80, 1.00
+                                    3,
+                                    4,
+                                    0,
+                                    0.60,
+                                    0.80,
+                                    1.00
+                                );
+                            }
+
+                            // CFMitch V4.0 -- classifier cap authority.
+                            //
+                            // Active classifier plans already specify the
+                            // intended local layer ceilings and thickness
+                            // scales.  Do not overwrite those topology-aware
+                            // plans with the legacy blanket N=1 retreat.
+                            //
+                            // Preserve N=1 only as a fallback when no
+                            // classifier plan could be constructed.
+                            // -------------------------------------------------
+                            const bool useLegacySingleLayerFallback =
+                                !heightFirstQualityRepair
+                             && !haveClassifierPlans
+                             && provenanceSeedBfI.size() > 0;
+
+                            Info
+                                << "CFMITCH V4.0 CLASSIFIER CAP AUTHORITY:"
+                                << " classifierPlans="
+                                << (haveClassifierPlans ? "yes" : "no")
+                                << " provenanceSeeds="
+                                << provenanceSeedBfI.size()
+                                << " forcedSingleLayerFallback="
+                                << (
+                                       useLegacySingleLayerFallback
+                                     ? provenanceSeedBfI.size()
+                                     : 0
+                                   )
+                                << endl;
+
+                            if( useLegacySingleLayerFallback )
+                            {
+                                refLayers2.forceSingleLayerAtFaces
+                                (
+                                    provenanceSeedBfI
                                 );
                             }
 
@@ -3856,11 +4903,1453 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                  << " minVolOK="    << (minVolOK    ? "yes" : "no")
                                  << endl;
 
-                            if( pass2Better )
+                            // CFMitch V4.2 -- compression-to-retreat
+                            // bridge. A rejected but completed height-only
+                            // Q2 may invoke cumulative topology retreat.
+                            // Such a retreat is judged against Q1, not the
+                            // rejected compression candidate.
+                            const bool
+                                v42RetreatFromRejectedCompression =
+                                    heightFirstQualityRepair
+                                 && !pass2Better;
+
+                            const label v42ReferenceNegVol =
+                                pass2Better
+                              ? label(pass2NegVol.size())
+                              : label(pass1NegVol.size());
+
+                            const label v42ReferenceBadPyr =
+                                pass2Better
+                              ? label(pass2BadPyr.size())
+                              : pass1BadPyr;
+
+                            const scalar v42ReferenceNegMag =
+                                pass2Better
+                              ? q2NegMag
+                              : q1NegMag;
+
+                            const scalar v42ReferenceMinCellVol =
+                                pass2Better
+                              ? q2MinCellVol
+                              : q1MinCellVol;
+
+                            Info
+                                << "CFMITCH V4.2 "
+                                << "COMPRESSION-TO-RETREAT BRIDGE:"
+                                << " compressionAccepted="
+                                << (pass2Better ? "yes" : "no")
+                                << " retreatFallback="
+                                << (
+                                       v42RetreatFromRejectedCompression
+                                     ? "yes"
+                                     : "no"
+                                   )
+                                << " reference="
+                                << (pass2Better ? "Q2" : "Q1")
+                                << " badPyramids="
+                                << v42ReferenceBadPyr
+                                << " negVol="
+                                << v42ReferenceNegVol
+                                << endl;
+
+                            if
+                            (
+                                pass2Better
+                             || v42RetreatFromRejectedCompression
+                            )
                             {
-                                refLayers2.pointsInBndLayer(blPoints_);
-                                twoPassAccepted = true;
-                                blPointsFromPass2 = true;
+                                // -------------------------------------------------
+                                // CFMitch v3.1 -- one cumulative adaptive
+                                // topology-retreat generation.
+                                //
+                                // Q2 is already a valid improvement over Q1.
+                                // Before accepting it as final, use the ACTUAL
+                                // remaining Q2 bad-pyramid population to discover
+                                // additional base-BL provenance seeds.
+                                //
+                                // The retreat set is monotonic:
+                                //
+                                //     R2 = R1 U residualQ2Seeds
+                                //
+                                // The candidate is rebuilt from pristine Q0.
+                                // Q2 is snapshotted first and remains the accepted
+                                // fallback.  We never repair the accepted Q2 mesh
+                                // in place.
+                                //
+                                // This is deliberately ONE extra generation.
+                                // A bounded general loop comes only after this
+                                // behavior is proven.
+                                // -------------------------------------------------
+
+                                labelHashSet q2ResidualSeedBfI;
+
+                                const labelList& q2AdaptiveProv =
+                                    refLayers2.cellToBaseBndFace();
+
+                                const labelList& q2AdaptiveOwn =
+                                    mesh_.owner();
+
+                                const labelList& q2AdaptiveNei =
+                                    mesh_.neighbour();
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    pass2BadPyr,
+                                    q2AdaptivePyrIt
+                                )
+                                {
+                                    const label faceI =
+                                        q2AdaptivePyrIt.key();
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(q2AdaptiveOwn.size())
+                                    )
+                                    {
+                                        const label cellI =
+                                            q2AdaptiveOwn[faceI];
+
+                                        if
+                                        (
+                                            cellI >= 0
+                                         && cellI <
+                                            label(q2AdaptiveProv.size())
+                                        )
+                                        {
+                                            const label bfI =
+                                                q2AdaptiveProv[cellI];
+
+                                            if( bfI >= 0 )
+                                                q2ResidualSeedBfI.insert(bfI);
+                                        }
+                                    }
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(q2AdaptiveNei.size())
+                                    )
+                                    {
+                                        const label cellI =
+                                            q2AdaptiveNei[faceI];
+
+                                        if
+                                        (
+                                            cellI >= 0
+                                         && cellI <
+                                            label(q2AdaptiveProv.size())
+                                        )
+                                        {
+                                            const label bfI =
+                                                q2AdaptiveProv[cellI];
+
+                                            if( bfI >= 0 )
+                                                q2ResidualSeedBfI.insert(bfI);
+                                        }
+                                    }
+                                }
+
+                                labelHashSet cumulativeRetreatSeedBfI;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    provenanceSeedBfI,
+                                    r1It
+                                )
+                                {
+                                    cumulativeRetreatSeedBfI.insert
+                                        (r1It.key());
+                                }
+
+                                const label nBaseRetreatSeeds =
+                                    cumulativeRetreatSeedBfI.size();
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    q2ResidualSeedBfI,
+                                    r2It
+                                )
+                                {
+                                    cumulativeRetreatSeedBfI.insert
+                                        (r2It.key());
+                                }
+
+                                const label nNewRetreatSeeds =
+                                    cumulativeRetreatSeedBfI.size()
+                                  - nBaseRetreatSeeds;
+
+                                // V3.4 needs the provenance map belonging to
+                                // whichever candidate V3.1 actually retains.
+                                labelList v34AcceptedCellToBaseBndFace;
+                                labelHashSet
+                                    v34AcceptedRetreatSeedBfI;
+                                bool v34HaveAcceptedState = false;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    provenanceSeedBfI,
+                                    v34BaseSeedIt
+                                )
+                                {
+                                    v34AcceptedRetreatSeedBfI.insert
+                                        (v34BaseSeedIt.key());
+                                }
+
+                                Info
+                                    << "CFMITCH V3.1 ADAPTIVE RETREAT:"
+                                    << " q2BadPyramids="
+                                    << pass2BadPyr.size()
+                                    << " baseSeeds="
+                                    << nBaseRetreatSeeds
+                                    << " residualProvenanceSeeds="
+                                    << q2ResidualSeedBfI.size()
+                                    << " newSeeds="
+                                    << nNewRetreatSeeds
+                                    << " cumulativeSeeds="
+                                    << cumulativeRetreatSeedBfI.size()
+                                    << endl;
+
+                                if
+                                (
+                                    pass2BadPyr.size() > 0
+                                 &&
+                                    (
+                                        nNewRetreatSeeds > 0
+                                     || v42RetreatFromRejectedCompression
+                                    )
+                                )
+                                {
+                                    // Preserve the already accepted Q2 state
+                                    // before returning to Q0 for the cumulative
+                                    // candidate.
+                                    PreRefBLMeshSnapshot pass2BestSnap;
+                                    takePreRefBLSnapshot(pass2BestSnap);
+
+                                    bool adaptiveAccepted = false;
+
+                                    if
+                                    (
+                                        restorePreRefBLSnapshot
+                                        (
+                                            preRefBLSnap
+                                        )
+                                    )
+                                    {
+                                        refineBoundaryLayers
+                                            refLayersAdaptive(mesh_);
+
+                                        refLayersAdaptive.
+                                            setNeutralLayerScaleAtMeshPoint
+                                            (
+                                                blNeutralLayerScaleAtMeshPoint_
+                                            );
+
+                                        refineBoundaryLayers::readSettings
+                                            (
+                                                meshDict_,
+                                                refLayersAdaptive
+                                            );
+
+                                        refLayersAdaptive.setBlblJunctionPoints
+                                            (
+                                                preRefBLSnap.
+                                                    blblJunctionPoints
+                                            );
+
+                                        refLayersAdaptive.
+                                            setBlblAcuteCornerPoints
+                                            (
+                                                preRefBLSnap.
+                                                    blblAcuteCornerPoints
+                                            );
+
+                                        refLayersAdaptive.setRampSeedPoints
+                                            (
+                                                preRefBLSnap.rampSeedPoints
+                                            );
+
+                                        refLayersAdaptive.setVtFaceRing
+                                            (
+                                                preRefBLSnap.vtFaceRing
+                                            );
+
+                                        // -------------------------------------------------
+                                        // CFMitch V4.4 -- close the topology-retreat seed
+                                        // set over restored Q0 parent cells.
+                                        //
+                                        // If one boundary face of a multi-boundary-face
+                                        // parent retreats to one layer, every boundary face
+                                        // owned by that parent must retreat with it. This
+                                        // prevents an unsupported NxN -> Nx1 conversion.
+                                        // -------------------------------------------------
+                                        const labelHashSet v44InputRetreatSeedBfI
+                                        (
+                                            cumulativeRetreatSeedBfI
+                                        );
+
+                                        labelHashSet v44RetreatParentCells;
+
+                                        const label v44StartBoundary =
+                                            mesh_.boundaries().size()
+                                          ? mesh_.boundaries()[0].patchStart()
+                                          : mesh_.faces().size();
+
+                                        const label v44NBoundaryFaces =
+                                            mesh_.faces().size() - v44StartBoundary;
+
+                                        const labelList& v44FaceOwner =
+                                            mesh_.owner();
+
+                                        const cellListPMG& v44Cells =
+                                            mesh_.cells();
+
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            v44InputRetreatSeedBfI,
+                                            v44SeedIt
+                                        )
+                                        {
+                                            const label seedBfI =
+                                                v44SeedIt.key();
+
+                                            if
+                                            (
+                                                seedBfI < 0
+                                             || seedBfI >= v44NBoundaryFaces
+                                            )
+                                            {
+                                                continue;
+                                            }
+
+                                            const label seedFaceI =
+                                                v44StartBoundary + seedBfI;
+
+                                            if
+                                            (
+                                                seedFaceI < 0
+                                             || seedFaceI >= label(v44FaceOwner.size())
+                                            )
+                                            {
+                                                continue;
+                                            }
+
+                                            const label parentCellI =
+                                                v44FaceOwner[seedFaceI];
+
+                                            if
+                                            (
+                                                parentCellI >= 0
+                                             && parentCellI < label(v44Cells.size())
+                                            )
+                                            {
+                                                v44RetreatParentCells.insert(parentCellI);
+                                            }
+                                        }
+
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            v44RetreatParentCells,
+                                            v44ParentIt
+                                        )
+                                        {
+                                            const label parentCellI =
+                                                v44ParentIt.key();
+
+                                            const cell& parentCell =
+                                                v44Cells[parentCellI];
+
+                                            forAll(parentCell, parentFaceI)
+                                            {
+                                                const label coBfI =
+                                                    parentCell[parentFaceI]
+                                                  - v44StartBoundary;
+
+                                                if
+                                                (
+                                                    coBfI >= 0
+                                                 && coBfI < v44NBoundaryFaces
+                                                )
+                                                {
+                                                    cumulativeRetreatSeedBfI.insert(coBfI);
+                                                }
+                                            }
+                                        }
+
+                                        Info
+                                            << "CFMITCH V4.4 RETREAT "
+                                            << "CO-PARENT CLOSURE:"
+                                            << " inputSeeds="
+                                            << v44InputRetreatSeedBfI.size()
+                                            << " parentCells="
+                                            << v44RetreatParentCells.size()
+                                            << " closedSeeds="
+                                            << cumulativeRetreatSeedBfI.size()
+                                            << " addedCoFaces="
+                                            <<
+                                            (
+                                                cumulativeRetreatSeedBfI.size()
+                                              - v44InputRetreatSeedBfI.size()
+                                            )
+                                            << endl;
+
+                                        // Reproduce the complete Q2 constraint
+                                        // environment first.
+                                        if
+                                        (
+                                            q1QualityMaxLayersAtFaces.size()
+                                        )
+                                        {
+                                            refLayersAdaptive.
+                                                setQualityMaxLayersAtFaces
+                                                (
+                                                    q1QualityMaxLayersAtFaces
+                                                );
+                                        }
+
+                                        if
+                                          (
+                                              heightFirstQualityRepair
+                                           && cumulativeRetreatSeedBfI.size()
+                                          )
+                                          {
+                                              refLayersAdaptive.
+                                                  forceMaxLayersAtFaces
+                                                  (
+                                                      cumulativeRetreatSeedBfI,
+                                                      0,
+                                                      0,
+                                                      0,
+                                                      heightFirstSeedScale,
+                                                      heightFirstRing1Scale,
+                                                      heightFirstRing2Scale
+                                                  );
+
+                                              Info
+                                                  << "CFMITCH V4.2 RETREAT "
+                                                  << "COMPRESSION CONTEXT:"
+                                                  << " seeds="
+                                                  << cumulativeRetreatSeedBfI.size()
+                                                  << " scales=("
+                                                  << heightFirstSeedScale << " "
+                                                  << heightFirstRing1Scale << " "
+                                                  << heightFirstRing2Scale << ")"
+                                                  << endl;
+                                          }
+                                          else if( haveClassifierPlans )
+                                        {
+                                            forAllIter
+                                            (
+                                                Map<BLRepairPlan>,
+                                                plans,
+                                                adaptivePit
+                                            )
+                                            {
+                                                const BLRepairPlan& plan =
+                                                    adaptivePit();
+
+                                                if( plan.active() )
+                                                {
+                                                    refLayersAdaptive.
+                                                        forceMaxLayersAtFaces
+                                                        (
+                                                            plan.seedBfI_,
+                                                            plan.ring0_.
+                                                                maxLayers,
+                                                            plan.ring1_.
+                                                                maxLayers,
+                                                            plan.ring2_.
+                                                                maxLayers,
+                                                            plan.ring0_.
+                                                                thicknessScale,
+                                                            plan.ring1_.
+                                                                thicknessScale,
+                                                            plan.ring2_.
+                                                                thicknessScale,
+                                                            adaptivePit.key()
+                                                        );
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            refLayersAdaptive.
+                                                forceMaxLayersAtFaces
+                                                (
+                                                    provenanceSeedBfI,
+                                                    3, 4, 0,
+                                                    0.60, 0.80, 1.00
+                                                );
+                                        }
+
+                                        // The cumulative N=1 constraint is
+                                        // applied last, so it remains the
+                                        // strongest local topology decision.
+                                        refLayersAdaptive.
+                                            forceSingleLayerAtFaces
+                                            (
+                                                cumulativeRetreatSeedBfI
+                                            );
+
+                                        Info
+                                            << "CFMITCH V3.1 ADAPTIVE "
+                                            << "RETREAT BUILD:"
+                                            << " cumulativeSeeds="
+                                            << cumulativeRetreatSeedBfI.size()
+                                            << " maxLayers=1"
+                                            << endl;
+
+                                        nPointsBeforeBL_ =
+                                            mesh_.points().size();
+
+                                        refLayersAdaptive.refineLayers();
+
+                                        const bool adaptiveValid =
+                                            refLayersAdaptive.
+                                                refinementValid();
+
+                                        const bool adaptiveCompleted =
+                                            refLayersAdaptive.
+                                                refinementCompleted();
+
+                                        if
+                                        (
+                                            adaptiveValid
+                                         && adaptiveCompleted
+                                        )
+                                        {
+                                            labelHashSet adaptiveNegVol;
+                                            polyMeshGenChecks::
+                                                checkCellVolumes
+                                                (
+                                                    mesh_,
+                                                    false,
+                                                    &adaptiveNegVol
+                                                );
+
+                                            labelHashSet adaptiveBadPyr;
+                                            polyMeshGenChecks::
+                                                checkFacePyramids
+                                                (
+                                                    mesh_,
+                                                    false,
+                                                    -SMALL,
+                                                    &adaptiveBadPyr
+                                                );
+
+                                            scalar adaptiveMinCellVol = GREAT;
+                                            scalar adaptiveNegMag = 0.0;
+                                            label adaptiveNNeg = 0;
+                                            label adaptiveNBelowVS = 0;
+
+                                            rawCellVolumeStats
+                                            (
+                                                mesh_,
+                                                adaptiveNegMag,
+                                                adaptiveMinCellVol,
+                                                adaptiveNNeg,
+                                                adaptiveNBelowVS
+                                            );
+
+                                            const bool
+                                                adaptiveNegCountOK =
+                                                    adaptiveNegVol.size()
+                                                 <= v42ReferenceNegVol;
+
+                                            const bool
+                                                adaptiveBadPyrBetter =
+                                                    adaptiveBadPyr.size()
+                                                 < v42ReferenceBadPyr;
+
+                                            const bool
+                                                adaptiveNegMagOK =
+                                                    adaptiveNegMag
+                                                 <= v42ReferenceNegMag;
+
+                                            const bool
+                                                adaptiveMinVolOK =
+                                                    adaptiveMinCellVol
+                                                 >= v42ReferenceMinCellVol;
+
+                                              Info
+                                                  << "CFMITCH V4.2 RETREAT "
+                                                  << "ACCEPTANCE BASELINE:"
+                                                  << " source="
+                                                  << (
+                                                         v42RetreatFromRejectedCompression
+                                                       ? "Q1"
+                                                       : "Q2"
+                                                     )
+                                                  << " badPyramids="
+                                                  << v42ReferenceBadPyr
+                                                  << " negVol="
+                                                  << v42ReferenceNegVol
+                                                  << " negMag="
+                                                  << v42ReferenceNegMag
+                                                  << " minVol="
+                                                  << v42ReferenceMinCellVol
+                                                  << endl;
+
+                                            const bool adaptiveBetter =
+                                                adaptiveNegCountOK
+                                             && adaptiveBadPyrBetter
+                                             && adaptiveNegMagOK
+                                             && adaptiveMinVolOK;
+
+                                            Info
+                                                << "CFMITCH V3.1 ADAPTIVE "
+                                                << "RETREAT RESULT:"
+                                                << " badPyramids "
+                                                << pass2BadPyr.size()
+                                                << "->"
+                                                << adaptiveBadPyr.size()
+                                                << " negVol "
+                                                << pass2NegVol.size()
+                                                << "->"
+                                                << adaptiveNegVol.size()
+                                                << " negMag "
+                                                << q2NegMag
+                                                << "->"
+                                                << adaptiveNegMag
+                                                << " minVol "
+                                                << q2MinCellVol
+                                                << "->"
+                                                << adaptiveMinCellVol
+                                                << (adaptiveBetter
+                                                    ? " -- ACCEPTED"
+                                                    : " -- REJECTED")
+                                                << endl;
+
+                                            if( adaptiveBetter )
+                                            {
+                                                refLayersAdaptive.
+                                                    pointsInBndLayer
+                                                    (
+                                                        blPoints_
+                                                    );
+
+                                                v34AcceptedCellToBaseBndFace =
+                                                    refLayersAdaptive.
+                                                        cellToBaseBndFace();
+
+                                                v34AcceptedRetreatSeedBfI.
+                                                    clear();
+
+                                                forAllConstIter
+                                                (
+                                                    labelHashSet,
+                                                    cumulativeRetreatSeedBfI,
+                                                    v34AcceptedSeedIt
+                                                )
+                                                {
+                                                    v34AcceptedRetreatSeedBfI.
+                                                        insert
+                                                        (
+                                                            v34AcceptedSeedIt.
+                                                                key()
+                                                        );
+                                                }
+
+                                                v34HaveAcceptedState = true;
+
+                                                twoPassAccepted = true;
+                                                blPointsFromPass2 = true;
+                                                adaptiveAccepted = true;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            Info
+                                                << "CFMITCH V3.1 ADAPTIVE "
+                                                << "RETREAT RESULT:"
+                                                << " refinementValid="
+                                                << (adaptiveValid
+                                                    ? "yes" : "no")
+                                                << " refinementCompleted="
+                                                << (adaptiveCompleted
+                                                    ? "yes" : "no")
+                                                << " -- REJECTED"
+                                                << endl;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Info
+                                            << "CFMITCH V3.1 ADAPTIVE "
+                                            << "RETREAT:"
+                                            << " Q0 restore failed"
+                                            << " -- retaining Q2"
+                                            << endl;
+                                    }
+
+                                    if( !adaptiveAccepted )
+                                    {
+                                        if
+                                        (
+                                            v42RetreatFromRejectedCompression
+                                        )
+                                        {
+                                            Info
+                                                << "CFMITCH V4.2 RETREAT "
+                                                << "FALLBACK REJECTED:"
+                                                << " restoring accepted Q1"
+                                                << endl;
+
+                                            if
+                                            (
+                                                !restorePreRefBLSnapshot
+                                                (
+                                                    pass1BLSnap
+                                                )
+                                            )
+                                            {
+                                                FatalErrorIn
+                                                (
+                                                    "cartesianMeshGenerator::"
+                                                    "generateBoundaryLayers()"
+                                                )
+                                                    << "CFMitch V4.2 failed to "
+                                                    << "restore accepted Q1"
+                                                    << exit(FatalError);
+                                            }
+
+                                            refLayers.pointsInBndLayer
+                                                (
+                                                    blPoints_
+                                                );
+
+                                            twoPassAccepted = false;
+                                            blPointsFromPass2 = false;
+                                        }
+                                        else
+                                        {
+                                            Info
+                                                << "CFMITCH V3.1 ADAPTIVE "
+                                                << "RETREAT:"
+                                                << " restoring accepted Q2"
+                                                << endl;
+
+                                            if
+                                            (
+                                                !restorePreRefBLSnapshot
+                                                (
+                                                    pass2BestSnap
+                                                )
+                                            )
+                                            {
+                                                FatalErrorIn
+                                                (
+                                                    "cartesianMeshGenerator::"
+                                                    "generateBoundaryLayers()"
+                                                )
+                                                    << "CFMitch v3.1 failed to "
+                                                    << "restore accepted Q2"
+                                                    << exit(FatalError);
+                                            }
+
+                                            refLayers2.pointsInBndLayer
+                                                (
+                                                    blPoints_
+                                                );
+
+                                            twoPassAccepted = true;
+                                            blPointsFromPass2 = true;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    if( pass2BadPyr.size() == 0 )
+                                    {
+                                        Info
+                                            << "CFMITCH V3.1 ADAPTIVE "
+                                            << "RETREAT: Q2 already clean"
+                                            << endl;
+                                    }
+                                    else
+                                    {
+                                        Info
+                                            << "CFMITCH V3.1 ADAPTIVE "
+                                            << "RETREAT: STAGNATED"
+                                            << " residualProvenanceSeeds="
+                                            << q2ResidualSeedBfI.size()
+                                            << " newSeeds=0"
+                                            << endl;
+                                    }
+
+                                    refLayers2.pointsInBndLayer(blPoints_);
+                                    twoPassAccepted = true;
+                                    blPointsFromPass2 = true;
+                                }
+
+                                // If adaptive Q3 was not accepted, the
+                                // retained state is Q2 and its provenance map
+                                // is still available from refLayers2.
+                                if
+                                (
+                                    !v34HaveAcceptedState
+                                 && !v42RetreatFromRejectedCompression
+                                )
+                                {
+                                    v34AcceptedCellToBaseBndFace =
+                                        refLayers2.cellToBaseBndFace();
+
+                                    v34AcceptedRetreatSeedBfI.clear();
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        provenanceSeedBfI,
+                                        v34Q2SeedIt
+                                    )
+                                    {
+                                        v34AcceptedRetreatSeedBfI.insert
+                                            (v34Q2SeedIt.key());
+                                    }
+
+                                    v34HaveAcceptedState = true;
+                                }
+
+                                // =========================================
+                                // CFMitch V3.4 -- exact OpenFOAM hard-face
+                                // recovery.
+                                //
+                                // Convert solver-equivalent wrong pyramids
+                                // and >90-degree internal faces into BL
+                                // provenance constraints. Rebuild once from
+                                // pristine Q0 using the cumulative N=1 set.
+                                // =========================================
+
+                                CFMitchOFHardQuality v34BaseHard;
+                                evaluateOpenFOAMHardQuality
+                                (
+                                    mesh_,
+                                    v34BaseHard
+                                );
+
+                                labelHashSet v34HardFaces;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    v34BaseHard.badPyramidFaces,
+                                    v34PyrFaceIt
+                                )
+                                {
+                                    v34HardFaces.insert
+                                        (v34PyrFaceIt.key());
+                                }
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    v34BaseHard.errorNonOrthFaces,
+                                    v34NonOrthFaceIt
+                                )
+                                {
+                                    v34HardFaces.insert
+                                        (v34NonOrthFaceIt.key());
+                                }
+
+                                labelHashSet v34ResidualSeedBfI;
+                                label v34AuditedCells = 0;
+                                label v34WithProvenance = 0;
+                                label v34NoProvenance = 0;
+                                label v34InvalidCells = 0;
+
+                                const labelList& v34Own =
+                                    mesh_.owner();
+
+                                const labelList& v34Nei =
+                                    mesh_.neighbour();
+
+                                const auto v34MapCell =
+                                [&]
+                                (
+                                    const label cellI
+                                )
+                                {
+                                    ++v34AuditedCells;
+
+                                    if
+                                    (
+                                        cellI < 0
+                                     || cellI >=
+                                        label
+                                        (
+                                            v34AcceptedCellToBaseBndFace.
+                                                size()
+                                        )
+                                    )
+                                    {
+                                        ++v34InvalidCells;
+                                        return;
+                                    }
+
+                                    const label bfI =
+                                        v34AcceptedCellToBaseBndFace[cellI];
+
+                                    if( bfI >= 0 )
+                                    {
+                                        v34ResidualSeedBfI.insert(bfI);
+                                        ++v34WithProvenance;
+                                    }
+                                    else
+                                    {
+                                        ++v34NoProvenance;
+                                    }
+                                };
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    v34HardFaces,
+                                    v34HardFaceIt
+                                )
+                                {
+                                    const label faceI =
+                                        v34HardFaceIt.key();
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(v34Own.size())
+                                    )
+                                    {
+                                        v34MapCell(v34Own[faceI]);
+                                    }
+
+                                    if
+                                    (
+                                        faceI >= 0
+                                     && faceI < label(v34Nei.size())
+                                    )
+                                    {
+                                        v34MapCell(v34Nei[faceI]);
+                                    }
+                                }
+
+                                labelHashSet v34CumulativeSeedBfI;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    v34AcceptedRetreatSeedBfI,
+                                    v34AcceptedSeedIt
+                                )
+                                {
+                                    v34CumulativeSeedBfI.insert
+                                        (v34AcceptedSeedIt.key());
+                                }
+
+                                const label v34BaseSeedCount =
+                                    v34CumulativeSeedBfI.size();
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    v34ResidualSeedBfI,
+                                    v34ResidualSeedIt
+                                )
+                                {
+                                    v34CumulativeSeedBfI.insert
+                                        (v34ResidualSeedIt.key());
+                                }
+
+                                const label v34NewSeedCount =
+                                    v34CumulativeSeedBfI.size()
+                                  - v34BaseSeedCount;
+
+                                Info
+                                    << "CFMITCH V3.4 OF HARD RETREAT INPUT:"
+                                    << " pyramidFaces="
+                                    << v34BaseHard.
+                                        badPyramidFaces.size()
+                                    << " pyramidErrors="
+                                    << v34BaseHard.pyramidErrors
+                                    << " nonOrthErrors="
+                                    << v34BaseHard.
+                                        errorNonOrthFaces.size()
+                                    << " severeNonOrth="
+                                    << v34BaseHard.
+                                        severeNonOrthFaces
+                                    << " maxNonOrth="
+                                    << v34BaseHard.maxNonOrth
+                                    << " signedNegVol="
+                                    << v34BaseHard.signedNegVolCells
+                                    << " minSignedVol="
+                                    << v34BaseHard.minSignedVol
+                                    << " hardFaces="
+                                    << v34HardFaces.size()
+                                    << " auditedCells="
+                                    << v34AuditedCells
+                                    << " withProvenance="
+                                    << v34WithProvenance
+                                    << " noProvenance="
+                                    << v34NoProvenance
+                                    << " invalidCells="
+                                    << v34InvalidCells
+                                    << " residualSeeds="
+                                    << v34ResidualSeedBfI.size()
+                                    << " baseSeeds="
+                                    << v34BaseSeedCount
+                                    << " newSeeds="
+                                    << v34NewSeedCount
+                                    << " cumulativeSeeds="
+                                    << v34CumulativeSeedBfI.size()
+                                    << endl;
+
+                                if
+                                (
+                                    v34HardFaces.size() > 0
+                                 && v34NewSeedCount > 0
+                                )
+                                {
+                                    PreRefBLMeshSnapshot v34BestSnap;
+                                    takePreRefBLSnapshot(v34BestSnap);
+
+                                    labelHashSet
+                                        v34BaseConstructionNegVol;
+                                    labelHashSet
+                                        v34BaseConstructionBadPyr;
+
+                                    polyMeshGenChecks::checkCellVolumes
+                                    (
+                                        mesh_,
+                                        false,
+                                        &v34BaseConstructionNegVol
+                                    );
+
+                                    polyMeshGenChecks::checkFacePyramids
+                                    (
+                                        mesh_,
+                                        false,
+                                        -SMALL,
+                                        &v34BaseConstructionBadPyr
+                                    );
+
+                                    scalar v34BaseRawMinVol = GREAT;
+                                    scalar v34BaseRawNegMag = 0.0;
+                                    label v34BaseRawNeg = 0;
+                                    label v34BaseRawBelowVSmall = 0;
+
+                                    rawCellVolumeStats
+                                    (
+                                        mesh_,
+                                        v34BaseRawNegMag,
+                                        v34BaseRawMinVol,
+                                        v34BaseRawNeg,
+                                        v34BaseRawBelowVSmall
+                                    );
+
+                                    bool v34Accepted = false;
+                                    bool v34RestoredQ0 =
+                                        restorePreRefBLSnapshot
+                                        (
+                                            preRefBLSnap
+                                        );
+
+                                    if( v34RestoredQ0 )
+                                    {
+                                        {
+                                            refineBoundaryLayers
+                                                refLayersOFHard(mesh_);
+
+                                            refLayersOFHard.
+                                                setNeutralLayerScaleAtMeshPoint
+                                                (
+                                                    blNeutralLayerScaleAtMeshPoint_
+                                                );
+
+                                            refineBoundaryLayers::readSettings
+                                            (
+                                                meshDict_,
+                                                refLayersOFHard
+                                            );
+
+                                            refLayersOFHard.
+                                                setBlblJunctionPoints
+                                                (
+                                                    preRefBLSnap.
+                                                        blblJunctionPoints
+                                                );
+
+                                            refLayersOFHard.
+                                                setBlblAcuteCornerPoints
+                                                (
+                                                    preRefBLSnap.
+                                                        blblAcuteCornerPoints
+                                                );
+
+                                            refLayersOFHard.setRampSeedPoints
+                                            (
+                                                preRefBLSnap.rampSeedPoints
+                                            );
+
+                                            refLayersOFHard.setVtFaceRing
+                                            (
+                                                preRefBLSnap.vtFaceRing
+                                            );
+
+                                            if
+                                            (
+                                                q1QualityMaxLayersAtFaces.
+                                                    size()
+                                            )
+                                            {
+                                                refLayersOFHard.
+                                                    setQualityMaxLayersAtFaces
+                                                    (
+                                                        q1QualityMaxLayersAtFaces
+                                                    );
+                                            }
+
+                                            if( haveClassifierPlans )
+                                            {
+                                                forAllIter
+                                                (
+                                                    Map<BLRepairPlan>,
+                                                    plans,
+                                                    v34PlanIt
+                                                )
+                                                {
+                                                    const BLRepairPlan& plan =
+                                                        v34PlanIt();
+
+                                                    if( plan.active() )
+                                                    {
+                                                        refLayersOFHard.
+                                                            forceMaxLayersAtFaces
+                                                            (
+                                                                plan.seedBfI_,
+                                                                plan.ring0_.
+                                                                    maxLayers,
+                                                                plan.ring1_.
+                                                                    maxLayers,
+                                                                plan.ring2_.
+                                                                    maxLayers,
+                                                                plan.ring0_.
+                                                                    thicknessScale,
+                                                                plan.ring1_.
+                                                                    thicknessScale,
+                                                                plan.ring2_.
+                                                                    thicknessScale,
+                                                                v34PlanIt.key()
+                                                            );
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                refLayersOFHard.
+                                                    forceMaxLayersAtFaces
+                                                    (
+                                                        provenanceSeedBfI,
+                                                        3, 4, 0,
+                                                        0.60, 0.80, 1.00
+                                                    );
+                                            }
+
+                                            // Strongest constraint last.
+                                            refLayersOFHard.
+                                                forceSingleLayerAtFaces
+                                                (
+                                                    v34CumulativeSeedBfI
+                                                );
+
+                                            Info
+                                                << "CFMITCH V3.4 OF HARD "
+                                                << "RETREAT BUILD:"
+                                                << " cumulativeSeeds="
+                                                << v34CumulativeSeedBfI.size()
+                                                << " maxLayers=1"
+                                                << endl;
+
+                                            nPointsBeforeBL_ =
+                                                mesh_.points().size();
+
+                                            refLayersOFHard.refineLayers();
+
+                                            const bool v34Valid =
+                                                refLayersOFHard.
+                                                    refinementValid();
+
+                                            const bool v34Completed =
+                                                refLayersOFHard.
+                                                    refinementCompleted();
+
+                                            if( v34Valid && v34Completed )
+                                            {
+                                                labelHashSet
+                                                    v34CandidateConstructionNeg;
+                                                labelHashSet
+                                                    v34CandidateConstructionPyr;
+
+                                                polyMeshGenChecks::
+                                                    checkCellVolumes
+                                                    (
+                                                        mesh_,
+                                                        false,
+                                                        &v34CandidateConstructionNeg
+                                                    );
+
+                                                polyMeshGenChecks::
+                                                    checkFacePyramids
+                                                    (
+                                                        mesh_,
+                                                        false,
+                                                        -SMALL,
+                                                        &v34CandidateConstructionPyr
+                                                    );
+
+                                                scalar v34CandidateRawMinVol =
+                                                    GREAT;
+                                                scalar v34CandidateRawNegMag =
+                                                    0.0;
+                                                label v34CandidateRawNeg = 0;
+                                                label
+                                                    v34CandidateRawBelowVSmall =
+                                                        0;
+
+                                                rawCellVolumeStats
+                                                (
+                                                    mesh_,
+                                                    v34CandidateRawNegMag,
+                                                    v34CandidateRawMinVol,
+                                                    v34CandidateRawNeg,
+                                                    v34CandidateRawBelowVSmall
+                                                );
+
+                                                CFMitchOFHardQuality
+                                                    v34CandidateHard;
+
+                                                evaluateOpenFOAMHardQuality
+                                                (
+                                                    mesh_,
+                                                    v34CandidateHard
+                                                );
+
+                                                const bool
+                                                    v34ConstructionNegOK =
+                                                        v34CandidateConstructionNeg.
+                                                            size()
+                                                     <= v34BaseConstructionNegVol.
+                                                            size();
+
+                                                const bool
+                                                    v34ConstructionPyrOK =
+                                                        v34CandidateConstructionPyr.
+                                                            size()
+                                                     <= v34BaseConstructionBadPyr.
+                                                            size();
+
+                                                const bool
+                                                    v34ExactPyrOK =
+                                                        v34CandidateHard.
+                                                            badPyramidFaces.
+                                                            size()
+                                                     <= v34BaseHard.
+                                                            badPyramidFaces.
+                                                            size();
+
+                                                const bool
+                                                    v34ExactNonOrthOK =
+                                                        v34CandidateHard.
+                                                            errorNonOrthFaces.
+                                                            size()
+                                                     <= v34BaseHard.
+                                                            errorNonOrthFaces.
+                                                            size();
+
+                                                const bool
+                                                    v34ExactHardBetter =
+                                                        v34CandidateHard.
+                                                            badPyramidFaces.
+                                                            size()
+                                                      < v34BaseHard.
+                                                            badPyramidFaces.
+                                                            size()
+                                                     || v34CandidateHard.
+                                                            errorNonOrthFaces.
+                                                            size()
+                                                      < v34BaseHard.
+                                                            errorNonOrthFaces.
+                                                            size();
+
+                                                const bool
+                                                    v34SignedNegOK =
+                                                        v34CandidateHard.
+                                                            signedNegVolCells
+                                                     <= v34BaseHard.
+                                                            signedNegVolCells;
+
+                                                const bool
+                                                    v34SignedMinVolOK =
+                                                        v34CandidateHard.
+                                                            minSignedVol
+                                                     >= v34BaseHard.
+                                                            minSignedVol;
+
+                                                const bool v34RawNegMagOK =
+                                                    v34CandidateRawNegMag
+                                                 <= v34BaseRawNegMag;
+
+                                                const bool v34RawMinVolOK =
+                                                    v34CandidateRawMinVol
+                                                 >= v34BaseRawMinVol;
+
+                                                const bool v34Better =
+                                                    v34ConstructionNegOK
+                                                 && v34ConstructionPyrOK
+                                                 && v34ExactPyrOK
+                                                 && v34ExactNonOrthOK
+                                                 && v34ExactHardBetter
+                                                 && v34SignedNegOK
+                                                 && v34SignedMinVolOK
+                                                 && v34RawNegMagOK
+                                                 && v34RawMinVolOK;
+
+                                                Info
+                                                    << "CFMITCH V3.4 OF HARD "
+                                                    << "RETREAT RESULT:"
+                                                    << " pyramidFaces "
+                                                    << v34BaseHard.
+                                                        badPyramidFaces.size()
+                                                    << "->"
+                                                    << v34CandidateHard.
+                                                        badPyramidFaces.size()
+                                                    << " nonOrthErrors "
+                                                    << v34BaseHard.
+                                                        errorNonOrthFaces.size()
+                                                    << "->"
+                                                    << v34CandidateHard.
+                                                        errorNonOrthFaces.size()
+                                                    << " signedNegVol "
+                                                    << v34BaseHard.
+                                                        signedNegVolCells
+                                                    << "->"
+                                                    << v34CandidateHard.
+                                                        signedNegVolCells
+                                                    << " minSignedVol "
+                                                    << v34BaseHard.minSignedVol
+                                                    << "->"
+                                                    << v34CandidateHard.
+                                                        minSignedVol
+                                                    << " constructionNegVol "
+                                                    << v34BaseConstructionNegVol.
+                                                        size()
+                                                    << "->"
+                                                    << v34CandidateConstructionNeg.
+                                                        size()
+                                                    << " constructionBadPyr "
+                                                    << v34BaseConstructionBadPyr.
+                                                        size()
+                                                    << "->"
+                                                    << v34CandidateConstructionPyr.
+                                                        size()
+                                                    << " rawNegMag "
+                                                    << v34BaseRawNegMag
+                                                    << "->"
+                                                    << v34CandidateRawNegMag
+                                                    << " rawMinVol "
+                                                    << v34BaseRawMinVol
+                                                    << "->"
+                                                    << v34CandidateRawMinVol
+                                                    << (v34Better
+                                                        ? " -- ACCEPTED"
+                                                        : " -- REJECTED")
+                                                    << endl;
+
+                                                if( v34Better )
+                                                {
+                                                    refLayersOFHard.
+                                                        pointsInBndLayer
+                                                        (
+                                                            blPoints_
+                                                        );
+
+                                                    twoPassAccepted = true;
+                                                    blPointsFromPass2 = true;
+                                                    v34Accepted = true;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                Info
+                                                    << "CFMITCH V3.4 OF HARD "
+                                                    << "RETREAT RESULT:"
+                                                    << " refinementValid="
+                                                    << (v34Valid
+                                                        ? "yes" : "no")
+                                                    << " refinementCompleted="
+                                                    << (v34Completed
+                                                        ? "yes" : "no")
+                                                    << " -- REJECTED"
+                                                    << endl;
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Info
+                                            << "CFMITCH V3.4 OF HARD "
+                                            << "RETREAT: Q0 restore failed"
+                                            << endl;
+                                    }
+
+                                    if( !v34Accepted )
+                                    {
+                                        Info
+                                            << "CFMITCH V3.4 OF HARD "
+                                            << "RETREAT: restoring previously "
+                                            << "accepted candidate"
+                                            << endl;
+
+                                        if
+                                        (
+                                            !restorePreRefBLSnapshot
+                                            (
+                                                v34BestSnap
+                                            )
+                                        )
+                                        {
+                                            FatalErrorIn
+                                            (
+                                                "cartesianMeshGenerator::"
+                                                "refBoundaryLayers()"
+                                            )
+                                                << "CFMitch V3.4 failed to "
+                                                << "restore the previously "
+                                                << "accepted candidate"
+                                                << exit(FatalError);
+                                        }
+
+                                        twoPassAccepted = true;
+                                        blPointsFromPass2 = true;
+                                    }
+                                }
+                                else if( v34HardFaces.size() == 0 )
+                                {
+                                    Info
+                                        << "CFMITCH V3.4 OF HARD RETREAT:"
+                                        << " candidate already hard-clean"
+                                        << endl;
+                                }
+                                else
+                                {
+                                    Info
+                                        << "CFMITCH V3.4 OF HARD RETREAT:"
+                                        << " STAGNATED newSeeds=0"
+                                        << " noProvenance="
+                                        << v34NoProvenance
+                                        << endl;
+                                }
                             }
                             else if
                             (
@@ -3890,6 +6379,10 @@ void cartesianMeshGenerator::refBoundaryLayers()
                                 )
                                 {
                                     refineBoundaryLayers refLayers3(mesh_);
+refLayers3.setNeutralLayerScaleAtMeshPoint
+(
+    blNeutralLayerScaleAtMeshPoint_
+);
 
                                     refineBoundaryLayers::readSettings
                                         (meshDict_, refLayers3);
@@ -4633,16 +7126,207 @@ void cartesianMeshGenerator::refBoundaryLayers()
             {
                 labelHashSet negBefore;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negBefore);
+
+                // ---------------------------------------------------------
+                // CFMitch topology-label transport:
+                //
+                // removeUnusedVertices() compacts the point array and
+                // rewrites every face through an oldPoint -> newPoint map.
+                // blPoints_ is persistent generator state and was harvested
+                // before that compaction.  It MUST therefore be transported
+                // through the identical map before any downstream
+                // meshOptimizer::lockPoints(blPoints_) call.
+                //
+                // lockPoints() performs an unchecked indexed write:
+                //
+                //     vertexLocation_[blPoints_[i]] |= LOCKED;
+                //
+                // so stale pre-compaction labels are both semantically wrong
+                // and potentially an out-of-bounds heap write.
+                // ---------------------------------------------------------
+
+                const label nOldPoints = mesh_.points().size();
+                const faceListPMG& cleanupFaces = mesh_.faces();
+
+                boolList cleanupUsePoint(nOldPoints, false);
+
+                forAll(cleanupFaces, faceI)
+                {
+                    const face& f = cleanupFaces[faceI];
+
+                    forAll(f, pI)
+                    {
+                        const label pointI = f[pI];
+
+                        if
+                        (
+                            pointI < 0
+                         || pointI >= nOldPoints
+                        )
+                        {
+                            FatalErrorIn
+                            (
+                                "cartesianMeshGenerator::"
+                                "refBoundaryLayers()"
+                            )
+                                << "Invalid point label " << pointI
+                                << " while constructing post-BL "
+                                << "old-to-new point map; nOldPoints="
+                                << nOldPoints
+                                << exit(FatalError);
+                        }
+
+                        cleanupUsePoint[pointI] = true;
+                    }
+                }
+
+                labelLongList cleanupOldToNew(nOldPoints, -1);
+
+                label nNewPoints = 0;
+                forAll(cleanupOldToNew, pointI)
+                {
+                    if( cleanupUsePoint[pointI] )
+                        cleanupOldToNew[pointI] = nNewPoints++;
+                }
+
+                const label nBLPointsBeforeRemap = blPoints_.size();
+
+                label nBLPointsAfterRemap = 0;
+                label nBLPointsRemoved = 0;
+                label nBLPointsInvalidOld = 0;
+
+                forAll(blPoints_, bpI)
+                {
+                    const label oldPointI = blPoints_[bpI];
+
+                    if
+                    (
+                        oldPointI < 0
+                     || oldPointI >= nOldPoints
+                    )
+                    {
+                        ++nBLPointsInvalidOld;
+                        continue;
+                    }
+
+                    if( cleanupOldToNew[oldPointI] < 0 )
+                    {
+                        ++nBLPointsRemoved;
+                        continue;
+                    }
+
+                    ++nBLPointsAfterRemap;
+                }
+
+                if( nBLPointsInvalidOld > 0 )
+                {
+                    FatalErrorIn
+                    (
+                        "cartesianMeshGenerator::refBoundaryLayers()"
+                    )
+                        << "CFMitch BL point metadata already contains "
+                        << nBLPointsInvalidOld
+                        << " out-of-range point labels before "
+                        << "removeUnusedVertices(); nOldPoints="
+                        << nOldPoints
+                        << exit(FatalError);
+                }
+
+                labelLongList remappedBLPoints(nBLPointsAfterRemap);
+
+                label remapPos = 0;
+
+                forAll(blPoints_, bpI)
+                {
+                    const label oldPointI = blPoints_[bpI];
+
+                    if
+                    (
+                        oldPointI >= 0
+                     && oldPointI < nOldPoints
+                     && cleanupOldToNew[oldPointI] >= 0
+                    )
+                    {
+                        remappedBLPoints[remapPos++] =
+                            cleanupOldToNew[oldPointI];
+                    }
+                }
+
+                if( remapPos != nBLPointsAfterRemap )
+                {
+                    FatalErrorIn
+                    (
+                        "cartesianMeshGenerator::refBoundaryLayers()"
+                    )
+                        << "CFMitch BL point remap accounting mismatch: "
+                        << "expected=" << nBLPointsAfterRemap
+                        << " actual=" << remapPos
+                        << exit(FatalError);
+                }
+
                 polyMeshGenModifier(mesh_).removeUnusedVertices();
+
+                blPoints_ = remappedBLPoints;
+
                 mesh_.clearAddressingData();
+
+                label nBLPointRangeViolations = 0;
+                label maxBLPointLabel = -1;
+
+                forAll(blPoints_, bpI)
+                {
+                    const label pointI = blPoints_[bpI];
+
+                    maxBLPointLabel =
+                        Foam::max(maxBLPointLabel, pointI);
+
+                    if
+                    (
+                        pointI < 0
+                     || pointI >= label(mesh_.points().size())
+                    )
+                    {
+                        ++nBLPointRangeViolations;
+                    }
+                }
+
+                Info
+                    << "CFMITCH BL_POINT_REMAP:"
+                    << " before=" << nBLPointsBeforeRemap
+                    << " after=" << blPoints_.size()
+                    << " removed=" << nBLPointsRemoved
+                    << " invalidOld=" << nBLPointsInvalidOld
+                    << " oldMeshPoints=" << nOldPoints
+                    << " newMeshPoints=" << mesh_.points().size()
+                    << " maxNewLabel=" << maxBLPointLabel
+                    << " rangeViolations="
+                    << nBLPointRangeViolations
+                    << endl;
+
+                if( nBLPointRangeViolations > 0 )
+                {
+                    FatalErrorIn
+                    (
+                        "cartesianMeshGenerator::refBoundaryLayers()"
+                    )
+                        << "CFMitch BL point remap produced "
+                        << nBLPointRangeViolations
+                        << " invalid point labels for mesh with "
+                        << mesh_.points().size() << " points"
+                        << exit(FatalError);
+                }
+
                 labelHashSet negAfter;
                 polyMeshGenChecks::checkCellVolumes(mesh_, false, &negAfter);
+
                 const bool hasUnusedAfter =
                     polyMeshGenChecks::checkPoints(mesh_, false);
+
                 Info << "Post-BL cleanup: removeUnusedVertices unusedPoints "
                      << "bad->" << (hasUnusedAfter ? "bad" : "ok")
                      << " negVol " << negBefore.size() << "->" << negAfter.size()
                      << endl;
+
                 if( negAfter.size() > negBefore.size() )
                     Info << "Post-BL cleanup warning: removeUnusedVertices "
                          << "worsened negative-volume count" << endl;
@@ -4957,7 +7641,29 @@ void cartesianMeshGenerator::refBoundaryLayers()
                      << " generic=" << nGenericClass
                      << endl;
 
-                Info << "  Gate2 periodic-local repair candidate faces: "
+                Info << "  Gate2 periodic-local diagnostic faces: "
+                     << gate2PeriodicBadFaces.size()
+                     << endl;
+
+                // CFMitch v2.4:
+                //
+                // Repair targeting is geometry/quality driven, not patch-name
+                // driven.  Every CURRENT-topology bad-pyramid face is eligible
+                // for the bounded Gate-2 motion transaction.
+                //
+                // The periodic/blade/hub/etc. classification above remains
+                // diagnostic only and does not control repair behavior.
+                labelHashSet gate2RepairBadFaces;
+
+                forAllConstIter(labelHashSet, badPyramidFaces, repairIt)
+                {
+                    gate2RepairBadFaces.insert(repairIt.key());
+                }
+
+                Info << "CFMITCH V2.4 GATE2 TARGETS:"
+                     << " badPyramids=" << badPyramidFaces.size()
+                     << " repairFaces=" << gate2RepairBadFaces.size()
+                     << " periodicDiagnostic="
                      << gate2PeriodicBadFaces.size()
                      << endl;
 
@@ -4989,40 +7695,183 @@ void cartesianMeshGenerator::refBoundaryLayers()
                 const pointField gate2PointsBefore(mesh_.points());
 
                 meshOptimizer gate2Optimizer(mesh_);
-                if( gate2PeriodicBadFaces.size() > 0 )
+                if( gate2RepairBadFaces.size() > 0 )
                 {
                     const faceListPMG& allFaces = mesh_.faces();
                     const labelList& own = mesh_.owner();
                     const labelList& nei = mesh_.neighbour();
                     const cellListPMG& cells = mesh_.cells();
+
+                    // -----------------------------------------------------
+                    // Build the smallest cell neighborhood directly
+                    // implicated by CURRENT bad-pyramid faces.
+                    // -----------------------------------------------------
                     labelHashSet freeCells;
-                    forAllConstIter(labelHashSet, gate2PeriodicBadFaces, it)
+
+                    forAllConstIter
+                    (
+                        labelHashSet,
+                        gate2RepairBadFaces,
+                        it
+                    )
                     {
                         const label faceI = it.key();
-                        freeCells.insert(own[faceI]);
-                        if( faceI < label(nei.size()) && nei[faceI] >= 0 )
-                            freeCells.insert(nei[faceI]);
-                    }
-                    labelHashSet freePoints;
-                    forAllConstIter(labelHashSet, freeCells, cit)
-                    {
-                        const cell& c = cells[cit.key()];
-                        forAll(c, fI)
+
+                        if
+                        (
+                            faceI >= 0
+                         && faceI < label(own.size())
+                        )
                         {
-                            const face& f = allFaces[c[fI]];
-                            forAll(f, pI)
-                                freePoints.insert(f[pI]);
+                            const label ownCellI = own[faceI];
+
+                            if
+                            (
+                                ownCellI >= 0
+                             && ownCellI < label(cells.size())
+                            )
+                            {
+                                freeCells.insert(ownCellI);
+                            }
+                        }
+
+                        if
+                        (
+                            faceI >= 0
+                         && faceI < label(nei.size())
+                        )
+                        {
+                            const label neiCellI = nei[faceI];
+
+                            if
+                            (
+                                neiCellI >= 0
+                             && neiCellI < label(cells.size())
+                            )
+                            {
+                                freeCells.insert(neiCellI);
+                            }
                         }
                     }
+
+
+                    // -----------------------------------------------------
+                    // Candidate points are vertices belonging to those
+                    // owner/neighbour cells.
+                    // -----------------------------------------------------
+                    labelHashSet candidatePoints;
+
+                    forAllConstIter
+                    (
+                        labelHashSet,
+                        freeCells,
+                        cit
+                    )
+                    {
+                        const label cellI = cit.key();
+
+                        if
+                        (
+                            cellI < 0
+                         || cellI >= label(cells.size())
+                        )
+                            continue;
+
+                        const cell& c = cells[cellI];
+
+                        forAll(c, fI)
+                        {
+                            const label faceI = c[fI];
+
+                            if
+                            (
+                                faceI < 0
+                             || faceI >= label(allFaces.size())
+                            )
+                                continue;
+
+                            const face& f = allFaces[faceI];
+
+                            forAll(f, pI)
+                            {
+                                candidatePoints.insert(f[pI]);
+                            }
+                        }
+                    }
+
+
+                    // -----------------------------------------------------
+                    // Hard geometry constraint:
+                    //
+                    // physical boundary points do NOT move in this first
+                    // generalized Gate-2 experiment.
+                    //
+                    // BL-top / internal transition points remain eligible.
+                    // -----------------------------------------------------
+                    const meshSurfaceEngine gate2Surface(mesh_);
+                    const labelList& gate2BoundaryPoints =
+                        gate2Surface.boundaryPoints();
+
+                    labelHashSet boundaryPointSet;
+
+                    forAll(gate2BoundaryPoints, bpI)
+                    {
+                        boundaryPointSet.insert
+                        (
+                            gate2BoundaryPoints[bpI]
+                        );
+                    }
+
+
                     labelLongList lockedPts;
+
                     const pointFieldPMG& pts = mesh_.points();
+
+                    label nFreeInterior = 0;
+                    label nCandidateBoundary = 0;
+
                     forAll(pts, pointI)
-                        if( !freePoints.found(pointI) )
+                    {
+                        const bool candidate =
+                            candidatePoints.found(pointI);
+
+                        const bool boundaryPoint =
+                            boundaryPointSet.found(pointI);
+
+                        if( candidate && boundaryPoint )
+                        {
+                            ++nCandidateBoundary;
+                        }
+
+                        const bool freeInterior =
+                            candidate && !boundaryPoint;
+
+                        if( freeInterior )
+                        {
+                            ++nFreeInterior;
+                        }
+                        else
+                        {
                             lockedPts.append(pointI);
+                        }
+                    }
+
                     gate2Optimizer.lockPoints(lockedPts);
-                    Info << "Gate2 local repair: locking " << lockedPts.size()
-                         << " points, freeing " << freePoints.size()
-                         << " points in owner/neighbour cells" << endl;
+
+                    Info
+                        << "CFMITCH V2.4 GATE2 LOCAL REGION:"
+                        << " repairFaces="
+                        << gate2RepairBadFaces.size()
+                        << " cells=" << freeCells.size()
+                        << " candidatePoints="
+                        << candidatePoints.size()
+                        << " candidateBoundaryLocked="
+                        << nCandidateBoundary
+                        << " freeInterior="
+                        << nFreeInterior
+                        << " totalLocked="
+                        << lockedPts.size()
+                        << endl;
                 }
 
                 if( gate2NegBefore.size() > 0 )
@@ -5031,13 +7880,20 @@ void cartesianMeshGenerator::refBoundaryLayers()
                          << gate2NegBefore.size()
                          << " negVol cells present, optimizer unsafe" << endl;
                 }
-                else if( gate2PeriodicBadFaces.size() == 0 )
+                else if( gate2RepairBadFaces.size() == 0 )
                 {
                     Info << "Gate2 local repair: skipped -- "
-                         << "no periodic bad faces to target" << endl;
+                         << "no bad-pyramid faces to target" << endl;
                 }
                 else
                 {
+                    Info
+                        << "CFMITCH V2.4 GATE2 REPAIR:"
+                        << " optimizing local interior neighborhoods of "
+                        << gate2RepairBadFaces.size()
+                        << " bad-pyramid faces"
+                        << endl;
+
                     gate2Optimizer.optimizeLowQualityFaces(3);
                 }
 
@@ -5156,7 +8012,300 @@ void cartesianMeshGenerator::refBoundaryLayers()
 
         meshOptimizer mOpt(mesh_);
         mOpt.lockPoints(blPoints_);
-        mOpt.untangleBoundaryLayer();
+
+        // BL_UNTANGLE_TRANSACTION
+        //
+        // untangleBoundaryLayer() is a motion-only stage, but when its
+        // incoming mesh is free of negVol cells it can run aggressive
+        // optimizeLowQualityFaces()/untangleMeshFV() operations.
+        //
+        // A previously accepted BL state must therefore be transactional:
+        // keep the new point positions only when hard mesh quality does not
+        // regress and at least one monitored metric improves.
+        //
+        // If negVol cells already exist, untangleBoundaryLayer() internally
+        // skips point optimisation.  Preserve that existing behaviour
+        // without paying for a redundant full transaction.
+        mesh_.clearAddressingData();
+
+        labelHashSet blUntangleNegBefore;
+        polyMeshGenChecks::checkCellVolumes
+        (
+            mesh_,
+            false,
+            &blUntangleNegBefore
+        );
+
+        if( blUntangleNegBefore.size() > 0 )
+        {
+            Info
+                << "BL_UNTANGLE_TRANSACTION skipped: incoming negVol="
+                << blUntangleNegBefore.size()
+                << " (untangleBoundaryLayer will perform no point motion)"
+                << endl;
+
+            mOpt.untangleBoundaryLayer();
+        }
+        else
+        {
+            const pointField blUntanglePointsBefore
+            (
+                mesh_.points()
+            );
+
+            const bool blUntangleUnusedBefore =
+                polyMeshGenChecks::checkPoints(mesh_, false);
+
+            labelHashSet blUntangleBadPyrBefore;
+            polyMeshGenChecks::checkFacePyramids
+            (
+                mesh_,
+                false,
+                -SMALL,
+                &blUntangleBadPyrBefore
+            );
+
+            labelHashSet blUntangleOpenBefore;
+            polyMeshGenChecks::checkClosedCells
+            (
+                mesh_,
+                false,
+                0.5,
+                &blUntangleOpenBefore
+            );
+
+            labelHashSet blUntangleNonOrthoBefore;
+            polyMeshGenChecks::checkFaceDotProduct
+            (
+                mesh_,
+                false,
+                85.0,
+                &blUntangleNonOrthoBefore
+            );
+
+            scalarField blUntangleSkewBefore;
+            polyMeshGenChecks::checkFaceSkewness
+            (
+                mesh_,
+                blUntangleSkewBefore
+            );
+
+            const scalar blUntangleMaxSkewBefore =
+                blUntangleSkewBefore.size() > 0
+              ? max(blUntangleSkewBefore)
+              : scalar(0);
+
+
+            Info
+                << "BL_UNTANGLE_TRANSACTION before:"
+                << " negVol=" << blUntangleNegBefore.size()
+                << " badPyr=" << blUntangleBadPyrBefore.size()
+                << " openCells=" << blUntangleOpenBefore.size()
+                << " nonOrtho85=" << blUntangleNonOrthoBefore.size()
+                << " maxSkew=" << blUntangleMaxSkewBefore
+                << " unusedPoints="
+                << (blUntangleUnusedBefore ? "bad" : "ok")
+                << endl;
+
+
+            mOpt.untangleBoundaryLayer();
+
+
+            // All addressing derived from point coordinates may now be
+            // stale.  Force exact post-motion recomputation.
+            mesh_.clearAddressingData();
+
+            const bool blUntangleUnusedAfter =
+                polyMeshGenChecks::checkPoints(mesh_, false);
+
+            labelHashSet blUntangleNegAfter;
+            polyMeshGenChecks::checkCellVolumes
+            (
+                mesh_,
+                false,
+                &blUntangleNegAfter
+            );
+
+            labelHashSet blUntangleBadPyrAfter;
+            polyMeshGenChecks::checkFacePyramids
+            (
+                mesh_,
+                false,
+                -SMALL,
+                &blUntangleBadPyrAfter
+            );
+
+            labelHashSet blUntangleOpenAfter;
+            polyMeshGenChecks::checkClosedCells
+            (
+                mesh_,
+                false,
+                0.5,
+                &blUntangleOpenAfter
+            );
+
+            labelHashSet blUntangleNonOrthoAfter;
+            polyMeshGenChecks::checkFaceDotProduct
+            (
+                mesh_,
+                false,
+                85.0,
+                &blUntangleNonOrthoAfter
+            );
+
+            scalarField blUntangleSkewAfter;
+            polyMeshGenChecks::checkFaceSkewness
+            (
+                mesh_,
+                blUntangleSkewAfter
+            );
+
+            const scalar blUntangleMaxSkewAfter =
+                blUntangleSkewAfter.size() > 0
+              ? max(blUntangleSkewAfter)
+              : scalar(0);
+
+
+            // Permit only roundoff-scale equality in max skew.
+            const scalar skewTol =
+                scalar(1.0e-12)
+               *Foam::max
+                (
+                    scalar(1),
+                    Foam::mag(blUntangleMaxSkewBefore)
+                );
+
+            const bool hardSafe =
+                blUntangleNegAfter.size()
+                    <= blUntangleNegBefore.size()
+             && blUntangleBadPyrAfter.size()
+                    <= blUntangleBadPyrBefore.size()
+             && blUntangleOpenAfter.size()
+                    <= blUntangleOpenBefore.size()
+             && blUntangleNonOrthoAfter.size()
+                    <= blUntangleNonOrthoBefore.size()
+             && blUntangleMaxSkewAfter
+                    <= blUntangleMaxSkewBefore + skewTol
+             && (!blUntangleUnusedAfter || blUntangleUnusedBefore);
+
+
+            const bool improved =
+                blUntangleNegAfter.size()
+                    < blUntangleNegBefore.size()
+             || blUntangleBadPyrAfter.size()
+                    < blUntangleBadPyrBefore.size()
+             || blUntangleOpenAfter.size()
+                    < blUntangleOpenBefore.size()
+             || blUntangleNonOrthoAfter.size()
+                    < blUntangleNonOrthoBefore.size()
+             || blUntangleMaxSkewAfter
+                    < blUntangleMaxSkewBefore - skewTol
+             || (blUntangleUnusedBefore && !blUntangleUnusedAfter);
+
+
+            if( hardSafe && improved )
+            {
+                Info
+                    << "BL_UNTANGLE_TRANSACTION accepted:"
+                    << " negVol "
+                    << blUntangleNegBefore.size()
+                    << "->"
+                    << blUntangleNegAfter.size()
+                    << " badPyr "
+                    << blUntangleBadPyrBefore.size()
+                    << "->"
+                    << blUntangleBadPyrAfter.size()
+                    << " openCells "
+                    << blUntangleOpenBefore.size()
+                    << "->"
+                    << blUntangleOpenAfter.size()
+                    << " nonOrtho85 "
+                    << blUntangleNonOrthoBefore.size()
+                    << "->"
+                    << blUntangleNonOrthoAfter.size()
+                    << " maxSkew "
+                    << blUntangleMaxSkewBefore
+                    << "->"
+                    << blUntangleMaxSkewAfter
+                    << " unusedPoints "
+                    << (blUntangleUnusedBefore ? "bad" : "ok")
+                    << "->"
+                    << (blUntangleUnusedAfter ? "bad" : "ok")
+                    << endl;
+            }
+            else
+            {
+                Info
+                    << "BL_UNTANGLE_TRANSACTION rejected:"
+                    << " negVol "
+                    << blUntangleNegBefore.size()
+                    << "->"
+                    << blUntangleNegAfter.size()
+                    << " badPyr "
+                    << blUntangleBadPyrBefore.size()
+                    << "->"
+                    << blUntangleBadPyrAfter.size()
+                    << " openCells "
+                    << blUntangleOpenBefore.size()
+                    << "->"
+                    << blUntangleOpenAfter.size()
+                    << " nonOrtho85 "
+                    << blUntangleNonOrthoBefore.size()
+                    << "->"
+                    << blUntangleNonOrthoAfter.size()
+                    << " maxSkew "
+                    << blUntangleMaxSkewBefore
+                    << "->"
+                    << blUntangleMaxSkewAfter
+                    << " unusedPoints "
+                    << (blUntangleUnusedBefore ? "bad" : "ok")
+                    << "->"
+                    << (blUntangleUnusedAfter ? "bad" : "ok")
+                    << " hardSafe="
+                    << (hardSafe ? "yes" : "no")
+                    << " improved="
+                    << (improved ? "yes" : "no")
+                    << " -- restoring pre-untangle points"
+                    << endl;
+
+                polyMeshGenModifier blUntangleModifier(mesh_);
+                pointFieldPMG& pts =
+                    blUntangleModifier.pointsAccess();
+
+                pts = blUntanglePointsBefore;
+
+                mesh_.clearAddressingData();
+
+
+                // Verify the rollback itself.  This must reproduce the
+                // pre-transaction hard validity state.
+                labelHashSet blUntangleRollbackNeg;
+                polyMeshGenChecks::checkCellVolumes
+                (
+                    mesh_,
+                    false,
+                    &blUntangleRollbackNeg
+                );
+
+                labelHashSet blUntangleRollbackBadPyr;
+                polyMeshGenChecks::checkFacePyramids
+                (
+                    mesh_,
+                    false,
+                    -SMALL,
+                    &blUntangleRollbackBadPyr
+                );
+
+                Info
+                    << "BL_UNTANGLE_TRANSACTION rollback:"
+                    << " negVol="
+                    << blUntangleRollbackNeg.size()
+                    << " badPyr="
+                    << blUntangleRollbackBadPyr.size()
+                    << endl;
+            }
+        }
+
         // Post-refinement BL optimisation -- optional, off by default.
         // Enable with: postRefineBLOptimisation true; in boundaryLayers dict.
         bool postRefineBLOpt = false;
@@ -5171,6 +8320,514 @@ void cartesianMeshGenerator::refBoundaryLayers()
             Info << "Running post-refinement boundary-layer optimisation" << endl;
             mOpt.optimizeBoundaryLayer(modSurfacePtr_==NULL);
         }
+        // =========================================================
+        // CFMitch V3.3 -- exact OpenFOAM face-geometry parity diagnostic
+        //
+        // polyMeshGenAddressing intentionally uses positive surrogate
+        // pyramid weights for its construction-time cell centres.  That
+        // keeps intermediate defective cells finite and prevents the
+        // centroid overflow/SIGFPE failure previously observed here.
+        //
+        // OpenFOAM primitiveMesh::makeCellCentresAndVols(), however,
+        // preserves SIGNED face-pyramid contributions.  checkMesh then
+        // evaluates pyramid orientation, non-orthogonality and skewness
+        // from those signed-reconstruction cell centres.
+        //
+        // Therefore construction centres must NOT be used as CFMitch's
+        // eventual solver-readiness contract.
+        //
+        // This block is DIAGNOSTIC ONLY.  It constructs temporary
+        // OpenFOAM-style face centres, face areas, and cell centres, then
+        // evaluates stock primitiveMesh geometry formulas without modifying
+        // mesh_, its addressing,
+        // topology, points, BL constraints, or candidate acceptance.
+        //
+        // NOTE: this first parity stage reproduces primitiveMesh geometry.
+        // OpenFOAM polyMeshCheck additionally supplies neighbour cell
+        // centres on coupled boundary patches.  Internal-face parity and
+        // uncoupled-boundary skewness are exact targets here; any residual
+        // difference isolated to coupled faces will be handled separately.
+        // =========================================================
+        {
+            const labelList& ofOwn = mesh_.owner();
+            const labelList& ofNei = mesh_.neighbour();
+
+            const faceListPMG& ofFaces = mesh_.faces();
+            const pointFieldPMG& ofPoints = mesh_.points();
+
+            // Reconstruct face geometry directly from points and faces
+            // using OpenFOAM 13 face::areaAndCentre().  In particular,
+            // non-triangular face centres use signed area projected onto
+            // the face unit normal, not cfMesh's triangle-area magnitudes.
+            //
+            // Do not use cached polyMeshGenAddressing face geometry here:
+            // this is an independent solver-parity representation.
+            vectorField ofFaceCtrs(ofFaces.size(), vector::zero);
+            vectorField ofFaceAreas(ofFaces.size(), vector::zero);
+
+            forAll(ofFaces, faceI)
+            {
+                const face& f = ofFaces[faceI];
+                const label nPoints = f.size();
+
+                // Exact triangle branch from face::areaAndCentre().
+                if( nPoints == 3 )
+                {
+                    const point& p0 = ofPoints[f[0]];
+                    const point& p1 = ofPoints[f[1]];
+                    const point& p2 = ofPoints[f[2]];
+
+                    ofFaceAreas[faceI] =
+                        (1.0/2.0)*((p1 - p0)^(p2 - p0));
+
+                    ofFaceCtrs[faceI] =
+                        (1.0/3.0)*(p0 + p1 + p2);
+                }
+                else
+                {
+                    // Estimate the centre as the arithmetic point average.
+                    point pAvg = vector::zero;
+
+                    for(label pointI=0; pointI<nPoints; ++pointI)
+                    {
+                        pAvg += ofPoints[f[pointI]];
+                    }
+
+                    pAvg /= nPoints;
+
+                    // Sum fan-triangle area vectors and construct the same
+                    // face unit normal used by OpenFOAM.
+                    vector sumA = vector::zero;
+
+                    for(label pointI=0; pointI<nPoints; ++pointI)
+                    {
+                        const point& p0 = ofPoints[f[pointI]];
+                        const point& p1 =
+                            ofPoints[f.nextLabel(pointI)];
+
+                        const vector a = (p1 - p0)^(pAvg - p0);
+                        sumA += a;
+                    }
+
+                    const vector sumAHat = normalised(sumA);
+
+                    // OpenFOAM weights triangle centres by signed area
+                    // projected onto the face normal.  This is the critical
+                    // difference from cfMesh's mag(a) weighting.
+                    scalar sumAn = 0.0;
+                    vector sumAnc = vector::zero;
+
+                    for(label pointI=0; pointI<nPoints; ++pointI)
+                    {
+                        const point& p0 = ofPoints[f[pointI]];
+                        const point& p1 =
+                            ofPoints[f.nextLabel(pointI)];
+
+                        const vector a = (p1 - p0)^(pAvg - p0);
+                        const vector c = p0 + p1 + pAvg;
+                        const scalar an = a & sumAHat;
+
+                        sumAn += an;
+                        sumAnc += an*c;
+                    }
+
+                    ofFaceAreas[faceI] = (1.0/2.0)*sumA;
+
+                    if( sumAn > vSmall )
+                    {
+                        ofFaceCtrs[faceI] =
+                            (1.0/3.0)*sumAnc/sumAn;
+                    }
+                    else
+                    {
+                        ofFaceCtrs[faceI] = pAvg;
+                    }
+                }
+            }
+
+            const label ofNCells = mesh_.cells().size();
+            const label ofNInternalFaces = mesh_.nInternalFaces();
+
+            // -----------------------------------------------------
+            // 1. OpenFOAM primitiveMesh::makeCellCentresAndVols()
+            // -----------------------------------------------------
+
+            vectorField ofCEst(ofNCells, vector::zero);
+            labelList ofNCellFaces(ofNCells, 0);
+
+            forAll(ofOwn, faceI)
+            {
+                const label cellI = ofOwn[faceI];
+
+                ofCEst[cellI] += ofFaceCtrs[faceI];
+                ++ofNCellFaces[cellI];
+            }
+
+            for(label faceI=0; faceI<ofNInternalFaces; ++faceI)
+            {
+                const label cellI = ofNei[faceI];
+
+                ofCEst[cellI] += ofFaceCtrs[faceI];
+                ++ofNCellFaces[cellI];
+            }
+
+            label ofZeroFaceCells = 0;
+
+            forAll(ofCEst, cellI)
+            {
+                if( ofNCellFaces[cellI] > 0 )
+                {
+                    ofCEst[cellI] /= ofNCellFaces[cellI];
+                }
+                else
+                {
+                    ++ofZeroFaceCells;
+                }
+            }
+
+            vectorField ofCellCtrs(ofNCells, vector::zero);
+            scalarField ofCellVol3(ofNCells, 0.0);
+
+            forAll(ofOwn, faceI)
+            {
+                const label cellI = ofOwn[faceI];
+
+                const scalar pyr3Vol =
+                    ofFaceAreas[faceI]
+                  & (ofFaceCtrs[faceI] - ofCEst[cellI]);
+
+                const vector pc =
+                    (3.0/4.0)*ofFaceCtrs[faceI]
+                  + (1.0/4.0)*ofCEst[cellI];
+
+                ofCellCtrs[cellI] += pyr3Vol*pc;
+                ofCellVol3[cellI] += pyr3Vol;
+            }
+
+            for(label faceI=0; faceI<ofNInternalFaces; ++faceI)
+            {
+                const label cellI = ofNei[faceI];
+
+                const scalar pyr3Vol =
+                    ofFaceAreas[faceI]
+                  & (ofCEst[cellI] - ofFaceCtrs[faceI]);
+
+                const vector pc =
+                    (3.0/4.0)*ofFaceCtrs[faceI]
+                  + (1.0/4.0)*ofCEst[cellI];
+
+                ofCellCtrs[cellI] += pyr3Vol*pc;
+                ofCellVol3[cellI] += pyr3Vol;
+            }
+
+            label ofCentreFallbackCells = 0;
+            label ofSignedNegVolCells = 0;
+            scalar ofMinSignedVol = VGREAT;
+
+            forAll(ofCellCtrs, cellI)
+            {
+                if( Foam::mag(ofCellVol3[cellI]) > VSMALL )
+                {
+                    ofCellCtrs[cellI] /= ofCellVol3[cellI];
+                }
+                else
+                {
+                    ofCellCtrs[cellI] = ofCEst[cellI];
+                    ++ofCentreFallbackCells;
+                }
+
+                const scalar cellVol = ofCellVol3[cellI]/3.0;
+
+                ofMinSignedVol =
+                    Foam::min(ofMinSignedVol, cellVol);
+
+                if( cellVol < 0.0 )
+                    ++ofSignedNegVolCells;
+            }
+
+            // Quantify how different the construction centre field is
+            // from the OpenFOAM signed-reconstruction centre field.
+            const vectorField& cfmitchConstructionCtrs =
+                mesh_.addressingData().cellCentres();
+
+            scalar ofMaxCentreDelta = 0.0;
+            label ofMaxCentreDeltaCell = -1;
+
+            forAll(ofCellCtrs, cellI)
+            {
+                const scalar d =
+                    mag
+                    (
+                        ofCellCtrs[cellI]
+                      - cfmitchConstructionCtrs[cellI]
+                    );
+
+                if( d > ofMaxCentreDelta )
+                {
+                    ofMaxCentreDelta = d;
+                    ofMaxCentreDeltaCell = cellI;
+                }
+            }
+
+            // -----------------------------------------------------
+            // 2. Stock primitiveMesh pyramid-orientation formula
+            //
+            // checkMesh calls:
+            //
+            //     checkFacePyramids(..., -small, ...)
+            //
+            // Owner value is:
+            //
+            //     -pyramidPointFaceRef(face, ownerCc).mag(points)
+            //
+            // Neighbour value is the positive-sign version.
+            // -----------------------------------------------------
+
+            labelHashSet ofBadPyramidFaces;
+            label ofPyramidErrors = 0;
+
+            forAll(ofFaces, faceI)
+            {
+                const scalar ownPyrVol =
+                    -pyramidPointFaceRef
+                    (
+                        ofFaces[faceI],
+                        ofCellCtrs[ofOwn[faceI]]
+                    ).mag(ofPoints);
+
+                if( ownPyrVol < -SMALL )
+                {
+                    ofBadPyramidFaces.insert(faceI);
+                    ++ofPyramidErrors;
+                }
+
+                if( faceI < ofNInternalFaces )
+                {
+                    const scalar neiPyrVol =
+                        pyramidPointFaceRef
+                        (
+                            ofFaces[faceI],
+                            ofCellCtrs[ofNei[faceI]]
+                        ).mag(ofPoints);
+
+                    if( neiPyrVol < -SMALL )
+                    {
+                        ofBadPyramidFaces.insert(faceI);
+                        ++ofPyramidErrors;
+                    }
+                }
+            }
+
+            // -----------------------------------------------------
+            // 3. Stock primitiveMesh internal-face orthogonality
+            //
+            //     (d & Sf)/(mag(d)*mag(Sf) + rootVSmall)
+            //
+            // checkMesh threshold is 70 degrees.
+            // ortho <= small is the >90-degree error branch.
+            // -----------------------------------------------------
+
+            const scalar ofRootVSmall = Foam::sqrt(VSMALL);
+
+            const scalar ofNonOrthThreshold =
+                Foam::cos(70.0*M_PI/180.0);
+
+            labelHashSet ofNonOrthoFaces;
+            label ofSevereNonOrth = 0;
+            label ofErrorNonOrth = 0;
+
+            scalar ofMinOrtho = VGREAT;
+
+            for(label faceI=0; faceI<ofNInternalFaces; ++faceI)
+            {
+                const vector d =
+                    ofCellCtrs[ofNei[faceI]]
+                  - ofCellCtrs[ofOwn[faceI]];
+
+                const vector& sA = ofFaceAreas[faceI];
+
+                const scalar ortho =
+                    (d & sA)
+                  / (mag(d)*mag(sA) + ofRootVSmall);
+
+                ofMinOrtho = Foam::min(ofMinOrtho, ortho);
+
+                if( ortho < ofNonOrthThreshold )
+                {
+                    ofNonOrthoFaces.insert(faceI);
+
+                    if( ortho > SMALL )
+                        ++ofSevereNonOrth;
+                    else
+                        ++ofErrorNonOrth;
+                }
+            }
+
+            scalar ofMaxNonOrth = 0.0;
+
+            if( ofNInternalFaces > 0 )
+            {
+                const scalar clamped =
+                    Foam::min
+                    (
+                        scalar(1.0),
+                        Foam::max(scalar(-1.0), ofMinOrtho)
+                    );
+
+                ofMaxNonOrth =
+                    Foam::acos(clamped)*180.0/M_PI;
+            }
+
+            // -----------------------------------------------------
+            // 4. Stock primitiveMesh face skewness formula.
+            //
+            // Internal faces use owner+neighbour centres.
+            // Boundary faces use the stock mirror-cell-equivalent
+            // boundaryFaceSkewness formula.
+            //
+            // polyMeshCheck later replaces coupled-boundary values using
+            // neighbour cell centres.  Therefore any remaining difference
+            // after this diagnostic should be isolated to coupled patches.
+            // -----------------------------------------------------
+
+            const scalar ofSkewThreshold = 4.0;
+
+            labelHashSet ofSkewFaces;
+            scalar ofMaxSkew = 0.0;
+
+            forAll(ofFaces, faceI)
+            {
+                scalar skew = 0.0;
+
+                if( faceI < ofNInternalFaces )
+                {
+                    const point& ownCc =
+                        ofCellCtrs[ofOwn[faceI]];
+
+                    const point& neiCc =
+                        ofCellCtrs[ofNei[faceI]];
+
+                    const vector Cpf =
+                        ofFaceCtrs[faceI] - ownCc;
+
+                    const vector d = neiCc - ownCc;
+
+                    const vector sv =
+                        Cpf
+                      - (
+                            (ofFaceAreas[faceI] & Cpf)
+                          / (
+                                (ofFaceAreas[faceI] & d)
+                              + ofRootVSmall
+                            )
+                        )*d;
+
+                    const vector svHat =
+                        sv/(mag(sv) + ofRootVSmall);
+
+                    scalar fd =
+                        0.2*mag(d) + ofRootVSmall;
+
+                    const face& f = ofFaces[faceI];
+
+                    forAll(f, pI)
+                    {
+                        fd =
+                            Foam::max
+                            (
+                                fd,
+                                Foam::mag
+                                (
+                                    svHat
+                                  & (
+                                        ofPoints[f[pI]]
+                                      - ofFaceCtrs[faceI]
+                                    )
+                                )
+                            );
+                    }
+
+                    skew = mag(sv)/fd;
+                }
+                else
+                {
+                    const point& ownCc =
+                        ofCellCtrs[ofOwn[faceI]];
+
+                    const vector Cpf =
+                        ofFaceCtrs[faceI] - ownCc;
+
+                    vector normal = ofFaceAreas[faceI];
+
+                    normal /=
+                        mag(normal) + ofRootVSmall;
+
+                    const vector d =
+                        normal*(normal & Cpf);
+
+                    const vector sv =
+                        Cpf
+                      - (
+                            (ofFaceAreas[faceI] & Cpf)
+                          / (
+                                (ofFaceAreas[faceI] & d)
+                              + ofRootVSmall
+                            )
+                        )*d;
+
+                    const vector svHat =
+                        sv/(mag(sv) + ofRootVSmall);
+
+                    scalar fd =
+                        0.4*mag(d) + ofRootVSmall;
+
+                    const face& f = ofFaces[faceI];
+
+                    forAll(f, pI)
+                    {
+                        fd =
+                            Foam::max
+                            (
+                                fd,
+                                Foam::mag
+                                (
+                                    svHat
+                                  & (
+                                        ofPoints[f[pI]]
+                                      - ofFaceCtrs[faceI]
+                                    )
+                                )
+                            );
+                    }
+
+                    skew = mag(sv)/fd;
+                }
+
+                ofMaxSkew = Foam::max(ofMaxSkew, skew);
+
+                if( skew > ofSkewThreshold )
+                    ofSkewFaces.insert(faceI);
+            }
+
+            Info
+                << "CFMITCH OF_PRIMITIVE_PARITY:"
+                << " zeroFaceCells=" << ofZeroFaceCells
+                << " centreFallbackCells=" << ofCentreFallbackCells
+                << " signedNegVol=" << ofSignedNegVolCells
+                << " minSignedVol=" << ofMinSignedVol
+                << " maxCentreDelta=" << ofMaxCentreDelta
+                << " maxCentreDeltaCell=" << ofMaxCentreDeltaCell
+                << " pyramidErrors=" << ofPyramidErrors
+                << " pyramidFaces=" << ofBadPyramidFaces.size()
+                << " internalSevereNonOrth=" << ofSevereNonOrth
+                << " internalNonOrthErrors=" << ofErrorNonOrth
+                << " internalNonOrthFaces=" << ofNonOrthoFaces.size()
+                << " internalMaxNonOrth=" << ofMaxNonOrth
+                << " primitiveSkewFaces=" << ofSkewFaces.size()
+                << " primitiveMaxSkew=" << ofMaxSkew
+                << endl;
+        }
+
         Info << "refBoundaryLayers: stored "
              << blPoints_.size()
              << " BL interior points" << endl;
@@ -7258,6 +10915,14 @@ void cartesianMeshGenerator::generateMesh()
             // so all mapper instances in this block can exclude them
             // from generic nearest-surface projection.
             // Uses meshDict nLayersForPatch only -- no mesh modification.
+            //
+            // classicCfMesh deliberately bypasses this enhanced pre-BL
+            // constraint system; the frozen 9d60e8b pipeline did not have it.
+            if
+            (
+                selectedBoundaryLayerArchitecture(meshDict_)
+             != "classicCfMesh"
+            )
             {
                 boundaryLayers blDetect(mesh_, meshDict_);
                 blDetect.detectBLNoBlTransitionEdges();
@@ -7670,7 +11335,135 @@ void cartesianMeshGenerator::generateMesh()
             }
         }
 
+        // CFMitch V4.6
+        //
+        // Snapshot/retry paths can recreate owner/neighbour addressing
+        // for an earlier topology.  renumberMesh() consumes those arrays
+        // before clearing them, so invalidate them at the last possible
+        // point before renumbering.
+        auto v46AuditFinalAddressing =
+        [&](const word& stage) -> bool
+        {
+            const label nFaces = mesh_.faces().size();
+            const label nCells = mesh_.cells().size();
+
+            const PtrList<boundaryPatch>& bnd =
+                mesh_.boundaries();
+
+            const label boundaryStart =
+                bnd.size()
+              ? bnd[0].patchStart()
+              : nFaces;
+
+            const labelList& owner = mesh_.owner();
+            const labelList& neighbour = mesh_.neighbour();
+
+            label firstNegative = -1;
+            label nNegative = 0;
+            label nInternalNegative = 0;
+            label nBoundaryPositive = 0;
+            label nBadOwner = 0;
+            label nBadNeighbour = 0;
+            label nPositiveAfterFirstNegative = 0;
+
+            forAll(owner, faceI)
+            {
+                if
+                (
+                    owner[faceI] < 0
+                 || owner[faceI] >= nCells
+                )
+                    ++nBadOwner;
+            }
+
+            forAll(neighbour, faceI)
+            {
+                const label nei = neighbour[faceI];
+
+                if( nei < 0 )
+                {
+                    ++nNegative;
+
+                    if( firstNegative < 0 )
+                        firstNegative = faceI;
+
+                    if( faceI < boundaryStart )
+                        ++nInternalNegative;
+                }
+                else
+                {
+                    if( firstNegative >= 0 )
+                        ++nPositiveAfterFirstNegative;
+
+                    if( faceI >= boundaryStart )
+                        ++nBoundaryPositive;
+
+                    if( nei >= nCells )
+                        ++nBadNeighbour;
+                }
+            }
+
+            const label expectedFirstNegative =
+                boundaryStart < nFaces
+              ? boundaryStart
+              : -1;
+
+            const bool valid =
+                owner.size() == nFaces
+             && neighbour.size() == nFaces
+             && firstNegative == expectedFirstNegative
+             && nInternalNegative == 0
+             && nBoundaryPositive == 0
+             && nPositiveAfterFirstNegative == 0
+             && nBadOwner == 0
+             && nBadNeighbour == 0;
+
+            Info
+                << "CFMITCH V4.6 FINAL ADDRESSING:"
+                << " stage=" << stage
+                << " valid=" << (valid ? "yes" : "no")
+                << " faces=" << nFaces
+                << " owner=" << owner.size()
+                << " neighbour=" << neighbour.size()
+                << " boundaryStart=" << boundaryStart
+                << " firstNegative=" << firstNegative
+                << " negative=" << nNegative
+                << " internalNegative=" << nInternalNegative
+                << " boundaryPositive=" << nBoundaryPositive
+                << " positiveAfterFirstNegative="
+                << nPositiveAfterFirstNegative
+                << " badOwner=" << nBadOwner
+                << " badNeighbour=" << nBadNeighbour
+                << endl;
+
+            return valid;
+        };
+
+        polyMeshGenModifier(mesh_).clearTopologyAddressing();
+
+        if( !v46AuditFinalAddressing("PRE_RENUMBER_REBUILT") )
+        {
+            FatalErrorIn
+            (
+                "cartesianMeshGenerator final addressing"
+            )
+                << "Invalid addressing before renumberMesh"
+                << abort(FatalError);
+        }
+
         renumberMesh();
+
+        polyMeshGenModifier(mesh_).clearTopologyAddressing();
+
+        if( !v46AuditFinalAddressing("POST_RENUMBER_REBUILT") )
+        {
+            FatalErrorIn
+            (
+                "cartesianMeshGenerator final addressing"
+            )
+                << "Invalid addressing after renumberMesh"
+                << abort(FatalError);
+        }
 
         // Compact any points orphaned by renumbering before validation.
         {
@@ -7705,6 +11498,19 @@ void cartesianMeshGenerator::generateMesh()
         }
 
         replaceBoundaries();
+
+        // Boundary replacement may invalidate face-classification caches.
+        polyMeshGenModifier(mesh_).clearTopologyAddressing();
+
+        if( !v46AuditFinalAddressing("POST_REPLACE_REBUILT") )
+        {
+            FatalErrorIn
+            (
+                "cartesianMeshGenerator final addressing"
+            )
+                << "Invalid addressing after replaceBoundaries"
+                << abort(FatalError);
+        }
 
         // FINAL DEBUG:
         // Validate mesh immediately after boundary replacement/renaming.
@@ -10601,7 +14407,45 @@ cartesianMeshGenerator::~cartesianMeshGenerator()
 
 void cartesianMeshGenerator::writeMesh() const
 {
+    // CFMitch V4.8
+    //
+    // OpenFOAM's default ASCII precision can be only six significant
+    // digits.  That is insufficient for thin boundary layers and can
+    // turn an in-memory valid pyramid into an invalid solver-read
+    // pyramid during serialization.
+    //
+    // Preserve the requested file format, but guarantee enough decimal
+    // digits for an exact scalar round trip.  Binary output is unaffected.
+    const unsigned int requestedPrecision =
+        IOstream::defaultPrecision();
+
+    const unsigned int losslessPrecision =
+        std::numeric_limits<scalar>::max_digits10;
+
+    const unsigned int effectivePrecision =
+        requestedPrecision < losslessPrecision
+      ? losslessPrecision
+      : requestedPrecision;
+
+    IOstream::defaultPrecision(effectivePrecision);
+
+    Info
+        << "CFMITCH V4.8 LOSSLESS MESH WRITE:"
+        << " requestedPrecision=" << requestedPrecision
+        << " effectivePrecision=" << effectivePrecision
+        << " scalarBytes=" << sizeof(scalar)
+        << " upgraded="
+        << (
+               effectivePrecision != requestedPrecision
+             ? "yes"
+             : "no"
+           )
+        << endl;
+
     mesh_.write();
+
+    // Do not change precision globally for any later application output.
+    IOstream::defaultPrecision(requestedPrecision);
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

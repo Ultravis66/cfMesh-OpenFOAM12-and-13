@@ -92,6 +92,10 @@ class cartesianMeshGenerator
         labelHashSet blGapActionPoints_;
         wordList     blGapLoserPatchNames_;
 
+        // Final BL-height scale at simple BL/neutral contacts.
+        // Keys are stable mesh-point labels, not boundary-point indices.
+        Map<scalar> blNeutralLayerScaleAtMeshPoint_;
+
         //- BL/no-BL transition edge points (boundary-point indices)
         //- passed from boundaryLayers to post-BL mapper instances
         //- to exclude from generic nearest-surface projection

@@ -26,6 +26,7 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "refineBoundaryLayers.H"
+#include "boundaryLayerConstraintPlanner.H"
 #include "meshSurfaceEngine.H"
 #include "helperFunctions.H"
 #include "polyMeshGenAddressing.H"
@@ -289,15 +290,39 @@ bool refineBoundaryLayers::analyseLayers()
 
             if( it != numLayersForPatch_.end() )
             {
+                const label ptchI = patchNameToIndex[pName];
+
+                // CFMitch/shared-modern hard no-BL invariant:
+                //
+                // setNumberOfLayersForPatch() documents nLayers < 2
+                // as disabling boundary layers on the patch.  The original
+                // cfMesh layer-group logic allowed such a patch to inherit
+                // maxNumLayers from another patch in the same detected
+                // layer group, which could silently turn an explicit
+                // nLayers=0 surface into a full BL-generating surface.
+                //
+                // Internally one layer means "retain the unsplit parent",
+                // therefore normalize every explicit nLayers < 2 request
+                // to one and protect it from group maximum propagation.
+                //
+                // This is shared by legacyEnhanced and constraintPlanner.
+                // classicCfMesh uses its separate frozen implementation.
+                if( it->second < 2 )
+                {
+                    nLayersAtPatch[ptchI] = 1;
+                    protectedValue[ptchI] = true;
+                    hasLocalValue = true;
+                }
                 //- check if the layer is interrupted at this patch
-                if(
+                else if
+                (
                     discontinuousLayersForPatch_.find(pName) !=
                     discontinuousLayersForPatch_.end()
                 )
                 {
                     //- set the number of layers and lock this location
-                    nLayersAtPatch[patchNameToIndex[pName]] = it->second;
-                    protectedValue[patchNameToIndex[pName]] = true;
+                    nLayersAtPatch[ptchI] = it->second;
+                    protectedValue[ptchI] = true;
                     hasLocalValue = true;
                 }
                 else
@@ -364,6 +389,44 @@ bool refineBoundaryLayers::analyseLayers()
     //- perform reduction over all processors
     reduce(nLayersAtPatch, maxOp<labelList>());
 
+    // CFMitch/shared-modern hard no-BL audit.
+    // An explicitly disabled patch must resolve to <= 1 and may never
+    // inherit an active layer count from its detected layer group.
+    {
+        label nHardNoBLPatches = 0;
+        label nHardNoBLSafe = 0;
+        label nHardNoBLViolations = 0;
+
+        forAll(nLayersAtPatch, patchI)
+        {
+            const word& pName = boundaries[patchI].patchName();
+
+            const std::map<word, label>::const_iterator it =
+                numLayersForPatch_.find(pName);
+
+            if
+            (
+                it == numLayersForPatch_.end()
+             || it->second >= 2
+            )
+                continue;
+
+            ++nHardNoBLPatches;
+
+            if( nLayersAtPatch[patchI] <= 1 )
+                ++nHardNoBLSafe;
+            else
+                ++nHardNoBLViolations;
+        }
+
+        Info
+            << "BL_HARD_NOBL_AUDIT"
+            << " requestedPatches=" << nHardNoBLPatches
+            << " safe=" << nHardNoBLSafe
+            << " violations=" << nHardNoBLViolations
+            << endl;
+    }
+
     # ifdef DEBUGLayer
     Pout << "nLayersAtPatch " << nLayersAtPatch << endl;
     # endif
@@ -409,7 +472,21 @@ bool refineBoundaryLayers::analyseLayers()
     // Ring 0 (junction face)    -> 1 layer
     // Ring 1 (neighbor face)    -> max 2 layers
     // Ring 2+ resumes full nLayers
-    if( blblJunctionPoints_.size() > 0 )
+    //
+    // Experimental baseline synchronization:
+    // the installed test library used for the 15-layer contact-smoother
+    // A/B has this historical BL/BL layer-count ramp disabled.  Keep the
+    // source behavior identical while testing the contact sweep transaction.
+    const bool enableBlblJunctionLayerCountRamp = false;
+
+    if( !enableBlblJunctionLayerCountRamp )
+        Info << "BL/BL junction ramp: DISABLED A/B" << endl;
+
+    if
+    (
+        enableBlblJunctionLayerCountRamp
+     && blblJunctionPoints_.size() > 0
+    )
     {
         const meshSurfaceEngine& mseLoc = surfaceEngine();
         const VRWGraph& ptFaces = mseLoc.pointFaces();
@@ -666,6 +743,19 @@ void refineBoundaryLayers::generateNewVertices()
     const labelList& facePatch = mse.boundaryFacePatches();
     const labelList& bp = mse.bp();
 
+    // CFMitch v0 architecture entry point.
+    // The planner is behaviour-neutral at this stage.  The
+    // constraintPlanner mode intentionally retains legacyEnhanced
+    // execution so exact mesh equivalence can be established before
+    // responsibilities are migrated into the planner.
+    boundaryLayerConstraintPlanner cfmitchPlanner
+    (
+        mesh_,
+        boundaryLayerArchitecture_
+    );
+
+    cfmitchPlanner.report();
+
     //- allocate the data from storing parameters applying to a split edge
     LongList<scalar> firstLayerThickness(splitEdges_.size());
     LongList<scalar> thicknessRatio(splitEdges_.size());
@@ -762,6 +852,1017 @@ void refineBoundaryLayers::generateNewVertices()
              << " outOfRangeFaces=" << nOutOfRangeFaces
              << " requestedFaces=" << forcedThicknessScaleAtFace_.size()
              << endl;
+    }
+
+    if( cfmitchPlanner.plannerEnabled() )
+    {
+        const boundaryLayerPlan cfmitchPlan =
+            cfmitchPlanner.solveLayerCounts
+            (
+                mse,
+                splitEdges_,
+                neutralLayerScaleAtMeshPoint_,
+                nLayersAtBndFace_,
+                globalThicknessRatio_,
+                thicknessRatioForPatch_,
+                vtFaceRing_,
+                constraintPlannerMaxLayerStep_
+            );
+
+        nLayersAtBndFace_ =
+            cfmitchPlan.faceLayers();
+
+        Info
+            << "CFMITCH: resolved layer-count plan applied"
+            << " faces=" << nLayersAtBndFace_.size()
+            << endl;
+
+        // -------------------------------------------------------------
+        // CFMitch V3.8 -- pre-topology edge-hex compatibility planner.
+        //
+        // refineEdgeHexCell can refine a parent touched by two active
+        // BL boundary faces only when each generating face has one
+        // well-defined opposite quadrilateral terminal face.
+        //
+        // A six-face polyhedron is not necessarily a topological hex.
+        // In particular, a polygonal opposite face can contain an
+        // edge-conforming chain of N-1 intermediate vertices while
+        // remaining a single face. Assigning that whole polygon to one
+        // of N terminal children leaves exactly N-1 open child edges.
+        //
+        // Detect that condition using only the unmodified Q0 topology.
+        // Both generating boundary faces are locally terminated at one
+        // layer, then the normal constraint planner is re-run so the
+        // requested layer count recovers smoothly according to
+        // constraintPlannerMaxLayerStep_.
+        // -------------------------------------------------------------
+        {
+            const labelList& structuralFaceOwners =
+                mse.faceOwners();
+
+            const cellListPMG& structuralCells =
+                mesh_.cells();
+
+            const faceListPMG& structuralFaces =
+                mesh_.faces();
+
+            const PtrList<boundaryPatch>& structuralBoundaries =
+                mesh_.boundaries();
+
+            const label structuralStartBoundary =
+                structuralBoundaries.size()
+              ? structuralBoundaries[0].patchStart()
+              : structuralFaces.size();
+
+            auto structuralCommonEdgeCount =
+            [] (const face& a, const face& b) -> label
+            {
+                label count = 0;
+
+                forAll(a, aeI)
+                {
+                    const label a0 = a[aeI];
+                    const label a1 = a[(aeI+1) % a.size()];
+                    const label alo = Foam::min(a0, a1);
+                    const label ahi = Foam::max(a0, a1);
+
+                    forAll(b, beI)
+                    {
+                        const label b0 = b[beI];
+                        const label b1 = b[(beI+1) % b.size()];
+
+                        if
+                        (
+                            alo == Foam::min(b0, b1)
+                         && ahi == Foam::max(b0, b1)
+                        )
+                        {
+                            ++count;
+                        }
+                    }
+                }
+
+                return count;
+            };
+
+            label structuralMaxLayers = 1;
+
+            forAll(nLayersAtBndFace_, bfI)
+            {
+                structuralMaxLayers =
+                    Foam::max
+                    (
+                        structuralMaxLayers,
+                        nLayersAtBndFace_[bfI]
+                    );
+            }
+
+            const label structuralMaxPasses =
+                structuralMaxLayers + 2;
+
+            labelHashSet structuralAllSeeds;
+            label structuralPass = 0;
+            bool structuralChanged = true;
+
+            while
+            (
+                structuralChanged
+             && structuralPass < structuralMaxPasses
+            )
+            {
+                ++structuralPass;
+                structuralChanged = false;
+
+                labelList activeCount
+                (
+                    structuralCells.size(),
+                    0
+                );
+
+                labelList activeBf0
+                (
+                    structuralCells.size(),
+                    -1
+                );
+
+                labelList activeBf1
+                (
+                    structuralCells.size(),
+                    -1
+                );
+
+                forAll(structuralFaceOwners, bfI)
+                {
+                    if
+                    (
+                        bfI < 0
+                     || bfI >= label(nLayersAtBndFace_.size())
+                     || nLayersAtBndFace_[bfI] <= 1
+                    )
+                    {
+                        continue;
+                    }
+
+                    const label cellI =
+                        structuralFaceOwners[bfI];
+
+                    if
+                    (
+                        cellI < 0
+                     || cellI >= label(structuralCells.size())
+                    )
+                    {
+                        continue;
+                    }
+
+                    if( activeCount[cellI] == 0 )
+                    {
+                        activeBf0[cellI] = bfI;
+                    }
+                    else if( activeCount[cellI] == 1 )
+                    {
+                        activeBf1[cellI] = bfI;
+                    }
+
+                    ++activeCount[cellI];
+                }
+
+                labelHashSet structuralPassSeeds;
+
+                label nType2Parents = 0;
+                label nBadParentFaceCount = 0;
+                label nBadActiveFaces = 0;
+                label nBadActiveCommonEdges = 0;
+                label nBadOppositeCount = 0;
+                label nNonQuadOpposite = 0;
+
+                forAll(activeCount, cellI)
+                {
+                    if( activeCount[cellI] != 2 )
+                        continue;
+
+                    ++nType2Parents;
+
+                    const label bf0 = activeBf0[cellI];
+                    const label bf1 = activeBf1[cellI];
+
+                    bool compatible = true;
+
+                    const cell& parent =
+                        structuralCells[cellI];
+
+                    if( parent.size() != 6 )
+                    {
+                        compatible = false;
+                        ++nBadParentFaceCount;
+                    }
+
+                    const label activeFaceI0 =
+                        structuralStartBoundary + bf0;
+
+                    const label activeFaceI1 =
+                        structuralStartBoundary + bf1;
+
+                    if
+                    (
+                        compatible
+                     &&
+                        (
+                            activeFaceI0 < 0
+                         || activeFaceI1 < 0
+                         || activeFaceI0 >= label(structuralFaces.size())
+                         || activeFaceI1 >= label(structuralFaces.size())
+                        )
+                    )
+                    {
+                        compatible = false;
+                        ++nBadActiveFaces;
+                    }
+
+                    bool parentHasActive0 = false;
+                    bool parentHasActive1 = false;
+
+                    if( compatible )
+                    {
+                        forAll(parent, localFaceI)
+                        {
+                            parentHasActive0 =
+                                parentHasActive0
+                             || parent[localFaceI] == activeFaceI0;
+
+                            parentHasActive1 =
+                                parentHasActive1
+                             || parent[localFaceI] == activeFaceI1;
+                        }
+
+                        if
+                        (
+                            !parentHasActive0
+                         || !parentHasActive1
+                        )
+                        {
+                            compatible = false;
+                            ++nBadActiveFaces;
+                        }
+                    }
+
+                    if
+                    (
+                        compatible
+                     && structuralCommonEdgeCount
+                        (
+                            structuralFaces[activeFaceI0],
+                            structuralFaces[activeFaceI1]
+                        ) != 1
+                    )
+                    {
+                        compatible = false;
+                        ++nBadActiveCommonEdges;
+                    }
+
+                    label oppositeFaceI0 = -1;
+                    label oppositeFaceI1 = -1;
+                    label nOpposite0 = 0;
+                    label nOpposite1 = 0;
+
+                    if( compatible )
+                    {
+                        const face& active0 =
+                            structuralFaces[activeFaceI0];
+
+                        const face& active1 =
+                            structuralFaces[activeFaceI1];
+
+                        forAll(parent, localFaceI)
+                        {
+                            const label candidateFaceI =
+                                parent[localFaceI];
+
+                            if
+                            (
+                                candidateFaceI < 0
+                             || candidateFaceI >=
+                                label(structuralFaces.size())
+                            )
+                            {
+                                compatible = false;
+                                ++nBadActiveFaces;
+                                break;
+                            }
+
+                            if
+                            (
+                                candidateFaceI != activeFaceI0
+                             && structuralCommonEdgeCount
+                                (
+                                    active0,
+                                    structuralFaces[candidateFaceI]
+                                ) == 0
+                            )
+                            {
+                                oppositeFaceI0 = candidateFaceI;
+                                ++nOpposite0;
+                            }
+
+                            if
+                            (
+                                candidateFaceI != activeFaceI1
+                             && structuralCommonEdgeCount
+                                (
+                                    active1,
+                                    structuralFaces[candidateFaceI]
+                                ) == 0
+                            )
+                            {
+                                oppositeFaceI1 = candidateFaceI;
+                                ++nOpposite1;
+                            }
+                        }
+                    }
+
+                    if
+                    (
+                        compatible
+                     &&
+                        (
+                            nOpposite0 != 1
+                         || nOpposite1 != 1
+                        )
+                    )
+                    {
+                        compatible = false;
+                        ++nBadOppositeCount;
+                    }
+
+                    if
+                    (
+                        compatible
+                     &&
+                        (
+                            structuralFaces[oppositeFaceI0].size() != 4
+                         || structuralFaces[oppositeFaceI1].size() != 4
+                        )
+                    )
+                    {
+                        compatible = false;
+                        ++nNonQuadOpposite;
+                    }
+
+                    if( !compatible )
+                    {
+                        structuralPassSeeds.insert(bf0);
+                        structuralPassSeeds.insert(bf1);
+                    }
+                }
+
+                Info
+                    << "CFMITCH V3.8 EDGEHEX PLAN GUARD:"
+                    << " pass=" << structuralPass
+                    << " type2Parents=" << nType2Parents
+                    << " seedFaces=" << structuralPassSeeds.size()
+                    << " badParentFaceCount="
+                    << nBadParentFaceCount
+                    << " badActiveFaces="
+                    << nBadActiveFaces
+                    << " badActiveCommonEdges="
+                    << nBadActiveCommonEdges
+                    << " badOppositeCount="
+                    << nBadOppositeCount
+                    << " nonQuadOpposite="
+                    << nNonQuadOpposite
+                    << endl;
+
+                if( structuralPassSeeds.empty() )
+                    break;
+
+                structuralChanged = true;
+
+                forAllConstIter
+                (
+                    labelHashSet,
+                    structuralPassSeeds,
+                    seedIt
+                )
+                {
+                    const label bfI = seedIt.key();
+
+                    if
+                    (
+                        bfI < 0
+                     || bfI >= label(nLayersAtBndFace_.size())
+                    )
+                    {
+                        continue;
+                    }
+
+                    nLayersAtBndFace_[bfI] = 1;
+                    structuralAllSeeds.insert(bfI);
+                }
+
+                const boundaryLayerPlan structuralPlan =
+                    cfmitchPlanner.solveLayerCounts
+                    (
+                        mse,
+                        splitEdges_,
+                        neutralLayerScaleAtMeshPoint_,
+                        nLayersAtBndFace_,
+                        globalThicknessRatio_,
+                        thicknessRatioForPatch_,
+                        vtFaceRing_,
+                        constraintPlannerMaxLayerStep_
+                    );
+
+                nLayersAtBndFace_ =
+                    structuralPlan.faceLayers();
+
+                // Structural termination is a hard upper bound. The
+                // planner is expected to preserve it; enforce it again
+                // so a future planner implementation cannot reactivate
+                // an unsupported edge-hex parent.
+                forAllConstIter
+                (
+                    labelHashSet,
+                    structuralAllSeeds,
+                    seedIt
+                )
+                {
+                    const label bfI = seedIt.key();
+
+                    if
+                    (
+                        bfI >= 0
+                     && bfI < label(nLayersAtBndFace_.size())
+                    )
+                    {
+                        nLayersAtBndFace_[bfI] = 1;
+                    }
+                }
+            }
+
+            Info
+                << "CFMITCH V3.8 EDGEHEX PLAN SUMMARY:"
+                << " passes=" << structuralPass
+                << " structuralSeedFaces="
+                << structuralAllSeeds.size()
+                << " maxPasses="
+                << structuralMaxPasses
+                << endl;
+        }
+    }
+    else
+    {
+        // Dense stable mesh-point lookup for BL/neutral height scales.
+        // Built serially; the OMP split-edge loop below is read-only.
+        scalarField neutralScaleByMeshPoint
+        (
+            mesh_.points().size(),
+            scalar(1)
+        );
+
+        label nNeutralScaleMapped = 0;
+
+        forAllConstIter
+        (
+            Map<scalar>,
+            neutralLayerScaleAtMeshPoint_,
+            it
+        )
+        {
+            const label meshPtI = it.key();
+
+            if
+            (
+                meshPtI < 0
+             || meshPtI >= label(neutralScaleByMeshPoint.size())
+            )
+                continue;
+
+            neutralScaleByMeshPoint[meshPtI] =
+                Foam::max
+                (
+                    scalar(0),
+                    Foam::min(scalar(1), it())
+                );
+
+            ++nNeutralScaleMapped;
+        }
+
+        Info << "refineBoundaryLayers: neutral scale metadata:"
+             << " input=" << neutralLayerScaleAtMeshPoint_.size()
+             << " mapped=" << nNeutralScaleMapped
+             << endl;
+
+        // BL/neutral height-aware FACE layer-count adaptation.
+        //
+        // neutralScaleByMeshPoint is keyed by the ORIGINAL stable wall point.
+        // After BL extrusion that point is normally the interior endpoint of a
+        // split hair; the current boundary faces contain the opposite/top
+        // endpoint. Transfer the scale along the hair first, then modify the
+        // canonical nLayersAtBndFace_ topology.
+        scalarField neutralScaleByCurrentBp
+        (
+            mse.boundaryPoints().size(),
+            scalar(1)
+        );
+
+        boolList neutralScalePresentAtCurrentBp
+        (
+            mse.boundaryPoints().size(),
+            false
+        );
+
+        label nNeutralScaleTransferEdges = 0;
+        label nNeutralScaleTransferBpUpdates = 0;
+
+        forAll(splitEdges_, seI)
+        {
+            const edge& se = splitEdges_[seI];
+
+            scalar edgeScale = scalar(1);
+            bool hasEdgeScale = false;
+
+            const label ep0 = se.start();
+            const label ep1 = se.end();
+
+            if
+            (
+                ep0 >= 0
+             && ep0 < label(neutralScaleByMeshPoint.size())
+             && neutralScaleByMeshPoint[ep0]
+                    < scalar(1) - SMALL
+            )
+            {
+                edgeScale = neutralScaleByMeshPoint[ep0];
+                hasEdgeScale = true;
+            }
+
+            if
+            (
+                ep1 >= 0
+             && ep1 < label(neutralScaleByMeshPoint.size())
+             && neutralScaleByMeshPoint[ep1]
+                    < scalar(1) - SMALL
+            )
+            {
+                edgeScale =
+                    hasEdgeScale
+                  ? Foam::min
+                    (
+                        edgeScale,
+                        neutralScaleByMeshPoint[ep1]
+                    )
+                  : neutralScaleByMeshPoint[ep1];
+
+                hasEdgeScale = true;
+            }
+
+            if( !hasEdgeScale )
+                continue;
+
+            ++nNeutralScaleTransferEdges;
+
+            // Transfer to whichever split-edge endpoint is a CURRENT
+            // boundary point. Usually this is e.start(), but deliberately
+            // handle both endpoints so the logic is orientation-independent.
+            const label endpoints[2] = {ep0, ep1};
+
+            for( label ei=0; ei<2; ++ei )
+            {
+                const label meshPtI = endpoints[ei];
+
+                if
+                (
+                    meshPtI < 0
+                 || meshPtI >= label(bp.size())
+                )
+                    continue;
+
+                const label currBpI = bp[meshPtI];
+
+                if
+                (
+                    currBpI < 0
+                 || currBpI >= label(neutralScaleByCurrentBp.size())
+                )
+                    continue;
+
+                if( neutralScalePresentAtCurrentBp[currBpI] )
+                {
+                    neutralScaleByCurrentBp[currBpI] =
+                        Foam::min
+                        (
+                            neutralScaleByCurrentBp[currBpI],
+                            edgeScale
+                        );
+                }
+                else
+                {
+                    neutralScaleByCurrentBp[currBpI] =
+                        edgeScale;
+
+                    neutralScalePresentAtCurrentBp[currBpI] =
+                        true;
+                }
+
+                ++nNeutralScaleTransferBpUpdates;
+            }
+        }
+
+        label nNeutralScaleCappedFaces = 0;
+        label minNeutralFaceLayers = labelMax;
+        label maxNeutralFaceLayers = 0;
+
+        // Seeds for topology compatibility propagation.
+        // Only faces DIRECTLY reduced by the BL/neutral height rule may seed
+        // this ramp. Existing low-layer gap/termination/BLBL faces must not
+        // initiate propagation.
+        boolList neutralScaleDirectCappedFace
+        (
+            nLayersAtBndFace_.size(),
+            false
+        );
+
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            const label requestedNLayers =
+                nLayersAtBndFace_[bfI];
+
+            if( requestedNLayers <= 1 )
+                continue;
+
+            if( bfI < 0 || bfI >= label(bFaces.size()) )
+                continue;
+
+            const face& bf = bFaces[bfI];
+
+            scalar faceScale = scalar(1);
+            bool hasFaceScale = false;
+
+            forAll(bf, fpI)
+            {
+                const label meshPtI = bf[fpI];
+
+                if
+                (
+                    meshPtI < 0
+                 || meshPtI >= label(bp.size())
+                )
+                    continue;
+
+                const label currBpI = bp[meshPtI];
+
+                if
+                (
+                    currBpI < 0
+                 || currBpI >= label(neutralScaleByCurrentBp.size())
+                 || !neutralScalePresentAtCurrentBp[currBpI]
+                )
+                    continue;
+
+                const scalar sPt =
+                    neutralScaleByCurrentBp[currBpI];
+
+                faceScale =
+                    hasFaceScale
+                  ? Foam::min(faceScale, sPt)
+                  : sPt;
+
+                hasFaceScale = true;
+            }
+
+            if( !hasFaceScale )
+                continue;
+
+            scalar ratio = globalThicknessRatio_;
+
+            if
+            (
+                bfI >= 0
+             && bfI < label(facePatch.size())
+            )
+            {
+                const label patchI = facePatch[bfI];
+
+                if
+                (
+                    patchI >= 0
+                 && patchI < label(boundaries.size())
+                )
+                {
+                    const word& patchName =
+                        boundaries[patchI].patchName();
+
+                    const std::map<word, scalar>::const_iterator rIt =
+                        thicknessRatioForPatch_.find(patchName);
+
+                    if( rIt != thicknessRatioForPatch_.end() )
+                        ratio = rIt->second;
+                }
+            }
+
+            const scalar r =
+                Foam::max(ratio, scalar(1e-12));
+
+            scalar totalWeight = scalar(0);
+            scalar w = scalar(1);
+
+            for
+            (
+                label li=0;
+                li<requestedNLayers;
+                ++li
+            )
+            {
+                totalWeight += w;
+                w *= r;
+            }
+
+            const scalar availableWeight =
+                faceScale * totalWeight;
+
+            label faceCap = 1;
+            scalar cumulative = scalar(0);
+            w = scalar(1);
+
+            const scalar fitTol =
+                scalar(100) * SMALL
+              * Foam::max(scalar(1), totalWeight);
+
+            for
+            (
+                label li=1;
+                li<=requestedNLayers;
+                ++li
+            )
+            {
+                cumulative += w;
+
+                if
+                (
+                    cumulative
+                 <= availableWeight + fitTol
+                )
+                {
+                    faceCap = li;
+                }
+                else
+                {
+                    break;
+                }
+
+                w *= r;
+            }
+
+            faceCap =
+                Foam::max
+                (
+                    label(1),
+                    Foam::min(requestedNLayers, faceCap)
+                );
+
+            if( faceCap < nLayersAtBndFace_[bfI] )
+            {
+                nLayersAtBndFace_[bfI] = faceCap;
+                neutralScaleDirectCappedFace[bfI] = true;
+
+                ++nNeutralScaleCappedFaces;
+
+                minNeutralFaceLayers =
+                    Foam::min
+                    (
+                        minNeutralFaceLayers,
+                        faceCap
+                    );
+
+                maxNeutralFaceLayers =
+                    Foam::max
+                    (
+                        maxNeutralFaceLayers,
+                        faceCap
+                    );
+            }
+        }
+
+        // BL/neutral FACE layer-count compatibility ramp.
+        //
+        // The directly height-capped faces may differ sharply from neighboring
+        // full-layer faces (for example 2 -> 15). Propagate ONLY outward from
+        // those direct seeds and ONLY across faces on the same boundary patch.
+        //
+        // Enforce:
+        //
+        //     neighbourLayers <= sourceLayers + 1
+        //
+        // one topological ring per pass. This creates a deterministic
+        // 2->3->4->...->15 recovery without allowing unrelated existing
+        // one-layer faces to seed a global reduction.
+        boolList neutralRampFrontier
+        (
+            neutralScaleDirectCappedFace
+        );
+
+        boolList neutralRampAdjustedFace
+        (
+            nLayersAtBndFace_.size(),
+            false
+        );
+
+        label nNeutralRampAdjustedFaces = 0;
+        label nNeutralRampUpdates = 0;
+        label nNeutralRampPasses = 0;
+
+        // The required number of rings cannot exceed the maximum layer-count
+        // difference. Add a small guard margin rather than using an arbitrary
+        // fixed iteration count.
+        label neutralRampMaxLayers = 1;
+
+        forAll(nLayersAtBndFace_, bfI)
+        {
+            neutralRampMaxLayers =
+                Foam::max
+                (
+                    neutralRampMaxLayers,
+                    nLayersAtBndFace_[bfI]
+                );
+        }
+
+        const label neutralRampMaxPasses =
+            neutralRampMaxLayers + 2;
+
+        bool neutralRampChanged = true;
+
+        while
+        (
+            neutralRampChanged
+         && nNeutralRampPasses < neutralRampMaxPasses
+        )
+        {
+            neutralRampChanged = false;
+            ++nNeutralRampPasses;
+
+            boolList nextFrontier
+            (
+                nLayersAtBndFace_.size(),
+                false
+            );
+
+            // Snapshot the layer-count field so one pass advances exactly
+            // one boundary-face ring regardless of face ordering.
+            const labelList layersBeforePass
+            (
+                nLayersAtBndFace_
+            );
+
+            forAll(neutralRampFrontier, bfI)
+            {
+                if( !neutralRampFrontier[bfI] )
+                    continue;
+
+                if
+                (
+                    bfI < 0
+                 || bfI >= label(bFaces.size())
+                 || bfI >= label(facePatch.size())
+                )
+                    continue;
+
+                const label sourcePatch =
+                    facePatch[bfI];
+
+                const label sourceLayers =
+                    layersBeforePass[bfI];
+
+                // Permit at most a two-layer change per topological ring.
+                // This keeps the neutral transition smooth while reducing the
+                // spatial footprint of the compatibility ramp.
+                const label neighbourCap =
+                    sourceLayers + 2;
+
+                const face& f =
+                    bFaces[bfI];
+
+                forAll(f, fpI)
+                {
+                    const label meshPtI =
+                        f[fpI];
+
+                    if
+                    (
+                        meshPtI < 0
+                     || meshPtI >= label(bp.size())
+                    )
+                        continue;
+
+                    const label bpI =
+                        bp[meshPtI];
+
+                    if
+                    (
+                        bpI < 0
+                     || bpI >= label(pointFaces.size())
+                    )
+                        continue;
+
+                    forAllRow(pointFaces, bpI, pfI)
+                    {
+                        const label nbfI =
+                            pointFaces(bpI, pfI);
+
+                        if
+                        (
+                            nbfI < 0
+                         || nbfI >= label(nLayersAtBndFace_.size())
+                         || nbfI >= label(facePatch.size())
+                         || nbfI == bfI
+                        )
+                            continue;
+
+                        // Never cross patch boundaries.
+                        if( facePatch[nbfI] != sourcePatch )
+                            continue;
+
+                        // Existing virtual-topology treatment has priority.
+                        if
+                        (
+                            nbfI < label(vtFaceRing_.size())
+                         && vtFaceRing_[nbfI] >= 0
+                        )
+                            continue;
+
+                        if
+                        (
+                            layersBeforePass[nbfI]
+                         <= neighbourCap
+                        )
+                            continue;
+
+                        if
+                        (
+                            nLayersAtBndFace_[nbfI]
+                         > neighbourCap
+                        )
+                        {
+                            nLayersAtBndFace_[nbfI] =
+                                neighbourCap;
+
+                            nextFrontier[nbfI] = true;
+                            neutralRampChanged = true;
+                            ++nNeutralRampUpdates;
+
+                            if
+                            (
+                                !neutralRampAdjustedFace[nbfI]
+                            )
+                            {
+                                neutralRampAdjustedFace[nbfI] =
+                                    true;
+
+                                ++nNeutralRampAdjustedFaces;
+                            }
+                        }
+                    }
+                }
+            }
+
+            neutralRampFrontier.transfer
+            (
+                nextFrontier
+            );
+        }
+
+        label nNeutralRampSeeds = 0;
+
+        forAll(neutralScaleDirectCappedFace, bfI)
+        {
+            if( neutralScaleDirectCappedFace[bfI] )
+                ++nNeutralRampSeeds;
+        }
+
+        Info << "BL/neutral FACE layer compatibility ramp:"
+             << " maxStep=2"
+             << " seedFaces=" << nNeutralRampSeeds
+             << " adjustedFaces=" << nNeutralRampAdjustedFaces
+             << " updates=" << nNeutralRampUpdates
+             << " passes=" << nNeutralRampPasses
+             << " maxPasses=" << neutralRampMaxPasses
+             << endl;
+
+        Info << "BL/neutral hair-scale transfer:"
+             << " sourceEdges=" << nNeutralScaleTransferEdges
+             << " bpUpdates=" << nNeutralScaleTransferBpUpdates
+             << endl;
+
+        Info << "BL/neutral height-aware FACE layer caps:"
+             << " cappedFaces=" << nNeutralScaleCappedFaces;
+
+        if( nNeutralScaleCappedFaces > 0 )
+        {
+            Info << " minLayers=" << minNeutralFaceLayers
+                 << " maxLayers=" << maxNeutralFaceLayers;
+        }
+
+        Info << endl;
+
     }
 
     //- count the number of vertices for each split edge

@@ -54,7 +54,16 @@ int main(int argc, char *argv[])
     argList::validArgs.append("z-neg");
     argList::validArgs.append("z-pos");
 
+    // CFMitch: optionally keep the complete enclosure in one patch.
+    // This prevents artificial patch-interface feature refinement at
+    // farfield edges and corners. The original six-patch behavior
+    // remains the default.
+    argList::validOptions.insert("singlePatch", "");
+
     argList args(argc, argv);
+
+    const bool singlePatch =
+        args.options().found("singlePatch");
 
     fileName inFileName(args.args()[1]);
     fileName outFileName(args.args()[2]);
@@ -126,45 +135,72 @@ int main(int argc, char *argv[])
     //- create patches
     geometricSurfacePatchList& newPatches = sMod.patchesAccess();
     const label nPatches = origSurface.patches().size();
-    newPatches.setSize(nPatches+6);
 
-    newPatches[nPatches].name() = "xMin";
-    newPatches[nPatches+1].name() = "xMax";
-    newPatches[nPatches+2].name() = "yMin";
-    newPatches[nPatches+3].name() = "yMax";
-    newPatches[nPatches+4].name() = "zMin";
-    newPatches[nPatches+5].name() = "zMax";
+    const label xMinPatch = nPatches;
+    const label xMaxPatch =
+        singlePatch ? nPatches : nPatches+1;
+    const label yMinPatch =
+        singlePatch ? nPatches : nPatches+2;
+    const label yMaxPatch =
+        singlePatch ? nPatches : nPatches+3;
+    const label zMinPatch =
+        singlePatch ? nPatches : nPatches+4;
+    const label zMaxPatch =
+        singlePatch ? nPatches : nPatches+5;
+
+    if( singlePatch )
+    {
+        newPatches.setSize(nPatches+1);
+        newPatches[nPatches].name() = "farfield";
+
+        Info
+            << "CFMITCH SINGLE_PATCH_BOUNDING_BOX:"
+            << " patch=farfield"
+            << " triangles=12"
+            << endl;
+    }
+    else
+    {
+        newPatches.setSize(nPatches+6);
+
+        newPatches[nPatches].name() = "xMin";
+        newPatches[nPatches+1].name() = "xMax";
+        newPatches[nPatches+2].name() = "yMin";
+        newPatches[nPatches+3].name() = "yMax";
+        newPatches[nPatches+4].name() = "zMin";
+        newPatches[nPatches+5].name() = "zMax";
+    }
 
     //- negative x direction
     newTriangles[nTriangles] =
-        labelledTri(nPoints, nPoints+6, nPoints+2, nPatches);
+        labelledTri(nPoints, nPoints+6, nPoints+2, xMinPatch);
     newTriangles[nTriangles+1] =
-        labelledTri(nPoints, nPoints+4, nPoints+6, nPatches);
+        labelledTri(nPoints, nPoints+4, nPoints+6, xMinPatch);
     //- positive x direction
     newTriangles[nTriangles+2] =
-        labelledTri(nPoints+1, nPoints+3, nPoints+7, nPatches+1);
+        labelledTri(nPoints+1, nPoints+3, nPoints+7, xMaxPatch);
     newTriangles[nTriangles+3] =
-        labelledTri(nPoints+1, nPoints+7, nPoints+5, nPatches+1);
+        labelledTri(nPoints+1, nPoints+7, nPoints+5, xMaxPatch);
     //- negative y direction
     newTriangles[nTriangles+4] =
-        labelledTri(nPoints, nPoints+1, nPoints+5, nPatches+2);
+        labelledTri(nPoints, nPoints+1, nPoints+5, yMinPatch);
     newTriangles[nTriangles+5] =
-        labelledTri(nPoints, nPoints+5, nPoints+4, nPatches+2);
+        labelledTri(nPoints, nPoints+5, nPoints+4, yMinPatch);
     //- positive y direction
     newTriangles[nTriangles+6] =
-        labelledTri(nPoints+2, nPoints+7, nPoints+3, nPatches+3);
+        labelledTri(nPoints+2, nPoints+7, nPoints+3, yMaxPatch);
     newTriangles[nTriangles+7] =
-        labelledTri(nPoints+2, nPoints+6, nPoints+7, nPatches+3);
+        labelledTri(nPoints+2, nPoints+6, nPoints+7, yMaxPatch);
     //- negative z direction
     newTriangles[nTriangles+8] =
-        labelledTri(nPoints, nPoints+2, nPoints+3, nPatches+4);
+        labelledTri(nPoints, nPoints+2, nPoints+3, zMinPatch);
     newTriangles[nTriangles+9] =
-        labelledTri(nPoints, nPoints+3, nPoints+1, nPatches+4);
+        labelledTri(nPoints, nPoints+3, nPoints+1, zMinPatch);
     //- positive z direction
     newTriangles[nTriangles+10] =
-        labelledTri(nPoints+4, nPoints+7, nPoints+6, nPatches+5);
+        labelledTri(nPoints+4, nPoints+7, nPoints+6, zMaxPatch);
     newTriangles[nTriangles+11] =
-        labelledTri(nPoints+4, nPoints+5, nPoints+7, nPatches+5);
+        labelledTri(nPoints+4, nPoints+5, nPoints+7, zMaxPatch);
 
     //- write the surface
     origSurface.writeSurface(outFileName);
