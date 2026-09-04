@@ -1,0 +1,136 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM / cfMesh
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      meshDict;
+}
+
+surfaceFile
+    "constant/triSurface/PropellerCleanDomain_singleFarfield.fms";
+
+// Background Cartesian cell size
+maxCellSize        0.05;
+boundaryCellSize   0.05;
+minCellSize        0.05;
+
+// Propeller surface refinement
+localRefinement
+{
+    zone0
+    {
+        cellSize    0.003125;
+    }
+}
+
+// Refined volume surrounding the propeller disk
+objectRefinements
+{
+    rotorBox
+    {
+        type        box;
+        centre      (0.9575 0 0);
+        lengthX     0.485;
+        lengthY     0.8;
+        lengthZ     0.8;
+        cellSize    0.00625;
+    }
+}
+
+// Point in the external fluid domain
+insideMesh    (-1 0 0);
+
+triangleBypassFaceLimit 3;
+
+boundaryLayers
+{
+    boundaryLayerArchitecture constraintPlanner;
+
+    constraintPlanner
+    {
+        maxLayerStep          2;
+        neutralProjectionFloor 0.0;
+
+        heightPlanner
+        {
+            enabled           false;
+            maxEdgeRatio      1.50;
+            maxMoveFraction   0.05;
+            iterations        1;
+        }
+    }
+
+    blSharpEdgeAngleDeg 85;
+
+    useContactLinePolicy         false;
+    useContactLineHeightSmoother false;
+
+    enableBlblJunctionLayerCountRamp false;
+    periodicNeutralTaperFloor        0;
+
+    preRefBLAutoRepair true;
+
+    // Defaults are disabled; layers are enabled per patch below.
+    nLayers               0;
+    thicknessRatio        1.2;
+    maxFirstLayerThickness 4e-05;
+
+    patchRoles
+    {
+        wall        (zone0);
+        blade       (zone0);
+        hub         ();
+        shroud      ();
+        periodic    ();
+        inletOutlet (farfield);
+    }
+
+    terminationPatches ();
+
+    patchBoundaryLayers
+    {
+        zone0
+        {
+            nLayers                16;
+            thicknessRatio         1.2;
+            maxFirstLayerThickness 4e-05;
+        }
+
+        farfield
+        {
+            nLayers 0;
+        }
+    }
+}
+
+renameBoundary
+{
+    defaultName walls;
+    defaultType wall;
+
+    newPatchNames
+    {
+        zone0
+        {
+            newName propeller;
+            type    wall;
+        }
+
+        farfield
+        {
+            newName farfield;
+            type    patch;
+        }
+    }
+}
+
+// ************************************************************************* //
