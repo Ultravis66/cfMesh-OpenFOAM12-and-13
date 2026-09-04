@@ -12,13 +12,95 @@ This fork focuses on:
 * Topology and addressing validation
 * Reliable, lossless mesh serialization
 * Surface conformance for STL-driven CFD workflows
-
-> **Current status:** `v1.0.0-rc1` release candidate
-> **Current branch:** `release/v1.0.0-rc1`
+> **Current status:** `v1.0.0-rc1` release candidate  
+> **Current branch:** `release/v1.0.0-rc1`  
 > This is a research and development mesher, not a production-certified industrial tool.
 
 The original cfMesh was developed by Franjo Juretić and Creative Fields. This fork preserves the original GPL licensing and authorship while adding extensive OpenFOAM 13 compatibility and robustness work.
 
+## Boundary-layer architecture selection
+
+This fork contains three selectable boundary-layer generation paths. The architecture is selected in `system/meshDict`, allowing users to retain the original cfMesh behavior, use the earlier enhanced implementation, or enable the new constraint-planner pipeline.
+
+| Architecture | Description | Recommended use |
+|---|---|---|
+| `classicCfMesh` | Preserved classic cfMesh boundary-layer implementation, adapted for OpenFOAM Foundation 13. | Compatibility testing, regression comparisons, and geometries that worked reliably with the original cfMesh approach. |
+| `legacyEnhanced` | Heavily modified continuation of the original boundary-layer implementation, including robustness, projection, OpenMP, and transition-handling improvements. | Existing cases developed with earlier versions of this fork. |
+| `constraintPlanner` | New CFMitch constraint-planning architecture. It computes explicit per-face layer plans, enforces neighboring-layer compatibility, tracks repair provenance, and supports transactional refinement and rollback. | Current development path and recommended architecture for difficult boundary-layer topology. |
+
+### CFMitch constraint-planner architecture
+
+To use the current CFMitch architecture:
+
+```cpp
+boundaryLayers
+{
+    boundaryLayerArchitecture constraintPlanner;
+
+    constraintPlanner
+    {
+        maxLayerStep           2;
+        neutralProjectionFloor 0.0;
+
+        heightPlanner
+        {
+            enabled          false;
+            maxEdgeRatio     1.50;
+            maxMoveFraction  0.05;
+            iterations       1;
+        }
+    }
+
+    // Patch roles and layer definitions follow...
+}
+```
+
+### Classic cfMesh architecture
+
+To use the preserved classic implementation:
+
+```cpp
+boundaryLayers
+{
+    boundaryLayerArchitecture classicCfMesh;
+
+    // Classic boundary-layer settings follow...
+}
+```
+
+### Legacy-enhanced architecture
+
+To use the earlier enhanced implementation:
+
+```cpp
+boundaryLayers
+{
+    boundaryLayerArchitecture legacyEnhanced;
+
+    // Enhanced boundary-layer settings follow...
+}
+```
+
+> **Compatibility note:** These architectures are not expected to produce identical meshes. They represent distinct boundary-layer planning and topology-generation paths. Always run the stock OpenFOAM `checkMesh` utility and inspect boundary-layer junctions before using a generated mesh for CFD.
+
+## CFMitch infrastructure
+
+CFMitch identifies the new robustness, repair, and diagnostic infrastructure developed specifically for this fork. It is not a separate executable. It operates through `cartesianMesh` when the corresponding architecture and controls are selected in `meshDict`.
+
+The CFMitch pipeline includes:
+
+- Explicit boundary-layer constraint planning
+- Neighboring-face layer-count compatibility
+- Topology and face-incidence validation
+- Negative-volume and face-pyramid quality gates
+- Transactional repair with acceptance or rollback
+- Boundary-layer provenance tracking
+- Adaptive local layer retreat
+- Addressing validation before and after renumbering
+- Safe handling of cells with more than 255 faces
+- Lossless mesh-coordinate serialization
+
+The original cfMesh implementation remains available both as a compatibility reference and as a practical fallback for cases where its simpler behavior is preferable.
 
 ## What this fork can generate
 
