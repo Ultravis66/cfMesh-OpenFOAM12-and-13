@@ -102,6 +102,14 @@ The CFMitch pipeline includes:
 
 The original cfMesh implementation remains available both as a compatibility reference and as a practical fallback for cases where its simpler behavior is preferable.
 
+## Development scope
+
+This is a substantial engineering fork rather than a minimal OpenFOAM compatibility patch. The repository contains approximately 180,000 lines of source code, with heavily modified or added codebase during the OpenFOAM 13 port and robustness-development effort.
+
+The modifications span boundary-layer planning and refinement, mesh topology generation, surface projection, geometry optimization, OpenMP race hardening, mesh addressing, diagnostic infrastructure, transactional repair, and mesh serialization.
+
+These figures describe the scale of the development effort; mesh quality is evaluated independently using stock OpenFOAM utilities and reproducible validation cases.
+
 ## What this fork can generate
 
 ### Large 16-layer propeller validation mesh
