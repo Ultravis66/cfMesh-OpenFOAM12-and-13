@@ -19,6 +19,42 @@ This fork focuses on:
 
 The original cfMesh was developed by Franjo Juretić and Creative Fields. This fork preserves the original GPL licensing and authorship while adding extensive OpenFOAM 13 compatibility and robustness work.
 
+
+## What this fork can generate
+
+### Large 16-layer propeller validation mesh
+
+<p align="center">
+  <img src="Propeller_1.png" alt="Large cfMesh propeller boundary-layer mesh overview" width="32%">
+  <img src="Propeller_2.png" alt="Detailed propeller boundary-layer mesh" width="32%">
+  <img src="Propeller_3.png" alt="Propeller surface and boundary-layer mesh detail" width="32%">
+</p>
+
+<p align="center">
+  <em>Large propeller stress-test mesh: 13.14 million cells, 16 boundary layers, zero negative-volume cells, zero incorrect face pyramids, and a clean stock OpenFOAM 13 checkMesh result.</em>
+</p>
+
+### NASA Rotor 37 turbomachinery stress test
+
+<p align="center">
+  <img src="NASA_Rotor_37_1.png" alt="NASA Rotor 37 cfMesh boundary-layer mesh overview" width="48%">
+  <img src="NASA_Rotor_37_2.png" alt="NASA Rotor 37 blade and endwall mesh" width="48%">
+</p>
+
+<p align="center">
+  <img src="NASA_Rotor_37_3.png" alt="NASA Rotor 37 boundary-layer mesh detail" width="48%">
+  <img src="NASA_Rotor_37_4.png" alt="NASA Rotor 37 periodic-sector mesh detail" width="48%">
+</p>
+
+<p align="center">
+  <em>NASA Rotor 37 two-passage sector used to expose difficult blade/endwall junctions, periodic boundaries, acute trailing edges, and boundary-layer transition topology. Rotor 37 remains an active development stress test.</em>
+</p>
+
+---
+
+
+
+
 ---
 
 ## Current release candidate
