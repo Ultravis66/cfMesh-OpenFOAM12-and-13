@@ -1,145 +1,566 @@
-# cfMesh for OpenFOAM 13
+# cfMesh for OpenFOAM Foundation 13
 
-> **WORK IN PROGRESS** — active development on OpenFOAM 13 only.
+An actively developed fork of cfMesh for OpenFOAM Foundation v13.
 
-A working port of cfMesh to OpenFOAM Foundation version 13, with significant boundary layer robustness improvements beyond the original cfMesh.
+This fork focuses on:
 
-Original cfMesh developed by Franjo Juretic / Creative Fields, licensed under GPL v3.
+* OpenFOAM 13 compatibility
+* Robust Cartesian and polyhedral mesh generation
+* Boundary-layer generation near difficult topology
+* Deterministic and race-hardened OpenMP behavior
+* Transactional mesh-quality repair
+* Topology and addressing validation
+* Reliable, lossless mesh serialization
+* Surface conformance for STL-driven CFD workflows
 
-Tested on **NASA Rotor 37** two-passage turbomachinery sector geometry with boundary layers.
+> **Current status:** `v1.0.0-rc1` release candidate
+> **Current branch:** `release/v1.0.0-rc1`
+> This is a research and development mesher, not a production-certified industrial tool.
+
+The original cfMesh was developed by Franjo Juretić and Creative Fields. This fork preserves the original GPL licensing and authorship while adding extensive OpenFOAM 13 compatibility and robustness work.
+
+---
+
+## Current release candidate
+
+The `v1.0.0-rc1` development candidate introduces a new boundary-layer planning and repair architecture together with several important fixes to core mesh handling.
+
+### Large propeller validation case
+
+The current release candidate produced a clean OpenFOAM mesh for a large propeller geometry using a 16-layer boundary-layer configuration with a nominal first-layer height of approximately 40 μm.
+
+| Metric                          |      Result |
+| ------------------------------- | ----------: |
+| Points                          |  13,408,984 |
+| Faces                           |  39,692,917 |
+| Internal faces                  |  39,498,813 |
+| Cells                           |  13,141,866 |
+| Hexahedra                       |  13,018,764 |
+| Negative-volume cells           |           0 |
+| Incorrect face pyramids         |           0 |
+| Maximum non-orthogonality       |      82.35° |
+| Severely non-orthogonal faces   |          13 |
+| Maximum skewness                |        3.72 |
+| Propeller BL effective coverage |      96.66% |
+| Stock OpenFOAM `checkMesh`      | **Mesh OK** |
+
+The written mesh was independently read and validated by the stock OpenFOAM Foundation v13 `checkMesh` utility.
+
+### NASA Rotor 37 stress test
+
+NASA Rotor 37 remains the primary difficult-topology development case. It combines:
+
+* Blade/hub/shroud junctions
+* Periodic sector boundaries
+* Acute trailing-edge geometry
+* BL/periodic and BL/no-BL interfaces
+* Strong refinement transitions
+* Multiple interacting boundary-layer patches
+
+The current high-resolution Rotor37 run completed without a crash and retained valid topology, but it did not pass all geometric quality checks.
+
+| Metric                             |          Current result |
+| ---------------------------------- | ----------------------: |
+| Points                             |               5,552,120 |
+| Faces                              |              15,558,561 |
+| Internal faces                     |              14,958,030 |
+| Cells                              |               5,003,223 |
+| Negative-volume cells              |                       0 |
+| Interface-audit failures           |                       0 |
+| Invalid owner/neighbour addressing |                       0 |
+| Incorrect face pyramids            |                     159 |
+| Non-orthogonality errors           |                       2 |
+| Maximum non-orthogonality          |                 103.56° |
+| Severely non-orthogonal faces      |                   1,424 |
+| Maximum skewness                   |                   41.10 |
+| Highly skew faces                  |                     677 |
+| Stock OpenFOAM `checkMesh`         | 3 failed quality checks |
+
+Rotor37 therefore remains a **stress test under active development**, not a CFD-ready validation claim. The outstanding failures are geometric-quality problems concentrated near difficult boundary-layer and patch-transition regions; they are not general topology corruption.
+
+---
+
+## Major improvements in `v1.0.0-rc1`
+
+### Constraint-planned boundary layers
+
+The new boundary-layer constraint planner computes a compatible refinement plan before topology generation.
+
+It supports:
+
+* Patch-specific layer counts and heights
+* BL, termination, and neutral patch roles
+* Layer-count compatibility across adjacent faces
+* Maximum layer-step constraints
+* Height-first repair planning
+* Local layer compression
+* Local hard retreat where valid layered topology cannot be generated
+* Preservation of classic cfMesh behavior as a selectable path
+
+The planner is geometry-driven and does not depend on Rotor37-specific patch names.
+
+### Transactional boundary-layer repair
+
+Boundary-layer repair is evaluated through mesh snapshots rather than applying irreversible mutations.
+
+The repair pipeline can:
+
+1. Preserve the valid pre-refinement mesh
+2. Generate and evaluate an initial BL result
+3. Build repair plans from failed-face provenance
+4. Restore the original topology
+5. Retry with locally modified layer constraints
+6. Accept only a safer result
+7. Roll back rejected attempts
+
+Quality comparisons include:
+
+* Negative-volume cells
+* Incorrect face pyramids
+* Signed-volume magnitude
+* Minimum cell volume
+* Non-orthogonality
+* Skewness
+* Open-cell detection
+* Unused-point checks
+
+### Adaptive local BL retreat
+
+When compression cannot produce a valid layered configuration, the mesher can locally suppress boundary-layer refinement on selected faces.
+
+The current implementation includes:
+
+* Failed-face provenance
+* Cumulative retreat seeds
+* Co-parent closure of related boundary faces
+* Local maximum-layer overrides
+* Compression context retained during retreat
+* Acceptance against the best valid baseline
+* Complete rollback of rejected candidates
+
+On the propeller validation case, co-parent closure expanded 16 retreat seeds to 18 faces and produced a clean accepted mesh.
+
+### Generated-child topology audits
+
+New diagnostic gates validate refined cell shells before and after face relabeling.
+
+Checks include:
+
+* Every child edge used exactly twice
+* No malformed faces
+* No repeated consecutive face vertices
+* Valid cell-to-face references
+* Closed generated child shells
+* Closed cells before final relabeling
+* Closed cells after final relabeling
+* Correct final face incidence
+* No unused, singly misclassified, or multiply owned internal faces
+
+These checks cover refinement types 0–3 and appended child cells.
+
+### Final face-incidence validation
+
+Before committing the generated topology, the mesher verifies that:
+
+* Every internal face is referenced by exactly two cells
+* Every boundary face is referenced by exactly one cell
+* No face is unused
+* No face is referenced by three or more cells
+* Every cell face reference is in range
+* The derived internal-face boundary agrees with patch metadata
+
+### Owner/neighbour addressing coherency
+
+Snapshot and retry operations can replace points, faces, and cells wholesale. Earlier cache invalidation paths did not always discard cached owner/neighbour arrays associated with the previous topology.
+
+The current implementation:
+
+* Clears owner/neighbour addressing after topology restoration
+* Rebuilds addressing before renumbering
+* Audits addressing before renumbering
+* Audits addressing after renumbering
+* Audits addressing after boundary replacement
+* Aborts instead of writing a corrupted mesh if final addressing is invalid
+
+### `replaceBoundary` wide-counter fix
+
+The original boundary replacement implementation used:
+
+```cpp
+List<direction> nFacesInCell
+```
+
+A `direction` is too narrow for cells containing more than 255 faces. Counter overflow silently truncated cell face lists during boundary replacement.
+
+This became visible in the propeller stress test, which contains two 291-face polyhedral cells. Each affected counter wrapped at 256, corrupting the written mesh even though the pre-replacement topology was valid.
+
+The counter now uses:
+
+```cpp
+List<label> nFacesInCell
+```
+
+This fix restored all cell face references and eliminated millions of apparently illegal cells reported by stock `checkMesh`.
+
+### Lossless mesh serialization
+
+Low-precision ASCII output previously rounded sensitive coordinates enough to introduce face-pyramid errors that were absent from the in-memory mesh.
+
+The mesh writer now enforces at least:
+
+```cpp
+std::numeric_limits<scalar>::max_digits10
+```
+
+For a double-precision OpenFOAM build, this results in 17 significant digits. The requested output format—ASCII or binary—is preserved.
+
+This provides numerical round-trip consistency between:
+
+* The final in-memory mesh
+* The written `constant/polyMesh`
+* The mesh reconstructed by stock OpenFOAM utilities
+
+### OpenFOAM primitive-mesh parity diagnostics
+
+The generator includes a parity audit modeled on stock OpenFOAM calculations for:
+
+* Cell centres
+* Signed cell volumes
+* Face pyramids
+* Internal-face non-orthogonality
+* Face skewness
+
+This distinguishes actual generator defects from differences caused by serialization or by cfMesh/OpenFOAM geometric conventions.
+
+---
+
+## Additional robustness work
+
+### Surface-constrained optimization
+
+Boundary points can be constrained to their appropriate STL regions during optimization, reducing surface drift near patch interfaces.
+
+The implementation includes:
+
+* Patch-aware surface projection
+* Feature-edge and corner classification
+* BL/no-BL protection
+* BL/neutral protection
+* Limited-displacement reprojection
+* Transactional acceptance and rollback
+* Surface-drift diagnostics
+
+### Parallel hardening
+
+Numerous race-sensitive shared writes have been serialized or restructured, including:
+
+* Boundary-node construction
+* Laplacian smoother apply loops
+* Surface-optimizer apply loops
+* Boundary-layer vertex maps
+* Front-point marking
+* Tet and triangle update-type marking
+* Boundary addressing flags
+* Topology-changing repair loops
+* Unguarded parallel map access
+
+`OMP_NUM_THREADS=1` remains the preferred deterministic debugging and regression mode. Parallel repeatability has improved substantially, but high-thread-count validation remains ongoing.
+
+### Geometry and numerical guards
+
+The fork includes guards and recovery behavior for:
+
+* Degenerate faces
+* Zero-length vectors
+* Zero-volume tetrahedra
+* Invalid boundary-point addressing
+* Missing map entries
+* Octree search failures
+* Excessive recursion
+* Uninitialized over-allocation
+* Invalid split-edge metadata
+* Stagnating mesh untangling
+* Unsafe optimizer results
+
+---
+
+## Supported executables
+
+| Component           | Status                                    |
+| ------------------- | ----------------------------------------- |
+| `cartesianMesh`     | Primary supported mesher; actively tested |
+| `tetMesh`           | Builds successfully; experimental         |
+| `pMesh`             | Builds successfully; experimental         |
+| `libmeshLibrary.so` | Core cfMesh library                       |
 
 ---
 
 ## Branch status
 
-| Branch | OpenFOAM Version | Status |
-|--------|-----------------|--------|
-| `master` | OpenFOAM 13 | **Active development** |
-| `openfoam12-archive` | OpenFOAM 12 | Archived — no further updates |
-
-**OpenFOAM 12 support has been dropped.** All development is now on OpenFOAM 13. The OF12 branch is preserved as-is for reference.
-
----
-
-## What works
-- `cartesianMesh` — Cartesian hex-dominant mesher, tested on NASA Rotor 37
-- `tetMesh` — Tetrahedral mesher (experimental)
-- `pMesh` — Polyhedral mesher (experimental)
-- `libmeshLibrary.so` — Core mesh library
+| Branch               | OpenFOAM version | Status                    |
+| -------------------- | ---------------- | ------------------------- |
+| `release/v1.0.0-rc1` | Foundation v13   | Current release candidate |
+| `master`             | Foundation v13   | Previous development line |
+| `openfoam12-archive` | OpenFOAM 12      | Archived                  |
 
 ---
 
-## Build instructions
+## Quick start
+
+### Requirements
+
+* OpenFOAM Foundation v13
+* Ubuntu 22.04 or compatible Linux environment
+* GCC toolchain compatible with the OpenFOAM installation
+* C++17 filesystem support
+* WSL2 is supported for development and testing
+
+### Clone and build the release candidate
 
 ```bash
 source /opt/openfoam13/etc/bashrc
+
 git clone https://github.com/Ultravis66/cfMesh-OpenFOAM13.git cfMesh
-cd cfMesh/meshLibrary && wmake libso
-cd ../executables/cartesianMesh && wmake
-cd ../executables/tetMesh && wmake
-cd ../executables/pMesh && wmake
+cd cfMesh
+
+git switch release/v1.0.0-rc1
+
+./Allwclean
+./Allwmake
+```
+
+Verify the build:
+
+```bash
+ls "$FOAM_USER_APPBIN" |
+grep -E 'cartesianMesh|tetMesh|pMesh'
+
+ls "$FOAM_USER_LIBBIN/libmeshLibrary.so"
+```
+
+### Run the unit-cube tutorial
+
+```bash
+cd tutorials/cartesianMesh/unitCube
+
+export OMP_NUM_THREADS=1
+
+cartesianMesh 2>&1 |
+tee log.cartesianMesh
+
+checkMesh -constant 2>&1 |
+tee log.checkMesh
 ```
 
 ---
 
-## API changes from original cfMesh (compile fixes)
+## Recommended validation workflow
 
-| Original | Updated |
-|----------|---------|
-| `Pstream::blocking/scheduled/nonBlocking` | `Pstream::commsTypes::blocking/scheduled/nonBlocking` |
-| `eigenVector(T, scalar)` | `eigenVectors(T)` with direct component access |
-| `circumCentre()/circumRadius()` | `circumSphere().first()/.second()` |
-| `isFile()` | `std::filesystem::exists()` — requires filesystem include and c++17 |
-| `rm/isDir/rmDir` | requires `OSspecific.H` include in affected files |
-| edgeMesh library | include paths updated to use meshTools |
-| `unallocLabelList` | `labelList` |
+Always inspect the text produced by `checkMesh`. On some OpenFOAM versions, `checkMesh` can return process exit code zero even when geometric checks fail.
 
----
+```bash
+checkMesh -constant 2>&1 |
+tee log.checkMesh
 
-## Runtime fixes
+grep -E \
+'Mesh OK|Failed|negative|non-orthogonality|face pyramids|skewness' \
+log.checkMesh
+```
 
-| Bug | Fix |
-|-----|-----|
-| `face::centre()` garbage for cfMesh face ordering — phantom inversions | Replace with vertex average everywhere |
-| `face::normal()` garbage — wrong BL extrusion direction | Replace with triangle fan normal everywhere |
-| Inversion check on unmapped octree mesh — infinite loop | Map vertices onto surface BEFORE `preMapVertices()` |
-| `preMapVertices()` internal untangleSurface hangs | Use `preMapVertices(0)` |
-| `findLeafContainingVertex` throws `char const*` | Replace throw with return -1 |
-| `newPositionSurfaceOptimizer` garbage vertex positions | Displacement bound + vecY near-zero guard |
-| `pointFieldPMG::setSize` uninitialized over-allocation | Zero-initialize over-allocated region |
-| Octree points uninitialized | Zero-initialize `octreePointsPtr_` |
-| `checkFacePatchesGeometry` unbounded loop | Iteration limit (`nGeomIter < 5`) |
-| `findNearestSurfacePoint` 100-iteration hang | Reduce to 10 iterations |
-| `optimizePoint` FPE from zero division | Guard zero divisions in surfaceOptimizer |
-| `untangleSurface` too many global iterations | Limit to 2 global iterations |
-| Garbage denormalized points in output | Sanitize before write |
-| `face::areaAndCentre` hangs in OF13 | Replace with vertex average/triangle fan normal |
-| `omp_get_num_procs()` over-threads OMP sections | Replace with `omp_get_max_threads()` |
-| `meshOctreeCube::leavesInBox` infinite recursion | Add size guard and self-check |
-| `meshSurfaceMapperCornersAndEdges` 20-iteration hang | Reduce to 5 iterations |
-| `surfaceOptimizer` 100-iteration hang | Reduce to 10 iterations |
-| `addLayerForAllPatches` O(n²) BL quality rollback hangs | Removed |
+For development comparisons, use:
+
+```bash
+export OMP_NUM_THREADS=1
+```
+
+before running `cartesianMesh`.
+
+A generated mesh should not be accepted solely because the mesher exits successfully. At minimum, verify:
+
+* Boundary definition
+* Cell-to-face addressing
+* Point usage
+* Upper-triangular ordering
+* Region count
+* Cell volumes
+* Face pyramids
+* Non-orthogonality
+* Skewness
+* Surface conformity in ParaView
 
 ---
 
-## Boundary Layer Generation Improvements
+## Boundary-layer controls
 
-### Patch-based BL control
-Patches with `nLayers 0` (inlet, outlet, periodic) are fully excluded from BL generation. Previously cfMesh required hardcoded patch names — now reads directly from `meshDict boundaryLayers/patchBoundaryLayers`. Three code paths fixed: `findPatchesToBeTreatedTogether`, `addLayerForPatch`, `addLayerForAllPatches`.
+Boundary-layer behavior is configured in `system/meshDict`.
 
-### layerScale ramp field
-Smooth suppression zone at BL/no-BL patch boundaries:
+The current architecture supports concepts such as:
 
-| Zone | Scale |
-|------|-------|
-| Transition edge | 0.0 |
-| Ring 1 | 0.25 |
-| Ring 2 | 0.50 |
-| Ring 3 | 0.75 |
-| Ring 4 | 1.00 |
+```text
+boundaryLayers
+{
+    boundaryLayerArchitecture constraintPlanner;
 
-Previously ring1 was incorrectly 0.0, creating a flat zone and steep gradient that caused warts at patch junctions.
+    terminationPatches
+    (
+        inlet
+        outlet
+    );
 
-### BL/BL sharp-junction suppression
-Points where two BL patches meet at a sharp angle (blade+hub, blade+shroud) are detected using patch normal angle comparison and suppressed. Prevents degenerate layer cells at blade-endwall junctions in turbomachinery geometry.
+    patchBoundaryLayers
+    {
+        // Patch-specific layer settings
+    }
+}
+```
 
-### refineFace graceful handling
-`refineBoundaryLayers::refineFace` previously called `FatalError` when no split direction could be found for transition-zone faces. Now returns the original face unrefined instead of crashing.
+Important controls include:
 
-### Two-pass candidate quality rollback (infrastructure complete, detection pending)
-Architecture for detecting degenerate layer cells and forcing single-layer treatment at source boundary faces:
-- `mixedDisplacementFaces_` member on `boundaryLayers`
-- `forceSingleLayerFaces_` + `forceSingleLayerAtFaces()` on `refineBoundaryLayers`
-- Layer count smoothing on boundary-face adjacency graph (max jump of 1 between neighbors)
-- Phase 1 non-mutating diagnostic in progress
+| Control                            | Purpose                                                |
+| ---------------------------------- | ------------------------------------------------------ |
+| `boundaryLayerArchitecture`        | Select constraint-planned or classic behavior          |
+| `patchBoundaryLayers`              | Patch-specific BL layer counts and heights             |
+| `terminationPatches`               | Identify inlet/outlet-style BL termination patches     |
+| `preRefBLSnapshot`                 | Preserve a recovery point before BL refinement         |
+| `autoRepair`                       | Enable transactional BL repair                         |
+| `constrainOptimizerBoundaryMotion` | Constrain boundary motion to surface geometry          |
+| `postBLSnap`                       | Enable the experimental post-optimization surface snap |
+| `geometryPreprocessing`            | Configure optional near-coincident STL vertex handling |
 
-### Known remaining issue
-13 high-aspect-ratio cells at blade-endwall junctions (`1.68119e+147` aspect ratio, `-9.44996e-16` negative volume — machine epsilon). These are at blade+hub and blade+shroud geometric singularities where simple prism extrusion is topologically unsolvable without butterfly/O-grid topology. Two-pass quality rollback is the planned fix.
-
----
-
-## Mesh quality on NASA Rotor 37
-
-| Metric | Value |
-|--------|-------|
-| Cells | ~2.17M |
-| Average non-orthogonality | 10.5° |
-| Bad faces after untangling | 0 |
-| Runtime | ~60s |
+Not every control is appropriate for every geometry. Validate each configuration using stock OpenFOAM utilities and visual inspection.
 
 ---
 
-## Tested on
-- Ubuntu 22.04 WSL2, OpenFOAM 13
-- NASA Rotor 37 two-passage turbomachinery sector with boundary layers
+## Current limitations
+
+* NASA Rotor37 does not yet pass all stock `checkMesh` quality checks at the current high-resolution settings.
+* Rotor37 currently contains localized incorrect face pyramids, non-orthogonality errors, and highly skew faces near difficult transition topology.
+* CFD performance validation—including pressure ratio, efficiency, mass flow, and convergence behavior—is still pending.
+* Very small first-layer heights and large layer counts require case-specific validation.
+* Surface-constrained optimization can significantly increase runtime.
+* OMP=1 remains the reference mode for deterministic regression testing.
+* High-thread-count OpenMP repeatability remains under investigation.
+* `tetMesh` and `pMesh` are not validated to the same level as `cartesianMesh`.
+* This project is not production-certified.
+* Users must validate every mesh independently.
+
+---
+
+## NASA Rotor37 stress-test workflow
+
+A Rotor37 setup may be prepared using:
+
+```bash
+mkdir -p ~/rotor37_mesh/constant/triSurface
+mkdir -p ~/rotor37_mesh/system
+
+cp /path/to/Rotor37_cfmesh.stl \
+    ~/rotor37_mesh/constant/triSurface/
+
+cp tutorials/rotor37/system/meshDict \
+    ~/rotor37_mesh/system/
+```
+
+Run deterministically:
+
+```bash
+cd ~/rotor37_mesh
+
+export OMP_NUM_THREADS=1
+
+cartesianMesh 2>&1 |
+tee log.Rotor37
+
+checkMesh -constant 2>&1 |
+tee log.checkMesh.Rotor37
+```
+
+Rotor37 results are sensitive to geometry preparation, refinement settings, first-layer height, layer count, and active repair controls. Historical metric ranges should not be treated as universal acceptance thresholds.
+
+---
+
+## NASA Rotor37 boundary-layer mesh preview
+
+<p align="center">
+  <img src="NASA_Rotor_37_1.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 1" width="48%">
+  <img src="NASA_Rotor_37_2.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 2" width="48%">
+</p>
+
+<p align="center">
+  <img src="NASA_Rotor_37_3.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 3" width="48%">
+  <img src="NASA_Rotor_37_4.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 4" width="48%">
+</p>
+
+<p align="center">
+  <em>NASA Rotor 37 two-passage turbomachinery sector used as a difficult-topology development case.</em>
+</p>
+
+---
+
+## Selected OpenFOAM 13 API updates
+
+| Original usage                      | OpenFOAM 13 update                      |
+| ----------------------------------- | --------------------------------------- |
+| `Pstream::blocking`                 | `Pstream::commsTypes::blocking`         |
+| `Pstream::scheduled`                | `Pstream::commsTypes::scheduled`        |
+| `Pstream::nonBlocking`              | `Pstream::commsTypes::nonBlocking`      |
+| `eigenVector(T, scalar)`            | `eigenVectors(T)` with component access |
+| `circumCentre()` / `circumRadius()` | `circumSphere().first()` / `.second()`  |
+| `isFile()`                          | `std::filesystem::exists()`             |
+| `unallocLabelList`                  | `labelList`                             |
+| Legacy edge-mesh includes           | Updated `meshTools` include paths       |
+
+---
+
+## Release history
+
+| Version      | Summary                                                                                                                                                                                                                            |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v1.0.0-rc1` | Constraint-planned BL refinement, transactional repair, adaptive retreat, generated-child closure audits, final face-incidence validation, topology-addressing coherency, wide cell-face counters, and lossless mesh serialization |
+| `v0.10`      | Surface-constrained optimizer and limited-displacement boundary reprojection                                                                                                                                                       |
+| `v0.9`       | Expanded parallel hardening and optimizer/untangler fixes                                                                                                                                                                          |
+| `v0.8.x`     | BL/BL and BL/neutral transition infrastructure, geometry preprocessing, and broad codebase safety audit                                                                                                                            |
+| `v0.7.x`     | BL/no-BL and BL/neutral edge constraint system                                                                                                                                                                                     |
+| `v0.6`       | Initial deterministic optimizer hardening                                                                                                                                                                                          |
+| `v0.1–v0.5`  | OpenFOAM 13 port, surface mapping fixes, quality evaluation, and targeted repair                                                                                                                                                   |
+
+`v1.0.0` will remain reserved for a final release after the release candidate has completed broader regression and documentation review.
 
 ---
 
 ## Original cfMesh
-- Source: https://sourceforge.net/projects/cfmesh/
-- Authors: Franjo Juretic, Philippose Rajan, Ivor Clifford
+
+* Original project: https://sourceforge.net/projects/cfmesh/
+* Original authors include Franjo Juretić, Philippose Rajan, and Ivor Clifford
+* Original copyright and authorship remain with their respective owners
+
+---
+
+## License and attribution
+
+This project is licensed under the GNU General Public License v3.0, consistent with the original cfMesh license.
+
+This fork includes OpenFOAM Foundation v13 compatibility updates and meshing-robustness modifications by Mitchell Stolk.
+
+Modifications in this fork:
+
+```text
+Copyright (C) 2026 Mitchell Stolk
+```
+
+Suggested attribution:
+
+```text
+Mitchell Stolk, cfMesh-OpenFOAM13:
+OpenFOAM Foundation 13 port and robustness-focused cfMesh fork, 2026.
+```
+
+If this fork is useful in academic research, engineering evaluation, commercial assessment, or public technical work, attribution to this repository is appreciated.
 
 ---
 
 ## Disclaimer
-Unofficial community port. Not affiliated with Creative Fields or the OpenFOAM Foundation.
+
+This is an unofficial community fork. It is not affiliated with Creative Fields or the OpenFOAM Foundation.
+
+The software is provided without warranty. Users are responsible for validating mesh topology, geometry, numerical quality, and solver suitability for every application.
