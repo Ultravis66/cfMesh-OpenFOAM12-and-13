@@ -240,9 +240,11 @@ struct CFMitchOFHardQuality
     label severeNonOrthFaces;
     label zeroFaceCells;
     label centreFallbackCells;
+    label highSkewFaces;
 
     scalar minSignedVol;
     scalar maxNonOrth;
+    scalar maxSkew;
 
     CFMitchOFHardQuality()
     :
@@ -251,8 +253,10 @@ struct CFMitchOFHardQuality
         severeNonOrthFaces(0),
         zeroFaceCells(0),
         centreFallbackCells(0),
+        highSkewFaces(0),
         minSignedVol(GREAT),
-        maxNonOrth(0.0)
+        maxNonOrth(0.0),
+        maxSkew(0.0)
     {}
 };
 
@@ -271,9 +275,11 @@ static void evaluateOpenFOAMHardQuality
     result.severeNonOrthFaces = 0;
     result.zeroFaceCells = 0;
     result.centreFallbackCells = 0;
+    result.highSkewFaces = 0;
 
     result.minSignedVol = GREAT;
     result.maxNonOrth = 0.0;
+    result.maxSkew = 0.0;
 
     const labelList& own = mesh.owner();
     const labelList& nei = mesh.neighbour();
@@ -519,6 +525,158 @@ static void evaluateOpenFOAMHardQuality
         result.maxNonOrth =
             Foam::acos(clamped)*180.0/M_PI;
     }
+
+    // CFMitch V4.9 -- exact OpenFOAM primitiveMesh face-skewness
+    // metric.  This is the same formula used by the proven V4.8
+    // final parity audit.  V4.9 introduced candidate telemetry; V5.0
+    // also uses the result as a no-regression acceptance guard.
+    const scalar skewThreshold = 4.0;
+
+    forAll(faces, faceI)
+    {
+        scalar skew = 0.0;
+
+        if( faceI < nInternalFaces )
+        {
+            const point& ownCc =
+                cellCtrs[own[faceI]];
+
+            const point& neiCc =
+                cellCtrs[nei[faceI]];
+
+            const vector Cpf =
+                faceCtrs[faceI] - ownCc;
+
+            const vector d =
+                neiCc - ownCc;
+
+            const vector sv =
+                Cpf
+              - (
+                    (faceAreas[faceI] & Cpf)
+                  / (
+                        (faceAreas[faceI] & d)
+                      + rootVSmall
+                    )
+                )*d;
+
+            const vector svHat =
+                sv/(mag(sv) + rootVSmall);
+
+            scalar fd =
+                0.2*mag(d) + rootVSmall;
+
+            const face& f = faces[faceI];
+
+            forAll(f, pI)
+            {
+                fd =
+                    Foam::max
+                    (
+                        fd,
+                        Foam::mag
+                        (
+                            svHat
+                          & (
+                                points[f[pI]]
+                              - faceCtrs[faceI]
+                            )
+                        )
+                    );
+            }
+
+            skew = mag(sv)/fd;
+        }
+        else
+        {
+            const point& ownCc =
+                cellCtrs[own[faceI]];
+
+            const vector Cpf =
+                faceCtrs[faceI] - ownCc;
+
+            vector normal =
+                faceAreas[faceI];
+
+            normal /=
+                mag(normal) + rootVSmall;
+
+            const vector d =
+                normal*(normal & Cpf);
+
+            const vector sv =
+                Cpf
+              - (
+                    (faceAreas[faceI] & Cpf)
+                  / (
+                        (faceAreas[faceI] & d)
+                      + rootVSmall
+                    )
+                )*d;
+
+            const vector svHat =
+                sv/(mag(sv) + rootVSmall);
+
+            scalar fd =
+                0.4*mag(d) + rootVSmall;
+
+            const face& f = faces[faceI];
+
+            forAll(f, pI)
+            {
+                fd =
+                    Foam::max
+                    (
+                        fd,
+                        Foam::mag
+                        (
+                            svHat
+                          & (
+                                points[f[pI]]
+                              - faceCtrs[faceI]
+                            )
+                        )
+                    );
+            }
+
+            skew = mag(sv)/fd;
+        }
+
+        result.maxSkew =
+            Foam::max(result.maxSkew, skew);
+
+        if( skew > skewThreshold )
+            ++result.highSkewFaces;
+    }
+}
+
+
+static void printOpenFOAMCandidateQuality
+(
+    const char* stage,
+    const CFMitchOFHardQuality& quality
+)
+{
+    Info
+        << "CFMITCH V4.9 CANDIDATE QUALITY:"
+        << " stage=" << stage
+        << " pyramidErrors=" << quality.pyramidErrors
+        << " pyramidFaces=" << quality.badPyramidFaces.size()
+        << " severeNonOrth=" << quality.severeNonOrthFaces
+        << " nonOrthErrors=" << quality.errorNonOrthFaces.size()
+        << " nonOrthFaces="
+        << (
+               quality.severeNonOrthFaces
+             + quality.errorNonOrthFaces.size()
+           )
+        << " maxNonOrth=" << quality.maxNonOrth
+        << " skewFaces=" << quality.highSkewFaces
+        << " maxSkew=" << quality.maxSkew
+        << " signedNegVol=" << quality.signedNegVolCells
+        << " minSignedVol=" << quality.minSignedVol
+        << " zeroFaceCells=" << quality.zeroFaceCells
+        << " centreFallbackCells=" << quality.centreFallbackCells
+        << endl;
 }
 
 
@@ -2782,6 +2940,10 @@ refLayers.setNeutralLayerScaleAtMeshPoint
                             q1NNeg, q1NBelowVS
                         );
 
+                        CFMitchOFHardQuality q1OFHard;
+                        evaluateOpenFOAMHardQuality(mesh_, q1OFHard);
+                        printOpenFOAMCandidateQuality("Q1", q1OFHard);
+
                         // Preserve Q1 negative/near-zero cell identity and
                         // BL provenance across the Q1 -> Q0 rollback.  Cell
                         // numbering changes in Q2, but primary base bfI is
@@ -4047,6 +4209,10 @@ refLayers2.setNeutralLayerScaleAtMeshPoint
                                 mesh_, q2NegMag, q2MinCellVol,
                                 q2NNeg, q2NBelowVS
                             );
+
+                            CFMitchOFHardQuality q2OFHard;
+                            evaluateOpenFOAMHardQuality(mesh_, q2OFHard);
+                            printOpenFOAMCandidateQuality("Q2", q2OFHard);
 
                             // Group-local negative-volume attribution.
                             // Diagnostic only: global Q1/Q2 acceptance below
@@ -6548,6 +6714,18 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
                                             q3NBelowVS
                                         );
 
+                                        CFMitchOFHardQuality q3OFHard;
+                                        evaluateOpenFOAMHardQuality
+                                        (
+                                            mesh_,
+                                            q3OFHard
+                                        );
+                                        printOpenFOAMCandidateQuality
+                                        (
+                                            "Q3",
+                                            q3OFHard
+                                        );
+
                                         const bool q3NegCountOK =
                                             pass3NegVol.size()
                                          <= pass1NegVol.size();
@@ -6653,7 +6831,807 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
                                                  << "repair result"
                                                  << endl;
 
-                                            if( salvagePlanIds.size() > 0 )
+                                            // -------------------------------------------------
+                                            // CFMitch V5.0 -- post-Q3 adaptive retreat.
+                                            //
+                                            // V3.1 historically recovered Rotor37 only when
+                                            // Q2 was globally accepted.  A rejected Q2 now
+                                            // falls through to selective Q3, but the accepted
+                                            // Q3 state previously had no equivalent adaptive
+                                            // retreat.
+                                            //
+                                            // Treat Q3 as the incumbent.  Map its exact
+                                            // OpenFOAM wrong-pyramid and >90-degree
+                                            // non-orthogonality faces back to stable base
+                                            // boundary-face provenance.  Rebuild from pristine
+                                            // Q0 using the identical selected Q3 plans, then
+                                            // apply cumulative N=1 retreat last.
+                                            //
+                                            // Acceptance is Pareto-conservative: construction
+                                            // geometry, OpenFOAM pyramids, non-orthogonality,
+                                            // skewness, and both signed-volume formulations
+                                            // must not regress.  At least one exact OpenFOAM
+                                            // quality metric must improve.  Otherwise Q3 is
+                                            // restored transactionally and legacy Q4 remains
+                                            // available.
+                                            // -------------------------------------------------
+
+                                            bool q5HardRetreatAccepted = false;
+
+                                            labelHashSet q5HardFaces;
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                q3OFHard.badPyramidFaces,
+                                                q5PyrIt
+                                            )
+                                            {
+                                                q5HardFaces.insert
+                                                (
+                                                    q5PyrIt.key()
+                                                );
+                                            }
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                q3OFHard.errorNonOrthFaces,
+                                                q5NonOrthIt
+                                            )
+                                            {
+                                                q5HardFaces.insert
+                                                (
+                                                    q5NonOrthIt.key()
+                                                );
+                                            }
+
+                                            labelHashSet
+                                                q5ResidualSeedBfI;
+
+                                            label q5AuditedCells = 0;
+                                            label q5WithProvenance = 0;
+                                            label q5NoProvenance = 0;
+                                            label q5InvalidCells = 0;
+                                            label q5InvalidFaces = 0;
+
+                                            const labelList& q5Prov =
+                                                refLayers3.
+                                                    cellToBaseBndFace();
+
+                                            const labelList& q5Own =
+                                                mesh_.owner();
+
+                                            const labelList& q5Nei =
+                                                mesh_.neighbour();
+
+                                            const auto q5MapCell =
+                                            [&]
+                                            (
+                                                const label cellI
+                                            )
+                                            {
+                                                ++q5AuditedCells;
+
+                                                if
+                                                (
+                                                    cellI < 0
+                                                 || cellI >=
+                                                    label(q5Prov.size())
+                                                )
+                                                {
+                                                    ++q5InvalidCells;
+                                                    return;
+                                                }
+
+                                                const label bfI =
+                                                    q5Prov[cellI];
+
+                                                if( bfI >= 0 )
+                                                {
+                                                    q5ResidualSeedBfI.
+                                                        insert(bfI);
+
+                                                    ++q5WithProvenance;
+                                                }
+                                                else
+                                                {
+                                                    ++q5NoProvenance;
+                                                }
+                                            };
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                q5HardFaces,
+                                                q5HardIt
+                                            )
+                                            {
+                                                const label faceI =
+                                                    q5HardIt.key();
+
+                                                if
+                                                (
+                                                    faceI < 0
+                                                 || faceI >=
+                                                    label(q5Own.size())
+                                                )
+                                                {
+                                                    ++q5InvalidFaces;
+                                                    continue;
+                                                }
+
+                                                q5MapCell(q5Own[faceI]);
+
+                                                if
+                                                (
+                                                    faceI <
+                                                    label(q5Nei.size())
+                                                )
+                                                {
+                                                    q5MapCell
+                                                    (
+                                                        q5Nei[faceI]
+                                                    );
+                                                }
+                                            }
+
+                                            labelHashSet
+                                                q5CumulativeRetreatSeedBfI;
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                provenanceSeedBfI,
+                                                q5BaseSeedIt
+                                            )
+                                            {
+                                                q5CumulativeRetreatSeedBfI.
+                                                    insert
+                                                    (
+                                                        q5BaseSeedIt.key()
+                                                    );
+                                            }
+
+                                            const label q5BaseSeeds =
+                                                q5CumulativeRetreatSeedBfI.
+                                                    size();
+
+                                            forAllConstIter
+                                            (
+                                                labelHashSet,
+                                                q5ResidualSeedBfI,
+                                                q5ResidualSeedIt
+                                            )
+                                            {
+                                                q5CumulativeRetreatSeedBfI.
+                                                    insert
+                                                    (
+                                                        q5ResidualSeedIt.key()
+                                                    );
+                                            }
+
+                                            const label q5NewSeeds =
+                                                q5CumulativeRetreatSeedBfI.
+                                                    size()
+                                              - q5BaseSeeds;
+
+                                            Info
+                                                << "CFMITCH V5.0 POST-Q3 "
+                                                << "ADAPTIVE RETREAT:"
+                                                << " hardFaces="
+                                                << q5HardFaces.size()
+                                                << " pyramidFaces="
+                                                << q3OFHard.
+                                                    badPyramidFaces.size()
+                                                << " nonOrthErrors="
+                                                << q3OFHard.
+                                                    errorNonOrthFaces.size()
+                                                << " auditedCells="
+                                                << q5AuditedCells
+                                                << " withProvenance="
+                                                << q5WithProvenance
+                                                << " noProvenance="
+                                                << q5NoProvenance
+                                                << " invalidCells="
+                                                << q5InvalidCells
+                                                << " invalidFaces="
+                                                << q5InvalidFaces
+                                                << " residualSeeds="
+                                                << q5ResidualSeedBfI.size()
+                                                << " baseSeeds="
+                                                << q5BaseSeeds
+                                                << " newSeeds="
+                                                << q5NewSeeds
+                                                << " cumulativeSeeds="
+                                                << q5CumulativeRetreatSeedBfI.
+                                                    size()
+                                                << endl;
+
+                                            if
+                                            (
+                                                q5HardFaces.size() > 0
+                                             && q5CumulativeRetreatSeedBfI.
+                                                    size() > 0
+                                            )
+                                            {
+                                                PreRefBLMeshSnapshot
+                                                    q5IncumbentSnap;
+
+                                                takePreRefBLSnapshot
+                                                (
+                                                    q5IncumbentSnap
+                                                );
+
+                                                if
+                                                (
+                                                    q5IncumbentSnap.valid
+                                                 &&
+                                                    restorePreRefBLSnapshot
+                                                    (
+                                                        preRefBLSnap
+                                                    )
+                                                )
+                                                {
+                                                    refineBoundaryLayers
+                                                        refLayers5(mesh_);
+
+                                                    refLayers5.
+                                                        setNeutralLayerScaleAtMeshPoint
+                                                        (
+                                                            blNeutralLayerScaleAtMeshPoint_
+                                                        );
+
+                                                    refineBoundaryLayers::
+                                                        readSettings
+                                                        (
+                                                            meshDict_,
+                                                            refLayers5
+                                                        );
+
+                                                    refLayers5.
+                                                        setBlblJunctionPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                                blblJunctionPoints
+                                                        );
+
+                                                    refLayers5.
+                                                        setBlblAcuteCornerPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                                blblAcuteCornerPoints
+                                                        );
+
+                                                    refLayers5.
+                                                        setRampSeedPoints
+                                                        (
+                                                            preRefBLSnap.
+                                                                rampSeedPoints
+                                                        );
+
+                                                    refLayers5.setVtFaceRing
+                                                        (
+                                                            preRefBLSnap.
+                                                                vtFaceRing
+                                                        );
+
+                                                    label q5AppliedPlans = 0;
+                                                    label q5SkippedPlans = 0;
+
+                                                    forAllIter
+                                                    (
+                                                        Map<BLRepairPlan>,
+                                                        plans,
+                                                        q5Pit
+                                                    )
+                                                    {
+                                                        const label planId =
+                                                            q5Pit.key();
+
+                                                        const BLRepairPlan&
+                                                            plan = q5Pit();
+
+                                                        if( !plan.active() )
+                                                            continue;
+
+                                                        if
+                                                        (
+                                                            !selectedPlanIds.
+                                                                found(planId)
+                                                        )
+                                                        {
+                                                            ++q5SkippedPlans;
+                                                            continue;
+                                                        }
+
+                                                        ++q5AppliedPlans;
+
+                                                        refLayers5.
+                                                            forceMaxLayersAtFaces
+                                                            (
+                                                                plan.seedBfI_,
+                                                                plan.ring0_.
+                                                                    maxLayers,
+                                                                plan.ring1_.
+                                                                    maxLayers,
+                                                                plan.ring2_.
+                                                                    maxLayers,
+                                                                plan.ring0_.
+                                                                    thicknessScale,
+                                                                plan.ring1_.
+                                                                    thicknessScale,
+                                                                plan.ring2_.
+                                                                    thicknessScale,
+                                                                planId
+                                                            );
+                                                    }
+
+                                                    // Apply the strongest
+                                                    // topology decision last.
+                                                    refLayers5.
+                                                        forceSingleLayerAtFaces
+                                                        (
+                                                            q5CumulativeRetreatSeedBfI
+                                                        );
+
+                                                    Info
+                                                        << "CFMITCH V5.0 "
+                                                        << "POST-Q3 ADAPTIVE "
+                                                        << "RETREAT BUILD:"
+                                                        << " appliedPlans="
+                                                        << q5AppliedPlans
+                                                        << " skippedPlans="
+                                                        << q5SkippedPlans
+                                                        << " cumulativeSeeds="
+                                                        << q5CumulativeRetreatSeedBfI.
+                                                            size()
+                                                        << " maxLayers=1"
+                                                        << endl;
+
+                                                    nPointsBeforeBL_ =
+                                                        mesh_.points().size();
+
+                                                    refLayers5.refineLayers();
+
+                                                    const bool q5Valid =
+                                                        refLayers5.
+                                                            refinementValid();
+
+                                                    const bool q5Completed =
+                                                        refLayers5.
+                                                            refinementCompleted();
+
+                                                    if
+                                                    (
+                                                        q5Valid
+                                                     && q5Completed
+                                                    )
+                                                    {
+                                                        labelHashSet
+                                                            q5ConstructionNeg;
+
+                                                        polyMeshGenChecks::
+                                                            checkCellVolumes
+                                                            (
+                                                                mesh_,
+                                                                false,
+                                                                &q5ConstructionNeg
+                                                            );
+
+                                                        labelHashSet
+                                                            q5ConstructionPyr;
+
+                                                        polyMeshGenChecks::
+                                                            checkFacePyramids
+                                                            (
+                                                                mesh_,
+                                                                false,
+                                                                -SMALL,
+                                                                &q5ConstructionPyr
+                                                            );
+
+                                                        scalar q5RawMinVol =
+                                                            GREAT;
+
+                                                        scalar q5RawNegMag =
+                                                            0.0;
+
+                                                        label q5RawNeg = 0;
+                                                        label
+                                                            q5RawBelowVSmall =
+                                                                0;
+
+                                                        rawCellVolumeStats
+                                                        (
+                                                            mesh_,
+                                                            q5RawNegMag,
+                                                            q5RawMinVol,
+                                                            q5RawNeg,
+                                                            q5RawBelowVSmall
+                                                        );
+
+                                                        CFMitchOFHardQuality
+                                                            q5OFHard;
+
+                                                        evaluateOpenFOAMHardQuality
+                                                        (
+                                                            mesh_,
+                                                            q5OFHard
+                                                        );
+
+                                                        printOpenFOAMCandidateQuality
+                                                        (
+                                                            "Q5",
+                                                            q5OFHard
+                                                        );
+
+                                                        const scalar
+                                                            q5AngleTol =
+                                                                1.0e-10;
+
+                                                        const scalar
+                                                            q5SkewTol =
+                                                                1.0e-10
+                                                              * Foam::max
+                                                                (
+                                                                    scalar(1.0),
+                                                                    q3OFHard.
+                                                                        maxSkew
+                                                                );
+
+                                                        const bool
+                                                            q5ConstructionNegOK =
+                                                                q5ConstructionNeg.
+                                                                    size()
+                                                             <= pass3NegVol.
+                                                                    size();
+
+                                                        const bool
+                                                            q5ConstructionPyrOK =
+                                                                q5ConstructionPyr.
+                                                                    size()
+                                                             <= pass3BadPyr.
+                                                                    size();
+
+                                                        const bool
+                                                            q5PyramidErrorsOK =
+                                                                q5OFHard.
+                                                                    pyramidErrors
+                                                             <= q3OFHard.
+                                                                    pyramidErrors;
+
+                                                        const bool
+                                                            q5PyramidFacesOK =
+                                                                q5OFHard.
+                                                                    badPyramidFaces.
+                                                                    size()
+                                                             <= q3OFHard.
+                                                                    badPyramidFaces.
+                                                                    size();
+
+                                                        const bool
+                                                            q5NonOrthErrorsOK =
+                                                                q5OFHard.
+                                                                    errorNonOrthFaces.
+                                                                    size()
+                                                             <= q3OFHard.
+                                                                    errorNonOrthFaces.
+                                                                    size();
+
+                                                        const bool
+                                                            q5SevereNonOrthOK =
+                                                                q5OFHard.
+                                                                    severeNonOrthFaces
+                                                             <= q3OFHard.
+                                                                    severeNonOrthFaces;
+
+                                                        const bool
+                                                            q5MaxNonOrthOK =
+                                                                q5OFHard.
+                                                                    maxNonOrth
+                                                             <= q3OFHard.
+                                                                    maxNonOrth
+                                                              + q5AngleTol;
+
+                                                        const bool
+                                                            q5SkewFacesOK =
+                                                                q5OFHard.
+                                                                    highSkewFaces
+                                                             <= q3OFHard.
+                                                                    highSkewFaces;
+
+                                                        const bool
+                                                            q5MaxSkewOK =
+                                                                q5OFHard.
+                                                                    maxSkew
+                                                             <= q3OFHard.
+                                                                    maxSkew
+                                                              + q5SkewTol;
+
+                                                        const bool
+                                                            q5SignedNegOK =
+                                                                q5OFHard.
+                                                                    signedNegVolCells
+                                                             <= q3OFHard.
+                                                                    signedNegVolCells;
+
+                                                        const bool
+                                                            q5SignedMinVolOK =
+                                                                q5OFHard.
+                                                                    minSignedVol
+                                                             >= q3OFHard.
+                                                                    minSignedVol;
+
+                                                        const bool
+                                                            q5RawNegMagOK =
+                                                                q5RawNegMag
+                                                             <= q3NegMag;
+
+                                                        const bool
+                                                            q5RawMinVolOK =
+                                                                q5RawMinVol
+                                                             >= q3MinCellVol;
+
+                                                        const bool
+                                                            q5CentreStateOK =
+                                                                q5OFHard.
+                                                                    zeroFaceCells
+                                                             <= q3OFHard.
+                                                                    zeroFaceCells
+                                                             &&
+                                                                q5OFHard.
+                                                                    centreFallbackCells
+                                                             <= q3OFHard.
+                                                                    centreFallbackCells;
+
+                                                        const bool
+                                                            q5NoRegression =
+                                                                q5ConstructionNegOK
+                                                             && q5ConstructionPyrOK
+                                                             && q5PyramidErrorsOK
+                                                             && q5PyramidFacesOK
+                                                             && q5NonOrthErrorsOK
+                                                             && q5SevereNonOrthOK
+                                                             && q5MaxNonOrthOK
+                                                             && q5SkewFacesOK
+                                                             && q5MaxSkewOK
+                                                             && q5SignedNegOK
+                                                             && q5SignedMinVolOK
+                                                             && q5RawNegMagOK
+                                                             && q5RawMinVolOK
+                                                             && q5CentreStateOK;
+
+                                                        const bool
+                                                            q5ExactBetter =
+                                                                q5OFHard.
+                                                                    pyramidErrors
+                                                              < q3OFHard.
+                                                                    pyramidErrors
+                                                             ||
+                                                                q5OFHard.
+                                                                    badPyramidFaces.
+                                                                    size()
+                                                              < q3OFHard.
+                                                                    badPyramidFaces.
+                                                                    size()
+                                                             ||
+                                                                q5OFHard.
+                                                                    errorNonOrthFaces.
+                                                                    size()
+                                                              < q3OFHard.
+                                                                    errorNonOrthFaces.
+                                                                    size()
+                                                             ||
+                                                                q5OFHard.
+                                                                    severeNonOrthFaces
+                                                              < q3OFHard.
+                                                                    severeNonOrthFaces
+                                                             ||
+                                                                q5OFHard.
+                                                                    highSkewFaces
+                                                              < q3OFHard.
+                                                                    highSkewFaces
+                                                             ||
+                                                                q5OFHard.
+                                                                    maxNonOrth
+                                                              + q5AngleTol
+                                                              < q3OFHard.
+                                                                    maxNonOrth
+                                                             ||
+                                                                q5OFHard.
+                                                                    maxSkew
+                                                              + q5SkewTol
+                                                              < q3OFHard.
+                                                                    maxSkew;
+
+                                                        const bool q5Better =
+                                                            q5NoRegression
+                                                         && q5ExactBetter;
+
+                                                        Info
+                                                            << "CFMITCH V5.0 "
+                                                            << "POST-Q3 ADAPTIVE "
+                                                            << "RETREAT RESULT:"
+                                                            << " constructionBadPyr "
+                                                            << pass3BadPyr.size()
+                                                            << "->"
+                                                            << q5ConstructionPyr.
+                                                                size()
+                                                            << " constructionNegVol "
+                                                            << pass3NegVol.size()
+                                                            << "->"
+                                                            << q5ConstructionNeg.
+                                                                size()
+                                                            << " pyramidFaces "
+                                                            << q3OFHard.
+                                                                badPyramidFaces.
+                                                                size()
+                                                            << "->"
+                                                            << q5OFHard.
+                                                                badPyramidFaces.
+                                                                size()
+                                                            << " nonOrthErrors "
+                                                            << q3OFHard.
+                                                                errorNonOrthFaces.
+                                                                size()
+                                                            << "->"
+                                                            << q5OFHard.
+                                                                errorNonOrthFaces.
+                                                                size()
+                                                            << " severeNonOrth "
+                                                            << q3OFHard.
+                                                                severeNonOrthFaces
+                                                            << "->"
+                                                            << q5OFHard.
+                                                                severeNonOrthFaces
+                                                            << " skewFaces "
+                                                            << q3OFHard.
+                                                                highSkewFaces
+                                                            << "->"
+                                                            << q5OFHard.
+                                                                highSkewFaces
+                                                            << " maxSkew "
+                                                            << q3OFHard.maxSkew
+                                                            << "->"
+                                                            << q5OFHard.maxSkew
+                                                            << " signedNegVol "
+                                                            << q3OFHard.
+                                                                signedNegVolCells
+                                                            << "->"
+                                                            << q5OFHard.
+                                                                signedNegVolCells
+                                                            << " rawMinVol "
+                                                            << q3MinCellVol
+                                                            << "->"
+                                                            << q5RawMinVol
+                                                            << " noRegression="
+                                                            << (
+                                                                   q5NoRegression
+                                                                 ? "yes"
+                                                                 : "no"
+                                                               )
+                                                            << " exactBetter="
+                                                            << (
+                                                                   q5ExactBetter
+                                                                 ? "yes"
+                                                                 : "no"
+                                                               )
+                                                            << (
+                                                                   q5Better
+                                                                 ? " -- ACCEPTED"
+                                                                 : " -- REJECTED"
+                                                               )
+                                                            << endl;
+
+                                                        if( q5Better )
+                                                        {
+                                                            refLayers5.
+                                                                pointsInBndLayer
+                                                                (
+                                                                    blPoints_
+                                                                );
+
+                                                            twoPassAccepted =
+                                                                true;
+
+                                                            blPointsFromPass2 =
+                                                                true;
+
+                                                            q5HardRetreatAccepted =
+                                                                true;
+                                                        }
+                                                    }
+                                                    else
+                                                    {
+                                                        Info
+                                                            << "CFMITCH V5.0 "
+                                                            << "POST-Q3 ADAPTIVE "
+                                                            << "RETREAT RESULT:"
+                                                            << " refinementValid="
+                                                            << (
+                                                                   q5Valid
+                                                                 ? "yes"
+                                                                 : "no"
+                                                               )
+                                                            << " refinementCompleted="
+                                                            << (
+                                                                   q5Completed
+                                                                 ? "yes"
+                                                                 : "no"
+                                                               )
+                                                            << " -- REJECTED"
+                                                            << endl;
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    Info
+                                                        << "CFMITCH V5.0 "
+                                                        << "POST-Q3 ADAPTIVE "
+                                                        << "RETREAT:"
+                                                        << (
+                                                               q5IncumbentSnap.valid
+                                                             ? " Q0 restore failed"
+                                                             : " Q3 snapshot invalid"
+                                                           )
+                                                        << endl;
+                                                }
+
+                                                if
+                                                (
+                                                    !q5HardRetreatAccepted
+                                                 && q5IncumbentSnap.valid
+                                                )
+                                                {
+                                                    if
+                                                    (
+                                                        !restorePreRefBLSnapshot
+                                                        (
+                                                            q5IncumbentSnap
+                                                        )
+                                                    )
+                                                    {
+                                                        FatalErrorIn
+                                                        (
+                                                            "cartesianMeshGenerator::"
+                                                            "refBoundaryLayers()"
+                                                        )
+                                                            << "CFMitch V5.0 "
+                                                            << "failed to restore "
+                                                            << "accepted Q3"
+                                                            << exit(FatalError);
+                                                    }
+
+                                                    twoPassAccepted = true;
+                                                    blPointsFromPass2 = true;
+
+                                                    Info
+                                                        << "CFMITCH V5.0 "
+                                                        << "POST-Q3 ADAPTIVE "
+                                                        << "RETREAT:"
+                                                        << " restoring accepted Q3"
+                                                        << endl;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                Info
+                                                    << "CFMITCH V5.0 POST-Q3 "
+                                                    << "ADAPTIVE RETREAT:"
+                                                    << (
+                                                           q5HardFaces.size() == 0
+                                                         ? " incumbent hard-clean"
+                                                         : " no cumulative seeds"
+                                                       )
+                                                    << endl;
+                                            }
+
+                                            if
+                                            (
+                                                !q5HardRetreatAccepted
+                                             && salvagePlanIds.size() > 0
+                                            )
                                             {
                                                 PreRefBLMeshSnapshot q3BLSnap;
                                                 takePreRefBLSnapshot(q3BLSnap);
@@ -6892,6 +7870,21 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
                                                             q4MinCellVol,
                                                             q4NNeg,
                                                             q4NBelowVS
+                                                        );
+
+                                                        CFMitchOFHardQuality
+                                                            q4OFHard;
+
+                                                        evaluateOpenFOAMHardQuality
+                                                        (
+                                                            mesh_,
+                                                            q4OFHard
+                                                        );
+
+                                                        printOpenFOAMCandidateQuality
+                                                        (
+                                                            "Q4",
+                                                            q4OFHard
                                                         );
 
                                                         const scalar
