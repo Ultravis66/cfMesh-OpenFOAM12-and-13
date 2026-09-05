@@ -28,6 +28,8 @@ This fork contains three selectable boundary-layer generation paths. The archite
 | `legacyEnhanced` | Heavily modified continuation of the original boundary-layer implementation, including robustness, projection, OpenMP, and transition-handling improvements. | Existing cases developed with earlier versions of this fork. |
 | `constraintPlanner` | New CFMitch constraint-planning architecture. It computes explicit per-face layer plans, enforces neighboring-layer compatibility, tracks repair provenance, and supports transactional refinement and rollback. | Current development path and recommended architecture for difficult boundary-layer topology. |
 
+> **Validation status:** The Rotor37 and propeller results documented below were generated using `constraintPlanner`. In a four-layer `singleOrifice` regression test, `legacyEnhanced` produced a stock-`checkMesh`-clean mesh. The preserved `classicCfMesh` path completed successfully with valid topology and positive cell volumes, but stock `checkMesh` reported one incorrectly oriented face pyramid.
+
 ### CFMitch constraint-planner architecture
 
 To use the current CFMitch architecture:
