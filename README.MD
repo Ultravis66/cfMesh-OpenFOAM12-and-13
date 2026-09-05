@@ -92,10 +92,10 @@ The CFMitch pipeline includes:
 - Explicit boundary-layer constraint planning
 - Neighboring-face layer-count compatibility
 - Topology and face-incidence validation
-- Negative-volume and face-pyramid quality gates
+- OpenFOAM-equivalent candidate-quality gates for signed volume, face pyramids, non-orthogonality, and skewness
 - Transactional repair with acceptance or rollback
 - Boundary-layer provenance tracking
-- Adaptive local layer retreat
+- Provenance-guided adaptive local layer retreat, including post-Q3 hard-quality recovery
 - Addressing validation before and after renumbering
 - Safe handling of cells with more than 255 faces
 - Lossless mesh-coordinate serialization
@@ -137,13 +137,9 @@ These figures describe the scale of the development effort; mesh quality is eval
 </p>
 
 <p align="center">
-  <em>NASA Rotor 37 two-passage sector used to expose difficult blade/endwall junctions, periodic boundaries, acute trailing edges, and boundary-layer transition topology. Rotor 37 remains an active development stress test.</em>
+  <em>NASA Rotor 37 two-passage sector used to expose difficult blade/endwall junctions, periodic boundaries, acute trailing edges, and boundary-layer transition topology. The current result has zero negative-volume cells, correctly oriented face pyramids, and no non-orthogonality errors; localized skewness remains the primary mesh-quality target.</em>
+
 </p>
-
----
-
-
-
 
 ---
 
@@ -183,26 +179,28 @@ NASA Rotor 37 remains the primary difficult-topology development case. It combin
 * Strong refinement transitions
 * Multiple interacting boundary-layer patches
 
-The current high-resolution Rotor37 run completed without a crash and retained valid topology, but it did not pass all geometric quality checks.
+The current high-resolution Rotor37 run produced a valid, connected OpenFOAM mesh with zero negative-volume cells, correctly oriented face pyramids, and no non-orthogonality errors. Stock OpenFOAM `checkMesh` reports one remaining failed quality check for localized skewness.
 
-| Metric                             |          Current result |
-| ---------------------------------- | ----------------------: |
-| Points                             |               5,552,120 |
-| Faces                              |              15,558,561 |
-| Internal faces                     |              14,958,030 |
-| Cells                              |               5,003,223 |
-| Negative-volume cells              |                       0 |
-| Interface-audit failures           |                       0 |
-| Invalid owner/neighbour addressing |                       0 |
-| Incorrect face pyramids            |                     159 |
-| Non-orthogonality errors           |                       2 |
-| Maximum non-orthogonality          |                 103.56° |
-| Severely non-orthogonal faces      |                   1,424 |
-| Maximum skewness                   |                   41.10 |
-| Highly skew faces                  |                     677 |
-| Stock OpenFOAM `checkMesh`         | 3 failed quality checks |
+| Metric                             |                   Current result |
+| ---------------------------------- | -------------------------------: |
+| Points                             |                        5,552,053 |
+| Faces                              |                       15,557,523 |
+| Internal faces                     |                       14,957,239 |
+| Cells                              |                        5,002,615 |
+| Number of regions                  |                           1 (OK) |
+| Negative-volume cells              |                                0 |
+| Interface-audit failures           |                                0 |
+| Invalid owner/neighbour addressing |                                0 |
+| Incorrect face pyramids            |                                0 |
+| Non-orthogonality errors           |                                0 |
+| Maximum non-orthogonality          |                           89.46° |
+| Severely non-orthogonal faces      |                            1,306 |
+| Maximum skewness                   |                            16.85 |
+| Highly skew faces                  |                              636 |
+| Stock OpenFOAM `checkMesh`         | 1 failed quality check: skewness |
 
-Rotor37 therefore remains a **stress test under active development**, not a CFD-ready validation claim. The outstanding failures are geometric-quality problems concentrated near difficult boundary-layer and patch-transition regions; they are not general topology corruption.
+Rotor37 is therefore a valid mesh-generation result and is runnable in OpenFOAM. It is not yet a CFD-performance validation claim: 1,306 faces remain severely non-orthogonal above 70°—although none exceed 90°—and 636 faces exceed the stock skewness threshold. Pressure ratio, efficiency, mass flow, and convergence validation remain pending.
+
 
 ---
 
@@ -265,7 +263,7 @@ The current implementation includes:
 * Complete rollback of rejected candidates
 
 On the propeller validation case, co-parent closure expanded 16 retreat seeds to 18 faces and produced a clean accepted mesh.
-
+The final Rotor37 repair eliminated all incorrectly oriented face pyramids and all non-orthogonality errors while preserving zero negative-volume cells. It also reduced maximum skewness from 41.10 to 16.85, leaving skewness as the only remaining stock `checkMesh` failure.
 ### Generated-child topology audits
 
 New diagnostic gates validate refined cell shells before and after face relabeling.
@@ -547,8 +545,7 @@ Important controls include:
 | `boundaryLayerArchitecture`        | Select constraint-planned or classic behavior          |
 | `patchBoundaryLayers`              | Patch-specific BL layer counts and heights             |
 | `terminationPatches`               | Identify inlet/outlet-style BL termination patches     |
-| `preRefBLSnapshot`                 | Preserve a recovery point before BL refinement         |
-| `autoRepair`                       | Enable transactional BL repair                         |
+| `preRefBLAutoRepair`               | Enable pre-refinement snapshotting and transactional BL repair |
 | `constrainOptimizerBoundaryMotion` | Constrain boundary motion to surface geometry          |
 | `postBLSnap`                       | Enable the experimental post-optimization surface snap |
 | `geometryPreprocessing`            | Configure optional near-coincident STL vertex handling |
@@ -559,8 +556,8 @@ Not every control is appropriate for every geometry. Validate each configuration
 
 ## Current limitations
 
-* NASA Rotor37 does not yet pass all stock `checkMesh` quality checks at the current high-resolution settings.
-* Rotor37 currently contains localized incorrect face pyramids, non-orthogonality errors, and highly skew faces near difficult transition topology.
+* Rotor37 now passes the topology, cell-volume, face-pyramid, and non-orthogonality-error checks, remains one connected region, and contains zero negative-volume cells.
+* The current high-resolution Rotor37 mesh still contains 1,306 severely non-orthogonal faces above 70° and 636 highly skew faces. Skewness is its only remaining failed stock `checkMesh` criterion.
 * CFD performance validation—including pressure ratio, efficiency, mass flow, and convergence behavior—is still pending.
 * Very small first-layer heights and large layer counts require case-specific validation.
 * Surface-constrained optimization can significantly increase runtime.
@@ -605,24 +602,6 @@ Rotor37 results are sensitive to geometry preparation, refinement settings, firs
 
 ---
 
-## NASA Rotor37 boundary-layer mesh preview
-
-<p align="center">
-  <img src="NASA_Rotor_37_1.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 1" width="48%">
-  <img src="NASA_Rotor_37_2.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 2" width="48%">
-</p>
-
-<p align="center">
-  <img src="NASA_Rotor_37_3.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 3" width="48%">
-  <img src="NASA_Rotor_37_4.png" alt="NASA Rotor 37 cfMesh OpenFOAM 13 boundary-layer mesh preview 4" width="48%">
-</p>
-
-<p align="center">
-  <em>NASA Rotor 37 two-passage turbomachinery sector used as a difficult-topology development case.</em>
-</p>
-
----
-
 ## Selected OpenFOAM 13 API updates
 
 | Original usage                      | OpenFOAM 13 update                      |
@@ -642,7 +621,8 @@ Rotor37 results are sensitive to geometry preparation, refinement settings, firs
 
 | Version      | Summary                                                                                                                                                                                                                            |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v1.0.0-rc1` | Constraint-planned BL refinement, transactional repair, adaptive retreat, generated-child closure audits, final face-incidence validation, topology-addressing coherency, wide cell-face counters, and lossless mesh serialization |
+| `v1.0.0-rc1` | Constraint-planned BL refinement, transactional repair, OpenFOAM-equivalent quality gating, post-Q3 adaptive retreat, generated-child closure audits, face-incidence and addressing validation, wide cell-face counters, and lossless mesh serialization.
+                                            |
 | `v0.10`      | Surface-constrained optimizer and limited-displacement boundary reprojection                                                                                                                                                       |
 | `v0.9`       | Expanded parallel hardening and optimizer/untangler fixes                                                                                                                                                                          |
 | `v0.8.x`     | BL/BL and BL/neutral transition infrastructure, geometry preprocessing, and broad codebase safety audit                                                                                                                            |
