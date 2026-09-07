@@ -115,6 +115,16 @@ class refineBoundaryLayers
         //- neighbouring boundary faces in CFMitch.
         label constraintPlannerMaxLayerStep_;
 
+        //- CFMitch V5.2a read-only prospective marching census.
+        //- Evaluates the exact child topology before generateNewCells()
+        //- commits it.  This switch never changes points, faces, layer
+        //- counts, or acceptance decisions.
+        bool cfmitchV52aFrontCensus_;
+
+        //- Export safe prospective wall-prefix depths as ceilings for
+        //- the next fresh boundary-layer construction.
+        bool cfmitchV52bApplyFrontCaps_;
+
         //- information about existing boundary layers at patches
         //- only available layers
         List<DynList<label> > layerAtPatch_;
@@ -522,6 +532,17 @@ public:
         //- provenance map accessor (newCellI -> original bfI, -1 if not a BL cell)
         const labelList& cellToBaseBndFace() const
         { return cellToBaseBndFace_; }
+
+        // CFMitch V5.1d: read-only Q1 diagnostics. These labels are valid
+        // only before subsequent mesh compaction/renumbering or rollback.
+        const LongList<edge>& splitEdgesForDiagnostics() const
+        { return splitEdges_; }
+
+        const VRWGraph& splitEdgeVerticesForDiagnostics() const
+        { return newVerticesForSplitEdge_; }
+
+        const labelList& faceLayersForDiagnostics() const
+        { return nLayersAtBndFace_; }
 
         //- actual max-layer interventions from the completed analysis
         const labelHashSet& actuallyCappedFaces() const

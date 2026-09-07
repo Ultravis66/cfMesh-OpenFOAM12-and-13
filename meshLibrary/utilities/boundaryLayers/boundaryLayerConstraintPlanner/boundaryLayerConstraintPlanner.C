@@ -122,6 +122,7 @@ boundaryLayerConstraintPlanner::solveLayerCounts
     const scalar globalThicknessRatio,
     const std::map<word, scalar>& thicknessRatioForPatch,
     const labelList& vtFaceRing,
+    const labelHashSet& directLayerCapFaces,
     const label maxLayerStep
 ) const
 {
@@ -317,8 +318,32 @@ boundaryLayerConstraintPlanner::solveLayerCounts
     );
 
     label nDirectCappedFaces = 0;
+    label nExplicitLayerCapSeeds = 0;
     label minDirectLayers = labelMax;
     label maxDirectLayers = 0;
+
+    forAllConstIter
+    (
+        labelHashSet,
+        directLayerCapFaces,
+        seedIt
+    )
+    {
+        const label bfI = seedIt.key();
+
+        if( bfI < 0 || bfI >= label(faceLayers.size()) )
+            continue;
+
+        directCappedFace[bfI] = true;
+        ++nDirectCappedFaces;
+        ++nExplicitLayerCapSeeds;
+
+        minDirectLayers =
+            Foam::min(minDirectLayers, faceLayers[bfI]);
+
+        maxDirectLayers =
+            Foam::max(maxDirectLayers, faceLayers[bfI]);
+    }
 
     forAll(faceLayers, bfI)
     {
@@ -457,9 +482,11 @@ boundaryLayerConstraintPlanner::solveLayerCounts
         if( faceCap < faceLayers[bfI] )
         {
             faceLayers[bfI] = faceCap;
-            directCappedFace[bfI] = true;
-
-            ++nDirectCappedFaces;
+            if( !directCappedFace[bfI] )
+            {
+                directCappedFace[bfI] = true;
+                ++nDirectCappedFaces;
+            }
 
             minDirectLayers =
                 Foam::min
@@ -648,6 +675,8 @@ boundaryLayerConstraintPlanner::solveLayerCounts
         << " stableMapped=" << nStableMapped
         << " sourceEdges=" << nSourceEdges
         << " bpUpdates=" << nBpUpdates
+        << " explicitLayerCapSeeds="
+        << nExplicitLayerCapSeeds
         << " directCappedFaces=" << nDirectCappedFaces;
 
     if( nDirectCappedFaces > 0 )

@@ -64,6 +64,8 @@ refineBoundaryLayers::refineBoundaryLayers(polyMeshGen& mesh)
     refinementValid_(true),
     boundaryLayerArchitecture_("legacyEnhanced"),
     constraintPlannerMaxLayerStep_(2),
+    cfmitchV52aFrontCensus_(false),
+    cfmitchV52bApplyFrontCaps_(false),
     nLayersAtBndFace_(),
     cellToBaseBndFace_(),
     qualityMaxLayersAtFace_(),
@@ -491,6 +493,40 @@ void refineBoundaryLayers::readSettings
                 refLayers.constraintPlannerMaxLayerStep_ =
                     maxLayerStep;
             }
+        }
+
+        // CFMitch V5.2a: read-only birth-stage marching contract census.
+        // Default OFF.  It is deliberately a boundaryLayers setting since
+        // the owning refiner, rather than cartesianMeshGenerator, performs
+        // the prospective evaluation.
+        if( bndLayers.found("cfmitchV52aFrontCensus") )
+        {
+            refLayers.cfmitchV52aFrontCensus_ =
+                bool
+                (
+                    Switch
+                    (
+                        bndLayers.lookup("cfmitchV52aFrontCensus")
+                    )
+                );
+        }
+
+        if( bndLayers.found("cfmitchV52bApplyFrontCaps") )
+        {
+            refLayers.cfmitchV52bApplyFrontCaps_ =
+                bool
+                (
+                    Switch
+                    (
+                        bndLayers.lookup
+                        (
+                            "cfmitchV52bApplyFrontCaps"
+                        )
+                    )
+                );
+
+            if( refLayers.cfmitchV52bApplyFrontCaps_ )
+                refLayers.cfmitchV52aFrontCensus_ = true;
         }
 
         //- read global properties

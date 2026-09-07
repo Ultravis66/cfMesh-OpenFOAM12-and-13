@@ -27,6 +27,7 @@ Description
 
 #include "cartesianMeshGenerator.H"
 #include "pyramidPointFaceRef.H"
+#include "tetPointRef.H"
 #include "triSurf.H"
 #include "triSurfacePatchManipulator.H"
 #include "demandDrivenData.H"
@@ -69,6 +70,14 @@ Description
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 #include <limits>
+#include <cmath>
+#include <map>
+#include <set>
+#include <vector>
+#include <algorithm>
+#include <sstream>
+#include "decomposeFaces.H"
+#include "decomposeCells.H"
 
 namespace Foam
 {
@@ -226,6 +235,175 @@ static void rawCellVolumeStats
 }
 
 
+//- Exact OpenFOAM Foundation 13 checkConcaveCells geometry.
+//  checkMesh -allGeometry calls this logic with planarCosAngle=1.0e-6.
+//  Keep this independent of cfMesh's face-concavity test: one reports
+//  concave cells using face planes; the other reports concave polygon faces.
+struct CFMitchConcaveCellWitness
+{
+    label faceI;
+    label otherFaceI;
+    scalar cosine;
+
+    CFMitchConcaveCellWitness()
+    :
+        faceI(-1),
+        otherFaceI(-1),
+        cosine(-GREAT)
+    {}
+
+    CFMitchConcaveCellWitness
+    (
+        const label f,
+        const label other,
+        const scalar c
+    )
+    :
+        faceI(f),
+        otherFaceI(other),
+        cosine(c)
+    {}
+};
+
+
+// V5.1x assembled-topology attribution.  Keys are sorted global point-label
+// signatures, which survive deterministic mesh renumbering because V5.1w
+// adds no points and changes only faces/cells.
+struct CFMitchV51xLineage
+{
+    label column;
+    label layer;
+    label role;
+
+    CFMitchV51xLineage()
+    :
+        column(-1), layer(-1), role(0)
+    {}
+
+    CFMitchV51xLineage(const label c, const label l, const label r)
+    :
+        column(c), layer(l), role(r)
+    {}
+};
+
+
+static void cfmitchStockConcaveCells
+(
+    const polyMeshGen& mesh,
+    labelHashSet& concaveCells,
+    std::map<label, CFMitchConcaveCellWitness>* witnesses = nullptr
+)
+{
+    const scalar planarCosAngle = 1.0e-6;
+
+    concaveCells.clear();
+    if( witnesses ) witnesses->clear();
+
+    // Do not use polyMeshGen addressing caches here.  Foundation checkMesh
+    // constructs primitiveMesh::faceAreas()/faceCentres() with
+    // face::areaAndCentre(), whose polygon centre is area-weighted.  The
+    // cfMesh cache uses different construction geometry and gave a 3475 vs
+    // 3620 baseline mismatch in V5.1u.
+    const faceListPMG& faces = mesh.faces();
+    const pointFieldPMG& points = mesh.points();
+    vectorField faceAreas(faces.size(), vector::zero);
+    vectorField faceCentres(faces.size(), vector::zero);
+
+    forAll(faces, faceI)
+    {
+        const face& f = faces[faceI];
+        const label nPoints = f.size();
+
+        if( nPoints == 3 )
+        {
+            const point& p0 = points[f[0]];
+            const point& p1 = points[f[1]];
+            const point& p2 = points[f[2]];
+            faceAreas[faceI] =
+                (1.0/2.0)*((p1-p0)^(p2-p0));
+            faceCentres[faceI] =
+                (1.0/3.0)*(p0+p1+p2);
+        }
+        else
+        {
+            point pAvg = point::zero;
+            forAll(f, fpI) pAvg += points[f[fpI]];
+            if( nPoints ) pAvg /= nPoints;
+
+            vector sumA = vector::zero;
+            forAll(f, fpI)
+            {
+                const point& p0 = points[f[fpI]];
+                const point& p1 = points[f.nextLabel(fpI)];
+                sumA += (p1-p0)^(pAvg-p0);
+            }
+
+            const vector sumAHat = normalised(sumA);
+            scalar sumAn = 0.0;
+            vector sumAnc = vector::zero;
+            forAll(f, fpI)
+            {
+                const point& p0 = points[f[fpI]];
+                const point& p1 = points[f.nextLabel(fpI)];
+                const vector a = (p1-p0)^(pAvg-p0);
+                const scalar an = a & sumAHat;
+                sumAn += an;
+                sumAnc += an*(p0+p1+pAvg);
+            }
+
+            faceAreas[faceI] = (1.0/2.0)*sumA;
+            faceCentres[faceI] = sumAn > vSmall
+                ? point((1.0/3.0)*sumAnc/sumAn) : pAvg;
+        }
+    }
+    const cellListPMG& cells = mesh.cells();
+    const labelList& owner = mesh.owner();
+
+    forAll(cells, cellI)
+    {
+        const cell& cFaces = cells[cellI];
+        bool concave = false;
+
+        forAll(cFaces, i)
+        {
+            if( concave ) break;
+
+            const label faceI = cFaces[i];
+            const point& faceCentre = faceCentres[faceI];
+            vector faceNormal = faceAreas[faceI];
+            faceNormal /= Foam::max(mag(faceNormal), scalar(vSmall));
+
+            if( owner[faceI] != cellI ) faceNormal *= -1.0;
+
+            forAll(cFaces, j)
+            {
+                if( j == i ) continue;
+
+                const label otherFaceI = cFaces[j];
+                vector direction = faceCentres[otherFaceI]-faceCentre;
+                direction /= Foam::max(mag(direction), scalar(vSmall));
+                const scalar cosine = direction & faceNormal;
+
+                if( cosine > -planarCosAngle )
+                {
+                    concaveCells.insert(cellI);
+                    if( witnesses )
+                    {
+                        (*witnesses)[cellI] =
+                            CFMitchConcaveCellWitness
+                            (
+                                faceI, otherFaceI, cosine
+                            );
+                    }
+                    concave = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+
 //- OpenFOAM-equivalent hard geometry used by the CFMitch recovery
 //- controller.  This is intentionally separate from cfMesh construction
 //- geometry, whose positive surrogate cell-centre weights remain necessary
@@ -235,6 +413,32 @@ struct CFMitchOFHardQuality
     labelHashSet badPyramidFaces;
     labelHashSet errorNonOrthFaces;
 
+    // CFMitch V5.1b -- exact IDs of advanced FV warning populations.
+    // Report-only.  Used for provenance classification at Q1.
+    labelHashSet smallWeightFaceSet;
+    labelHashSet smallVolRatioFaceSet;
+    labelHashSet smallDeterminantCellSet;
+
+    // CFMitch V5.1c -- OpenFOAM Foundation face-tet parity.
+    labelHashSet badFaceTetFaceSet;
+    // CFMitch V5.1e: independent audit populations, not legacy gates.
+    labelHashSet fanNegativeCells, fanSevereFaces, fanSkewFaces;
+    // V5.1p: exact internal non-orthogonality angle for every face
+    // entering the 70-degree warning/error population.
+    std::map<label, scalar> fanNonOrthDegrees;
+    std::map<label, scalar> fanSevereSkew;
+    scalarField fanAllNonOrthDegrees;
+    // V5.1x: exact Foundation face-tet margins for failing faces.  Owner
+    // edge quality must be < -sqr(SMALL), neighbour edge quality must be
+    // > sqr(SMALL), and the shared-base margin must be > sqr(SMALL).
+    std::map<label, scalar> faceTetOwnerWorst;
+    std::map<label, scalar> faceTetNeighbourWorst;
+    std::map<label, scalar> faceTetBestShared;
+    std::map<label, label> faceTetBestSharedBase;
+    std::map<label, point> fanCentres;
+    scalarField fanVolumes;
+    label fanNonFinite = 0;
+
     label pyramidErrors;
     label signedNegVolCells;
     label severeNonOrthFaces;
@@ -242,9 +446,25 @@ struct CFMitchOFHardQuality
     label centreFallbackCells;
     label highSkewFaces;
 
+    // CFMitch V5.1a -- OpenFOAM advanced finite-volume telemetry.
+    // These are observational only.  They do not participate in any
+    // acceptance/rejection decision in V5.1a.
+    label smallWeightFaces;
+    label smallVolRatioFaces;
+    label smallDeterminantCells;
+
+    // checkFaceTets() counts failure EVENTS.  One face may contribute
+    // owner-tet, neighbour-tet and shared-base failures.
+    bool faceTetEvaluated;
+    label faceTetErrorEvents;
+
     scalar minSignedVol;
     scalar maxNonOrth;
     scalar maxSkew;
+
+    scalar minFaceWeight;
+    scalar minVolRatio;
+    scalar minDeterminant;
 
     CFMitchOFHardQuality()
     :
@@ -254,21 +474,61 @@ struct CFMitchOFHardQuality
         zeroFaceCells(0),
         centreFallbackCells(0),
         highSkewFaces(0),
+        smallWeightFaces(0),
+        smallVolRatioFaces(0),
+        smallDeterminantCells(0),
+        faceTetEvaluated(false),
+        faceTetErrorEvents(0),
         minSignedVol(GREAT),
         maxNonOrth(0.0),
-        maxSkew(0.0)
+        maxSkew(0.0),
+        minFaceWeight(1.0),
+        minVolRatio(1.0),
+        minDeterminant(GREAT)
     {}
+};
+
+
+// CFMitch V5.1d: references to the already-held Q0 snapshot and Q1
+// refinement metadata. No additional whole-mesh copy is made.
+struct CFMitchQ1FaceTetProbe
+{
+    const refineBoundaryLayers& layers;
+    const labelList& basePatches;
+    const pointField& q0Points;
+    const faceList& q0Faces;
+    const label q0BoundaryStart;
 };
 
 
 static void evaluateOpenFOAMHardQuality
 (
     const polyMeshGen& mesh,
-    CFMitchOFHardQuality& result
+    CFMitchOFHardQuality& result,
+    const bool evaluateFaceTets = false,
+    const CFMitchQ1FaceTetProbe* q1Probe = nullptr,
+    const bool collectFanData = false
 )
 {
     result.badPyramidFaces.clear();
     result.errorNonOrthFaces.clear();
+    result.smallWeightFaceSet.clear();
+    result.smallVolRatioFaceSet.clear();
+    result.smallDeterminantCellSet.clear();
+    result.badFaceTetFaceSet.clear();
+    result.fanNegativeCells.clear();
+    result.fanSevereFaces.clear();
+    result.fanNonOrthDegrees.clear();
+    result.fanSevereSkew.clear();
+    result.fanAllNonOrthDegrees.clear();
+    result.faceTetOwnerWorst.clear();
+    result.faceTetNeighbourWorst.clear();
+    result.faceTetBestShared.clear();
+    result.faceTetBestSharedBase.clear();
+    result.fanSkewFaces.clear();
+    result.fanCentres.clear();
+    result.fanVolumes.clear();
+    result.fanNonFinite = 0;
 
     result.pyramidErrors = 0;
     result.signedNegVolCells = 0;
@@ -276,10 +536,19 @@ static void evaluateOpenFOAMHardQuality
     result.zeroFaceCells = 0;
     result.centreFallbackCells = 0;
     result.highSkewFaces = 0;
+    result.smallWeightFaces = 0;
+    result.smallVolRatioFaces = 0;
+    result.smallDeterminantCells = 0;
+
+    result.faceTetEvaluated = false;
+    result.faceTetErrorEvents = 0;
 
     result.minSignedVol = GREAT;
     result.maxNonOrth = 0.0;
     result.maxSkew = 0.0;
+    result.minFaceWeight = 1.0;
+    result.minVolRatio = 1.0;
+    result.minDeterminant = GREAT;
 
     const labelList& own = mesh.owner();
     const labelList& nei = mesh.neighbour();
@@ -289,6 +558,8 @@ static void evaluateOpenFOAMHardQuality
 
     const label nCells = mesh.cells().size();
     const label nInternalFaces = mesh.nInternalFaces();
+    if( collectFanData )
+        result.fanAllNonOrthDegrees.setSize(nInternalFaces, -1.0);
 
     // OpenFOAM 13 face::areaAndCentre().
     vectorField faceCtrs(faces.size(), vector::zero);
@@ -356,6 +627,16 @@ static void evaluateOpenFOAMHardQuality
             else
                 faceCtrs[faceI] = pAvg;
         }
+    }
+
+    if( collectFanData )
+    {
+        result.fanVolumes.setSize(nCells);
+        forAll(faceCtrs, i)
+            for(label k=0; k<3; ++k)
+                if( !std::isfinite(faceCtrs[i][k])
+                 || !std::isfinite(faceAreas[i][k]) )
+                    ++result.fanNonFinite;
     }
 
     // OpenFOAM primitiveMesh::makeCellCentresAndVols().
@@ -443,7 +724,18 @@ static void evaluateOpenFOAMHardQuality
             Foam::min(result.minSignedVol, cellVol);
 
         if( cellVol < 0.0 )
+        {
             ++result.signedNegVolCells;
+            result.fanNegativeCells.insert(cellI);
+        }
+        if( collectFanData )
+        {
+            result.fanVolumes[cellI] = cellVol;
+            if( !std::isfinite(cellVol) ) ++result.fanNonFinite;
+            for(label k=0; k<3; ++k)
+                if( !std::isfinite(cellCtrs[cellI][k]) )
+                    ++result.fanNonFinite;
+        }
     }
 
     // Stock checkMesh pyramid-orientation formula.
@@ -498,13 +790,37 @@ static void evaluateOpenFOAMHardQuality
             (d & sA)
           / (mag(d)*mag(sA) + rootVSmall);
 
+        if( collectFanData && !std::isfinite(ortho) )
+            ++result.fanNonFinite;
         minOrtho = Foam::min(minOrtho, ortho);
+
+        if( collectFanData )
+        {
+            const scalar clampedOrtho =
+                Foam::min
+                (
+                    scalar(1.0),
+                    Foam::max(scalar(-1.0), ortho)
+                );
+            result.fanAllNonOrthDegrees[faceI] =
+                Foam::acos(clampedOrtho)*180.0/M_PI;
+        }
 
         if( ortho < nonOrthThreshold )
         {
+            const scalar clampedOrtho =
+                Foam::min
+                (
+                    scalar(1.0),
+                    Foam::max(scalar(-1.0), ortho)
+                );
+            result.fanNonOrthDegrees[faceI] =
+                Foam::acos(clampedOrtho)*180.0/M_PI;
+
             if( ortho > SMALL )
             {
                 ++result.severeNonOrthFaces;
+                result.fanSevereFaces.insert(faceI);
             }
             else
             {
@@ -645,8 +961,744 @@ static void evaluateOpenFOAMHardQuality
         result.maxSkew =
             Foam::max(result.maxSkew, skew);
 
+        if( collectFanData && !std::isfinite(skew) )
+            ++result.fanNonFinite;
+        if
+        (
+            collectFanData
+         && result.fanSevereFaces.found(faceI)
+        )
+            result.fanSevereSkew[faceI] = skew;
         if( skew > skewThreshold )
+        {
             ++result.highSkewFaces;
+            result.fanSkewFaces.insert(faceI);
+        }
+    }
+
+    // CFMitch V5.1a -- OpenFOAM advanced finite-volume telemetry.
+    //
+    // IMPORTANT:
+    //   * report-only in V5.1a
+    //   * no mesh motion
+    //   * no acceptance-gate changes
+    //   * uses the same OpenFOAM-parity face centres, face areas,
+    //     cell centres and signed cell volumes calculated above
+    //
+    // For the current serial 3-D mesher path, internal faces are the
+    // relevant face set.  Uncoupled boundary faces have stock weight
+    // and volume-ratio value 1 and therefore cannot trigger these tests.
+    const scalar faceWeightThreshold = 0.05;
+    const scalar volRatioThreshold = 0.01;
+    const scalar determinantThreshold = 1.0e-3;
+
+    for(label faceI=0; faceI<nInternalFaces; ++faceI)
+    {
+        const label ownCell = own[faceI];
+        const label neiCell = nei[faceI];
+
+        // OpenFOAM face interpolation weight.
+        const scalar dOwn =
+            Foam::mag
+            (
+                faceAreas[faceI]
+              & (faceCtrs[faceI] - cellCtrs[ownCell])
+            );
+
+        const scalar dNei =
+            Foam::mag
+            (
+                faceAreas[faceI]
+              & (cellCtrs[neiCell] - faceCtrs[faceI])
+            );
+
+        const scalar faceWeight =
+            Foam::min(dNei, dOwn)
+           /(dNei + dOwn + vSmall);
+
+        result.minFaceWeight =
+            Foam::min(result.minFaceWeight, faceWeight);
+
+        if( faceWeight < faceWeightThreshold )
+        {
+            ++result.smallWeightFaces;
+            result.smallWeightFaceSet.insert(faceI);
+        }
+
+        // OpenFOAM adjacent-cell volume ratio.
+        const scalar ownVol = cellVol3[ownCell]/3.0;
+        const scalar neiVol = cellVol3[neiCell]/3.0;
+
+        const scalar volRatio =
+            Foam::min(ownVol, neiVol)
+           /(Foam::max(ownVol, neiVol) + vSmall);
+
+        result.minVolRatio =
+            Foam::min(result.minVolRatio, volRatio);
+
+        if( volRatio < volRatioThreshold )
+        {
+            ++result.smallVolRatioFaces;
+            result.smallVolRatioFaceSet.insert(faceI);
+        }
+    }
+
+    // OpenFOAM cell determinant for the current 3-D mesh path.
+    //
+    // Stock formulation:
+    //
+    //   avgArea = average(|Sf|) over participating internal/coupled faces
+    //   areaTensor += sqr(Sf/avgArea)
+    //   determinant = |det(areaTensor)|
+    //
+    // Accumulate the symmetric area tensor component-wise to avoid
+    // introducing a second mesh-geometry representation.
+    scalarField detAreaMagSum(nCells, 0.0);
+    labelList detFaceCount(nCells, 0);
+
+    scalarField detXX(nCells, 0.0);
+    scalarField detXY(nCells, 0.0);
+    scalarField detXZ(nCells, 0.0);
+    scalarField detYY(nCells, 0.0);
+    scalarField detYZ(nCells, 0.0);
+    scalarField detZZ(nCells, 0.0);
+
+    for(label faceI=0; faceI<nInternalFaces; ++faceI)
+    {
+        const vector& a = faceAreas[faceI];
+        const scalar aMag = Foam::mag(a);
+
+        const scalar ax = a.x();
+        const scalar ay = a.y();
+        const scalar az = a.z();
+
+        const label ownCell = own[faceI];
+        const label neiCell = nei[faceI];
+
+        detAreaMagSum[ownCell] += aMag;
+        ++detFaceCount[ownCell];
+
+        detXX[ownCell] += ax*ax;
+        detXY[ownCell] += ax*ay;
+        detXZ[ownCell] += ax*az;
+        detYY[ownCell] += ay*ay;
+        detYZ[ownCell] += ay*az;
+        detZZ[ownCell] += az*az;
+
+        detAreaMagSum[neiCell] += aMag;
+        ++detFaceCount[neiCell];
+
+        detXX[neiCell] += ax*ax;
+        detXY[neiCell] += ax*ay;
+        detXZ[neiCell] += ax*az;
+        detYY[neiCell] += ay*ay;
+        detYZ[neiCell] += ay*az;
+        detZZ[neiCell] += az*az;
+    }
+
+    for(label cellI=0; cellI<nCells; ++cellI)
+    {
+        scalar determinant = 0.0;
+
+        if( detFaceCount[cellI] > 0 )
+        {
+            const scalar avgArea =
+                detAreaMagSum[cellI]/scalar(detFaceCount[cellI]);
+
+            if( avgArea > vSmall )
+            {
+                const scalar invAvgArea2 =
+                    1.0/(avgArea*avgArea);
+
+                const scalar xx = detXX[cellI]*invAvgArea2;
+                const scalar xy = detXY[cellI]*invAvgArea2;
+                const scalar xz = detXZ[cellI]*invAvgArea2;
+                const scalar yy = detYY[cellI]*invAvgArea2;
+                const scalar yz = detYZ[cellI]*invAvgArea2;
+                const scalar zz = detZZ[cellI]*invAvgArea2;
+
+                const scalar det =
+                    xx*(yy*zz - yz*yz)
+                  - xy*(xy*zz - yz*xz)
+                  + xz*(xy*yz - yy*xz);
+
+                determinant = Foam::mag(det);
+            }
+        }
+
+        if( collectFanData && !std::isfinite(determinant) )
+            ++result.fanNonFinite;
+        result.minDeterminant =
+            Foam::min(result.minDeterminant, determinant);
+
+        if( determinant < determinantThreshold )
+        {
+            ++result.smallDeterminantCells;
+            result.smallDeterminantCellSet.insert(cellI);
+        }
+    }
+
+    // -------------------------------------------------------------
+    // CFMitch V5.1c -- Foundation OpenFOAM-13 face-tet parity.
+    //
+    // Deliberately optional because this test is substantially more
+    // expensive than the normal hard-quality evaluator.
+    // -------------------------------------------------------------
+    if( evaluateFaceTets )
+    {
+        result.faceTetEvaluated = true;
+
+        // polyMeshTetDecomposition::minTetQuality
+        const scalar tetTol = sqr(small);
+        FixedList<label, 5> tetEventKinds(label(0));
+
+        auto minFaceTetQuality =
+        [&]
+        (
+            const point& cellCentre,
+            const label faceI,
+            const bool isOwner,
+            const label faceBasePtI
+        ) -> scalar
+        {
+            const face& f = faces[faceI];
+            const point& tetBasePt =
+                points[f[faceBasePtI]];
+
+            scalar thisBaseMinTetQuality = GREAT;
+
+            for
+            (
+                label tetPtI = 1;
+                tetPtI < f.size() - 1;
+                ++tetPtI
+            )
+            {
+                const label facePtI =
+                    (tetPtI + faceBasePtI) % f.size();
+
+                const label otherFacePtI =
+                    f.fcIndex(facePtI);
+
+                label ptAI = -1;
+                label ptBI = -1;
+
+                if( isOwner )
+                {
+                    ptAI = f[facePtI];
+                    ptBI = f[otherFacePtI];
+                }
+                else
+                {
+                    ptAI = f[otherFacePtI];
+                    ptBI = f[facePtI];
+                }
+
+                const point& pA = points[ptAI];
+                const point& pB = points[ptBI];
+
+                const scalar tetQuality =
+                    tetPointRef
+                    (
+                        cellCentre,
+                        tetBasePt,
+                        pA,
+                        pB
+                    ).quality();
+
+                if( collectFanData && !std::isfinite(tetQuality) )
+                    ++result.fanNonFinite;
+                if( tetQuality < thisBaseMinTetQuality )
+                    thisBaseMinTetQuality = tetQuality;
+            }
+
+            return thisBaseMinTetQuality;
+        };
+
+
+        forAll(faces, faceI)
+        {
+            const face& f = faces[faceI];
+
+            // The normal mesh topology gate guarantees valid faces.
+            // Keep a fail-closed guard here so diagnostics never index
+            // an invalid face if this assumption changes.
+            if( f.size() < 3 )
+            {
+                result.badFaceTetFaceSet.insert(faceI);
+                ++result.faceTetErrorEvents;
+                ++tetEventKinds[0];
+                continue;
+            }
+
+            const label ownCell = own[faceI];
+            bool fanEdgesOK = true;
+            scalar ownerWorst = -GREAT;
+            scalar neighbourWorst = GREAT;
+            scalar bestShared = -GREAT;
+            label bestSharedBase = -1;
+
+            // -----------------------------------------------------
+            // Owner-side edge tets.
+            //
+            // Exact Foundation condition:
+            //
+            //     if (tetQual > -tol) error
+            //
+            // Owner orientation intentionally has NEGATIVE quality.
+            // -----------------------------------------------------
+            forAll(f, fPtI)
+            {
+                const scalar tetQual =
+                    tetPointRef
+                    (
+                        points[f[fPtI]],
+                        points[f.nextLabel(fPtI)],
+                        faceCtrs[faceI],
+                        cellCtrs[ownCell]
+                    ).quality();
+
+                if( collectFanData && !std::isfinite(tetQual) )
+                    ++result.fanNonFinite;
+                ownerWorst = Foam::max(ownerWorst, tetQual);
+                if( tetQual > -tetTol )
+                {
+                    result.badFaceTetFaceSet.insert(faceI);
+                    ++result.faceTetErrorEvents;
+                    ++tetEventKinds[1];
+                    fanEdgesOK = false;
+                    break;
+                }
+            }
+
+
+            if( faceI < nInternalFaces )
+            {
+                const label neiCell = nei[faceI];
+
+                // -------------------------------------------------
+                // Neighbour-side edge tets.
+                //
+                // Exact Foundation condition:
+                //
+                //     if (tetQual < tol) error
+                // -------------------------------------------------
+                forAll(f, fPtI)
+                {
+                    const scalar tetQual =
+                        tetPointRef
+                        (
+                            points[f[fPtI]],
+                            points[f.nextLabel(fPtI)],
+                            faceCtrs[faceI],
+                            cellCtrs[neiCell]
+                        ).quality();
+
+                    if( collectFanData && !std::isfinite(tetQual) )
+                        ++result.fanNonFinite;
+                    neighbourWorst = Foam::min(neighbourWorst, tetQual);
+                    if( tetQual < tetTol )
+                    {
+                        result.badFaceTetFaceSet.insert(faceI);
+                        ++result.faceTetErrorEvents;
+                        ++tetEventKinds[2];
+                        fanEdgesOK = false;
+                        break;
+                    }
+                }
+
+
+                // -------------------------------------------------
+                // findSharedBasePoint() parity.
+                //
+                // A face is decomposable only if ONE common fan
+                // base point gives quality > tol on BOTH cells.
+                // -------------------------------------------------
+                bool sharedBaseFound = false;
+
+                forAll(f, faceBasePtI)
+                {
+                    scalar minQ =
+                        minFaceTetQuality
+                        (
+                            cellCtrs[ownCell],
+                            faceI,
+                            true,
+                            faceBasePtI
+                        );
+
+                    minQ =
+                        Foam::min
+                        (
+                            minQ,
+                            minFaceTetQuality
+                            (
+                                cellCtrs[neiCell],
+                                faceI,
+                                false,
+                                faceBasePtI
+                            )
+                        );
+
+                    if( minQ > bestShared )
+                    {
+                        bestShared = minQ;
+                        bestSharedBase = faceBasePtI;
+                    }
+
+                    if( minQ > tetTol )
+                    {
+                        sharedBaseFound = true;
+                        break;
+                    }
+                }
+
+                if( !sharedBaseFound )
+                {
+                    result.badFaceTetFaceSet.insert(faceI);
+                    ++result.faceTetErrorEvents;
+                    ++tetEventKinds[3];
+                    if( collectFanData && fanEdgesOK && f.size() == 4 )
+                        result.fanCentres[faceI] = faceCtrs[faceI];
+                }
+
+                if
+                (
+                    collectFanData
+                 && result.badFaceTetFaceSet.found(faceI)
+                )
+                {
+                    // The stock checks stop at their first failure.  Repeat
+                    // the tiny per-face loops without early exits so V5.1x
+                    // records true extrema instead of loop-order artefacts.
+                    ownerWorst = -GREAT;
+                    neighbourWorst = GREAT;
+                    bestShared = -GREAT;
+                    bestSharedBase = -1;
+                    forAll(f, fPtI)
+                    {
+                        ownerWorst = Foam::max
+                        (
+                            ownerWorst,
+                            tetPointRef
+                            (
+                                points[f[fPtI]],
+                                points[f.nextLabel(fPtI)],
+                                faceCtrs[faceI],
+                                cellCtrs[ownCell]
+                            ).quality()
+                        );
+                        neighbourWorst = Foam::min
+                        (
+                            neighbourWorst,
+                            tetPointRef
+                            (
+                                points[f[fPtI]],
+                                points[f.nextLabel(fPtI)],
+                                faceCtrs[faceI],
+                                cellCtrs[neiCell]
+                            ).quality()
+                        );
+                    }
+                    forAll(f, faceBasePtI)
+                    {
+                        const scalar minQ = Foam::min
+                        (
+                            minFaceTetQuality
+                            (
+                                cellCtrs[ownCell], faceI, true,
+                                faceBasePtI
+                            ),
+                            minFaceTetQuality
+                            (
+                                cellCtrs[neiCell], faceI, false,
+                                faceBasePtI
+                            )
+                        );
+                        if( minQ > bestShared )
+                        {
+                            bestShared = minQ;
+                            bestSharedBase = faceBasePtI;
+                        }
+                    }
+                    result.faceTetOwnerWorst[faceI] = ownerWorst;
+                    result.faceTetNeighbourWorst[faceI] =
+                        neighbourWorst;
+                    result.faceTetBestShared[faceI] = bestShared;
+                    result.faceTetBestSharedBase[faceI] =
+                        bestSharedBase;
+                }
+            }
+            else
+            {
+                // -------------------------------------------------
+                // Current propeller boundary patches are uncoupled.
+                // Reproduce findBasePoint() on the owner side.
+                // -------------------------------------------------
+                bool baseFound = false;
+
+                forAll(f, faceBasePtI)
+                {
+                    const scalar quality =
+                        minFaceTetQuality
+                        (
+                            cellCtrs[ownCell],
+                            faceI,
+                            true,
+                            faceBasePtI
+                        );
+
+                    if( quality > tetTol )
+                    {
+                        baseFound = true;
+                        break;
+                    }
+                }
+
+                if( !baseFound )
+                {
+                    result.badFaceTetFaceSet.insert(faceI);
+                    ++result.faceTetErrorEvents;
+                    ++tetEventKinds[4];
+                }
+            }
+        }
+
+        // CFMitch V5.1d -- bounded Q1 geometry export. Read-only.
+        // Existing Foundation geometry and tests above remain authoritative.
+        if( q1Probe && !Pstream::parRun() )
+        {
+            const labelList& provenance = q1Probe->layers.cellToBaseBndFace();
+            const labelList& basePatch = q1Probe->basePatches;
+            const labelList& baseLayers =
+                q1Probe->layers.faceLayersForDiagnostics();
+            const VRWGraph& hairRows =
+                q1Probe->layers.splitEdgeVerticesForDiagnostics();
+            const LongList<edge>& hairs =
+                q1Probe->layers.splitEdgesForDiagnostics();
+
+            auto sameBase = [&](const label fi) -> label
+            {
+                if( fi < 0 || fi >= nInternalFaces ) return -1;
+                const label o = own[fi], n = nei[fi];
+                if( o < 0 || n < 0 || o >= label(provenance.size())
+                 || n >= label(provenance.size()) ) return -1;
+                const label b = provenance[o];
+                if( b < 0 || b != provenance[n]
+                 || b >= label(basePatch.size())
+                 || b >= label(baseLayers.size()) ) return -1;
+                return b;
+            };
+
+            // Mark every base touched by a failing face. Controls must have
+            // no incident face-tet failure, including their side interfaces.
+            labelHashSet touchedBadBases;
+            std::map<label, label> badBaseFirstFace;
+            forAllConstIter(labelHashSet, result.badFaceTetFaceSet, it)
+            {
+                const label fi = it.key();
+                const label cs[2] =
+                    {own[fi], fi < nInternalFaces ? nei[fi] : -1};
+                for( label j=0; j<2; ++j )
+                {
+                    if( cs[j] >= 0 && cs[j] < label(provenance.size())
+                     && provenance[cs[j]] >= 0 )
+                        touchedBadBases.insert(provenance[cs[j]]);
+                }
+                const label b = sameBase(fi);
+                if( b < 0 ) continue;
+                std::map<label, label>::iterator found = badBaseFirstFace.find(b);
+                if( found == badBaseFirstFace.end() ) badBaseFirstFace[b] = fi;
+                else found->second = Foam::min(found->second, fi);
+            }
+
+            // Known V5.1c examples are preferred; deterministic fallback lets
+            // the same diagnostic work if the mesh's numbering has changed.
+            const label preferred[4] = {110352, 82265, 54178, 44816};
+            labelList selected(8, -1), anchorFace(4, -1);
+            labelHashSet selectedBad;
+            label nTargets = 0;
+            for( label j=0; j<4; ++j )
+            {
+                const std::map<label, label>::const_iterator it =
+                    badBaseFirstFace.find(preferred[j]);
+                if( it == badBaseFirstFace.end() ) continue;
+                selected[2*nTargets] = it->first;
+                anchorFace[nTargets++] = it->second;
+                selectedBad.insert(it->first);
+            }
+            for( std::map<label, label>::const_iterator it = badBaseFirstFace.begin();
+                 it != badBaseFirstFace.end() && nTargets < 4; ++it )
+            {
+                if( selectedBad.found(it->first) ) continue;
+                selected[2*nTargets] = it->first;
+                anchorFace[nTargets++] = it->second;
+                selectedBad.insert(it->first);
+            }
+
+            scalarField controlDistance2(4, GREAT);
+            for( label fi=0; fi<nInternalFaces; ++fi )
+            {
+                const label b = sameBase(fi);
+                if( b < 0 || touchedBadBases.found(b) ) continue;
+                for( label j=0; j<nTargets; ++j )
+                {
+                    const label target = selected[2*j], af = anchorFace[j];
+                    if( basePatch[b] != basePatch[target]
+                     || baseLayers[b] != baseLayers[target]
+                     || faces[fi].size() != faces[af].size() ) continue;
+                    const scalar d2 = magSqr(faceCtrs[fi] - faceCtrs[af]);
+                    if( d2 < controlDistance2[j] )
+                    {
+                        controlDistance2[j] = d2;
+                        selected[2*j+1] = b;
+                    }
+                }
+            }
+
+            OFstream fs("cfmitchV51d_Q1_faces.csv");
+            OFstream vs("cfmitchV51d_Q1_vertices.csv");
+            OFstream hs("cfmitchV51d_Q1_hairs.csv");
+            OFstream bs("cfmitchV51d_Q1_bases.csv");
+            fs.precision(17); vs.precision(17);
+            hs.precision(17); bs.precision(17);
+            fs << "pair,control,baseBf,patch,baseLayers,face,owner,neighbour,nPoints,"
+               << "badFaceTet,ownerEdgeBad,neighbourEdgeBad,sharedBaseBad,"
+               << "bestSharedQuality,fcX,fcY,fcZ,areaX,areaY,areaZ,"
+               << "ownX,ownY,ownZ,neiX,neiY,neiZ,ownVolume,neiVolume" << nl;
+            vs << "pair,control,face,corner,point,x,y,z,ownerEdgeQuality,"
+               << "neighbourEdgeQuality,ownerFanMinQuality,neighbourFanMinQuality" << nl;
+            hs << "splitEdge,startPoint,endPoint,row,nSegments,point,x,y,z,"
+               << "q0Present,q0X,q0Y,q0Z" << nl;
+            bs << "pair,control,baseBf,patch,baseLayers,corner,point,x,y,z" << nl;
+
+            labelHashSet wantedPoints, matchedPoints;
+            labelList written(8, 0);
+            label skippedFaces = 0, skippedHairs = 0, nHairs = 0;
+            for( label slot=0; slot<2*nTargets; ++slot )
+            {
+                const label b = selected[slot];
+                if( b < 0 ) continue;
+                const label q0Face = q1Probe->q0BoundaryStart + b;
+                if( q0Face >= 0 && q0Face < label(q1Probe->q0Faces.size()) )
+                {
+                    const face& bf = q1Probe->q0Faces[q0Face];
+                    forAll(bf, k)
+                    {
+                        const point& p = q1Probe->q0Points[bf[k]];
+                        bs << slot/2 << ',' << slot%2 << ',' << b << ','
+                           << basePatch[b] << ',' << baseLayers[b] << ',' << k
+                           << ',' << bf[k] << ',' << p.x() << ',' << p.y()
+                           << ',' << p.z() << nl;
+                    }
+                }
+            }
+
+            // Export all same-base interfaces in each selected stack, capped
+            // at 64 faces per selection and 32 vertices per face.
+            for( label fi=0; fi<nInternalFaces; ++fi )
+            {
+                const label b = sameBase(fi);
+                if( b < 0 ) continue;
+                for( label slot=0; slot<2*nTargets; ++slot )
+                {
+                    if( b != selected[slot] ) continue;
+                    const face& f = faces[fi];
+                    if( written[slot] >= 64 || f.size() < 3 || f.size() > 32 )
+                    { ++skippedFaces; continue; }
+                    const label o = own[fi], n = nei[fi];
+                    bool ownBad = false, neiBad = false;
+                    scalar bestShared = -GREAT;
+                    forAll(f, k)
+                    {
+                        const point& p = points[f[k]];
+                        const point& pNext = points[f.nextLabel(k)];
+                        const scalar oq =
+                            tetPointRef(p, pNext, faceCtrs[fi], cellCtrs[o]).quality();
+                        const scalar nq =
+                            tetPointRef(p, pNext, faceCtrs[fi], cellCtrs[n]).quality();
+                        const scalar of = minFaceTetQuality(cellCtrs[o], fi, true, k);
+                        const scalar nf = minFaceTetQuality(cellCtrs[n], fi, false, k);
+                        ownBad = ownBad || oq > -tetTol;
+                        neiBad = neiBad || nq < tetTol;
+                        bestShared = Foam::max(bestShared, Foam::min(of, nf));
+                        vs << slot/2 << ',' << slot%2 << ',' << fi << ',' << k
+                           << ',' << f[k] << ',' << p.x() << ',' << p.y() << ','
+                           << p.z() << ',' << oq << ',' << nq << ',' << of << ','
+                           << nf << nl;
+                        wantedPoints.insert(f[k]);
+                    }
+                    const vector& fc = faceCtrs[fi];
+                    const vector& a = faceAreas[fi];
+                    const vector& oc = cellCtrs[o];
+                    const vector& nc = cellCtrs[n];
+                    fs << slot/2 << ',' << slot%2 << ',' << b << ',' << basePatch[b]
+                       << ',' << baseLayers[b] << ',' << fi << ',' << o << ',' << n
+                       << ',' << f.size() << ',' << label(result.badFaceTetFaceSet.found(fi))
+                       << ',' << label(ownBad) << ',' << label(neiBad)
+                       << ',' << label(!(bestShared > tetTol)) << ',' << bestShared
+                       << ',' << fc.x() << ',' << fc.y() << ',' << fc.z()
+                       << ',' << a.x() << ',' << a.y() << ',' << a.z()
+                       << ',' << oc.x() << ',' << oc.y() << ',' << oc.z()
+                       << ',' << nc.x() << ',' << nc.y() << ',' << nc.z()
+                       << ',' << cellVol3[o]/3.0 << ',' << cellVol3[n]/3.0 << nl;
+                    ++written[slot];
+                }
+            }
+
+            // Sparse reverse lookup: scan existing rows, retain only hairs
+            // containing exported face vertices. No mesh-sized reverse map.
+            forAll(hairRows, seI)
+            {
+                if( seI >= label(hairs.size()) ) { ++skippedHairs; continue; }
+                bool needed = false;
+                forAllRow(hairRows, seI, k)
+                    if( wantedPoints.found(hairRows(seI, k)) ) needed = true;
+                if( !needed ) continue;
+                const label nr = hairRows.sizeOfRow(seI);
+                if( nr < 2 || nr > 128 ) { ++skippedHairs; continue; }
+                ++nHairs;
+                forAllRow(hairRows, seI, k)
+                {
+                    const label pi = hairRows(seI, k);
+                    if( pi < 0 || pi >= label(points.size()) )
+                    { ++skippedHairs; continue; }
+                    if( wantedPoints.found(pi) ) matchedPoints.insert(pi);
+                    const point& p = points[pi];
+                    const bool hadQ0 = pi < label(q1Probe->q0Points.size());
+                    const point oldP = hadQ0 ? q1Probe->q0Points[pi] : point::zero;
+                    hs << seI << ',' << hairs[seI].start() << ',' << hairs[seI].end()
+                       << ',' << k << ',' << nr-1 << ',' << pi << ',' << p.x()
+                       << ',' << p.y() << ',' << p.z() << ',' << label(hadQ0)
+                       << ',' << oldP.x() << ',' << oldP.y() << ',' << oldP.z() << nl;
+                }
+            }
+
+            Info << "CFMITCH V5.1d Q1 TET EVENTS:"
+                 << " invalidFace=" << tetEventKinds[0]
+                 << " ownerEdge=" << tetEventKinds[1]
+                 << " neighbourEdge=" << tetEventKinds[2]
+                 << " sharedBase=" << tetEventKinds[3]
+                 << " boundaryBase=" << tetEventKinds[4]
+                 << " total=" << result.faceTetErrorEvents << endl;
+            for( label j=0; j<nTargets; ++j )
+            {
+                Info << "CFMITCH V5.1d Q1 PROBE PAIR: pair=" << j
+                     << " badBase=" << selected[2*j]
+                     << " controlBase=" << selected[2*j+1]
+                     << " badRows=" << written[2*j]
+                     << " controlRows=" << written[2*j+1]
+                     << " nearestFaceDistance="
+                     << (selected[2*j+1] >= 0 ? Foam::sqrt(controlDistance2[j]) : scalar(-1))
+                     << endl;
+            }
+            Info << "CFMITCH V5.1d Q1 PROBE EXPORT: pairs=" << nTargets
+                 << " hairs=" << nHairs << " wantedPoints=" << wantedPoints.size()
+                 << " unmatchedPoints=" << wantedPoints.size()-matchedPoints.size()
+                 << " skippedFaces=" << skippedFaces << " skippedHairs=" << skippedHairs
+                 << " streamsGood=" << label(fs.good() && vs.good() && hs.good() && bs.good())
+                 << " files=cfmitchV51d_Q1_{faces,vertices,hairs,bases}.csv" << endl;
+        }
     }
 }
 
@@ -676,6 +1728,17 @@ static void printOpenFOAMCandidateQuality
         << " minSignedVol=" << quality.minSignedVol
         << " zeroFaceCells=" << quality.zeroFaceCells
         << " centreFallbackCells=" << quality.centreFallbackCells
+        << " smallWeightFaces=" << quality.smallWeightFaces
+        << " minFaceWeight=" << quality.minFaceWeight
+        << " smallVolRatioFaces=" << quality.smallVolRatioFaces
+        << " minVolRatio=" << quality.minVolRatio
+        << " smallDetCells=" << quality.smallDeterminantCells
+        << " minDet=" << quality.minDeterminant
+        << " faceTetEvaluated="
+        << (quality.faceTetEvaluated ? "yes" : "no")
+        << " faceTetErrorEvents=" << quality.faceTetErrorEvents
+        << " faceTetUniqueFaces="
+        << quality.badFaceTetFaceSet.size()
         << endl;
 }
 
@@ -2636,10 +3699,21 @@ refLayers.setNeutralLayerScaleAtMeshPoint
                  << (preRefBLSnap.valid ? "yes" : "no") << endl;
         }
 
+        CFMitchOFHardQuality q0OFHard;
+        evaluateOpenFOAMHardQuality(mesh_, q0OFHard, true);
+        printOpenFOAMCandidateQuality("Q0", q0OFHard);
+
         //- Function-scope mirror of the inner twoPassAccepted flag, so the
         //- blPoints_ harvest below (two scopes shallower) can tell whether
         //- the pass-2 point set is already in place.
         bool blPointsFromPass2 = false;
+
+        // CFMitch V5.1m: provenance for the BL topology that is actually
+        // retained. Point compaction does not change cell labels, so this
+        // map remains valid until the later mesh renumbering provided its
+        // logical size still matches the active cell count.
+        labelList v51mActiveBLProvenance;
+        word v51mActiveBLProvenanceStage("unset");
 
         // ---- BLCOVERAGE base-face snapshot (pre-refBL, report-only) ----
         labelList  blcovBaseFacePatch;
@@ -2728,6 +3802,10 @@ refLayers.setNeutralLayerScaleAtMeshPoint
         }
 
         blTopoAudit(mesh_, "POST_REFBL_PASS1");
+
+        v51mActiveBLProvenance =
+            refLayers.cellToBaseBndFace();
+        v51mActiveBLProvenanceStage = "Q1";
 
         // Post-refBL provenance diagnostic.
         // Dumps all BL-generated cells to CSV for direct query.
@@ -2940,9 +4018,453 @@ refLayers.setNeutralLayerScaleAtMeshPoint
                             q1NNeg, q1NBelowVS
                         );
 
+                        const CFMitchQ1FaceTetProbe q1Probe =
+                        {
+                            refLayers,
+                            blcovBaseFacePatch,
+                            preRefBLSnap.points,
+                            preRefBLSnap.faces,
+                            preRefBLSnap.patchStart.size()
+                          ? preRefBLSnap.patchStart[0] : -1
+                        };
                         CFMitchOFHardQuality q1OFHard;
-                        evaluateOpenFOAMHardQuality(mesh_, q1OFHard);
+                        evaluateOpenFOAMHardQuality
+                        (
+                            mesh_, q1OFHard, true,
+                            selectedBoundaryLayerArchitecture(meshDict_)
+                                == "constraintPlanner" ? &q1Probe : nullptr
+                        );
                         printOpenFOAMCandidateQuality("Q1", q1OFHard);
+
+                        // -------------------------------------------------
+                        // CFMitch V5.1b -- Q1 advanced-quality provenance.
+                        //
+                        // Classify Foundation-style FV failures using the
+                        // stable post-refBL cell -> original base bfI map.
+                        //
+                        // This is report-only and changes no acceptance gate.
+                        // -------------------------------------------------
+                        {
+                            const labelList& q1Own = mesh_.owner();
+                            const labelList& q1Nei = mesh_.neighbour();
+
+                            const label nPatches =
+                                mesh_.boundaries().size();
+
+                            auto q1BaseFace =
+                            [&]
+                            (
+                                const label cellI
+                            ) -> label
+                            {
+                                if
+                                (
+                                    cellI >= 0
+                                 && cellI < label(prov.size())
+                                )
+                                    return prov[cellI];
+
+                                return -1;
+                            };
+
+                            auto q1Patch =
+                            [&]
+                            (
+                                const label bfI
+                            ) -> label
+                            {
+                                if
+                                (
+                                    bfI >= 0
+                                 && bfI <
+                                    label(blcovBaseFacePatch.size())
+                                )
+                                    return blcovBaseFacePatch[bfI];
+
+                                return -1;
+                            };
+
+                            // Face classification buckets:
+                            //
+                            //   0 nonBL <-> nonBL
+                            //   1 BL    <-> nonBL
+                            //   2 BL    <-> BL, same base bfI
+                            //   3 BL    <-> BL, same patch, different bfI
+                            //   4 BL    <-> BL, different/unknown patch
+                            auto classifyQ1Face =
+                            [&]
+                            (
+                                const label faceI
+                            ) -> label
+                            {
+                                if
+                                (
+                                    faceI < 0
+                                 || faceI >= label(q1Own.size())
+                                 || faceI >= label(q1Nei.size())
+                                )
+                                    return 4;
+
+                                const label ownCell =
+                                    q1Own[faceI];
+
+                                const label neiCell =
+                                    q1Nei[faceI];
+
+                                const label ownBf =
+                                    q1BaseFace(ownCell);
+
+                                const label neiBf =
+                                    q1BaseFace(neiCell);
+
+                                const bool ownBL = ownBf >= 0;
+                                const bool neiBL = neiBf >= 0;
+
+                                if( !ownBL && !neiBL )
+                                    return 0;
+
+                                if( ownBL != neiBL )
+                                    return 1;
+
+                                if( ownBf == neiBf )
+                                    return 2;
+
+                                const label ownPatch =
+                                    q1Patch(ownBf);
+
+                                const label neiPatch =
+                                    q1Patch(neiBf);
+
+                                if
+                                (
+                                    ownPatch >= 0
+                                 && ownPatch == neiPatch
+                                )
+                                    return 3;
+
+                                return 4;
+                            };
+
+                            FixedList<label, 5>
+                                weightClass(label(0));
+
+                            FixedList<label, 5>
+                                ratioClass(label(0));
+
+                            FixedList<label, 5>
+                                faceTetClass(label(0));
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallWeightFaceSet,
+                                q1WIt
+                            )
+                            {
+                                ++weightClass
+                                [
+                                    classifyQ1Face(q1WIt.key())
+                                ];
+                            }
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallVolRatioFaceSet,
+                                q1RIt
+                            )
+                            {
+                                ++ratioClass
+                                [
+                                    classifyQ1Face(q1RIt.key())
+                                ];
+                            }
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.badFaceTetFaceSet,
+                                q1TIt
+                            )
+                            {
+                                ++faceTetClass
+                                [
+                                    classifyQ1Face(q1TIt.key())
+                                ];
+                            }
+
+                            label q1DetBL = 0;
+                            label q1DetNonBL = 0;
+                            label q1DetUnknownPatch = 0;
+
+                            labelList q1DetByPatch
+                            (
+                                nPatches,
+                                0
+                            );
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallDeterminantCellSet,
+                                q1DIt
+                            )
+                            {
+                                const label cellI =
+                                    q1DIt.key();
+
+                                const label bfI =
+                                    q1BaseFace(cellI);
+
+                                if( bfI < 0 )
+                                {
+                                    ++q1DetNonBL;
+                                    continue;
+                                }
+
+                                ++q1DetBL;
+
+                                const label patchI =
+                                    q1Patch(bfI);
+
+                                if
+                                (
+                                    patchI >= 0
+                                 && patchI < nPatches
+                                )
+                                {
+                                    ++q1DetByPatch[patchI];
+                                }
+                                else
+                                {
+                                    ++q1DetUnknownPatch;
+                                }
+                            }
+
+                            Info
+                                << "CFMITCH V5.1b Q1 FACE PROVENANCE:"
+                                << " metric=weight"
+                                << " total="
+                                << q1OFHard.smallWeightFaceSet.size()
+                                << " nonBL_nonBL="
+                                << weightClass[0]
+                                << " BL_nonBL="
+                                << weightClass[1]
+                                << " BL_BL_sameBase="
+                                << weightClass[2]
+                                << " BL_BL_samePatchDiffBase="
+                                << weightClass[3]
+                                << " BL_BL_diffPatch="
+                                << weightClass[4]
+                                << endl;
+
+                            Info
+                                << "CFMITCH V5.1b Q1 FACE PROVENANCE:"
+                                << " metric=volRatio"
+                                << " total="
+                                << q1OFHard.smallVolRatioFaceSet.size()
+                                << " nonBL_nonBL="
+                                << ratioClass[0]
+                                << " BL_nonBL="
+                                << ratioClass[1]
+                                << " BL_BL_sameBase="
+                                << ratioClass[2]
+                                << " BL_BL_samePatchDiffBase="
+                                << ratioClass[3]
+                                << " BL_BL_diffPatch="
+                                << ratioClass[4]
+                                << endl;
+
+                            Info
+                                << "CFMITCH V5.1c Q1 FACE PROVENANCE:"
+                                << " metric=faceTet"
+                                << " errorEvents="
+                                << q1OFHard.faceTetErrorEvents
+                                << " uniqueFaces="
+                                << q1OFHard.badFaceTetFaceSet.size()
+                                << " nonBL_nonBL="
+                                << faceTetClass[0]
+                                << " BL_nonBL="
+                                << faceTetClass[1]
+                                << " BL_BL_sameBase="
+                                << faceTetClass[2]
+                                << " BL_BL_samePatchDiffBase="
+                                << faceTetClass[3]
+                                << " BL_BL_diffPatch="
+                                << faceTetClass[4]
+                                << endl;
+
+                            Info
+                                << "CFMITCH V5.1b Q1 CELL PROVENANCE:"
+                                << " metric=determinant"
+                                << " total="
+                                << q1OFHard.smallDeterminantCellSet.size()
+                                << " BL=" << q1DetBL
+                                << " nonBL=" << q1DetNonBL
+                                << " unknownPatch="
+                                << q1DetUnknownPatch
+                                << endl;
+
+                            const PtrList<boundaryPatch>& q1Bnd =
+                                mesh_.boundaries();
+
+                            forAll(q1DetByPatch, patchI)
+                            {
+                                if( q1DetByPatch[patchI] == 0 )
+                                    continue;
+
+                                Info
+                                    << "CFMITCH V5.1b Q1 DET PATCH:"
+                                    << " patch="
+                                    << q1Bnd[patchI].patchName()
+                                    << " count="
+                                    << q1DetByPatch[patchI]
+                                    << endl;
+                            }
+
+                            // Print a bounded sample of the actual failing
+                            // faces/cells for later geometric inspection.
+                            label q1Printed = 0;
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallWeightFaceSet,
+                                q1WIt
+                            )
+                            {
+                                if( q1Printed >= 20 )
+                                    break;
+
+                                const label faceI = q1WIt.key();
+                                const label ownCell = q1Own[faceI];
+                                const label neiCell = q1Nei[faceI];
+                                const label ownBf =
+                                    q1BaseFace(ownCell);
+                                const label neiBf =
+                                    q1BaseFace(neiCell);
+
+                                Info
+                                    << "CFMITCH V5.1b Q1 BAD WEIGHT:"
+                                    << " face=" << faceI
+                                    << " own=" << ownCell
+                                    << " nei=" << neiCell
+                                    << " ownBf=" << ownBf
+                                    << " neiBf=" << neiBf
+                                    << " ownPatch="
+                                    << q1Patch(ownBf)
+                                    << " neiPatch="
+                                    << q1Patch(neiBf)
+                                    << endl;
+
+                                ++q1Printed;
+                            }
+
+                            q1Printed = 0;
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallVolRatioFaceSet,
+                                q1RIt
+                            )
+                            {
+                                if( q1Printed >= 20 )
+                                    break;
+
+                                const label faceI = q1RIt.key();
+                                const label ownCell = q1Own[faceI];
+                                const label neiCell = q1Nei[faceI];
+                                const label ownBf =
+                                    q1BaseFace(ownCell);
+                                const label neiBf =
+                                    q1BaseFace(neiCell);
+
+                                Info
+                                    << "CFMITCH V5.1b Q1 BAD VOLRATIO:"
+                                    << " face=" << faceI
+                                    << " own=" << ownCell
+                                    << " nei=" << neiCell
+                                    << " ownBf=" << ownBf
+                                    << " neiBf=" << neiBf
+                                    << " ownPatch="
+                                    << q1Patch(ownBf)
+                                    << " neiPatch="
+                                    << q1Patch(neiBf)
+                                    << endl;
+
+                                ++q1Printed;
+                            }
+
+                            q1Printed = 0;
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.badFaceTetFaceSet,
+                                q1TIt
+                            )
+                            {
+                                if( q1Printed >= 20 )
+                                    break;
+
+                                const label faceI = q1TIt.key();
+                                const label ownCell = q1Own[faceI];
+
+                                const label neiCell =
+                                    faceI < label(q1Nei.size())
+                                  ? q1Nei[faceI]
+                                  : -1;
+
+                                const label ownBf =
+                                    q1BaseFace(ownCell);
+
+                                const label neiBf =
+                                    q1BaseFace(neiCell);
+
+                                Info
+                                    << "CFMITCH V5.1c Q1 BAD FACETET:"
+                                    << " face=" << faceI
+                                    << " own=" << ownCell
+                                    << " nei=" << neiCell
+                                    << " ownBf=" << ownBf
+                                    << " neiBf=" << neiBf
+                                    << " ownPatch="
+                                    << q1Patch(ownBf)
+                                    << " neiPatch="
+                                    << q1Patch(neiBf)
+                                    << endl;
+
+                                ++q1Printed;
+                            }
+
+                            q1Printed = 0;
+
+                            forAllConstIter
+                            (
+                                labelHashSet,
+                                q1OFHard.smallDeterminantCellSet,
+                                q1DIt
+                            )
+                            {
+                                if( q1Printed >= 20 )
+                                    break;
+
+                                const label cellI = q1DIt.key();
+                                const label bfI =
+                                    q1BaseFace(cellI);
+
+                                Info
+                                    << "CFMITCH V5.1b Q1 BAD DET:"
+                                    << " cell=" << cellI
+                                    << " bfI=" << bfI
+                                    << " patch="
+                                    << q1Patch(bfI)
+                                    << endl;
+
+                                ++q1Printed;
+                            }
+                        }
 
                         // Preserve Q1 negative/near-zero cell identity and
                         // BL provenance across the Q1 -> Q0 rollback.  Cell
@@ -5703,6 +7225,11 @@ refLayers2.setNeutralLayerScaleAtMeshPoint
                                                 v34AcceptedCellToBaseBndFace =
                                                     refLayersAdaptive.
                                                         cellToBaseBndFace();
+
+                                                v51mActiveBLProvenance =
+                                                    v34AcceptedCellToBaseBndFace;
+                                                v51mActiveBLProvenanceStage =
+                                                    "V31_ADAPTIVE";
 
                                                 v34AcceptedRetreatSeedBfI.
                                                     clear();
@@ -9100,6 +10627,17 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
                 << (blUntangleUnusedBefore ? "bad" : "ok")
                 << endl;
 
+            CFMitchOFHardQuality blUntangleOFBefore;
+            evaluateOpenFOAMHardQuality
+            (
+                mesh_,
+                blUntangleOFBefore
+            );
+            printOpenFOAMCandidateQuality
+            (
+                "BL_UNTANGLE_PRE",
+                blUntangleOFBefore
+            );
 
             mOpt.untangleBoundaryLayer();
 
@@ -9107,6 +10645,18 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
             // All addressing derived from point coordinates may now be
             // stale.  Force exact post-motion recomputation.
             mesh_.clearAddressingData();
+
+            CFMitchOFHardQuality blUntangleOFAfter;
+            evaluateOpenFOAMHardQuality
+            (
+                mesh_,
+                blUntangleOFAfter
+            );
+            printOpenFOAMCandidateQuality
+            (
+                "BL_UNTANGLE_POST_ATTEMPT",
+                blUntangleOFAfter
+            );
 
             const bool blUntangleUnusedAfter =
                 polyMeshGenChecks::checkPoints(mesh_, false);
@@ -9269,6 +10819,17 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
 
                 mesh_.clearAddressingData();
 
+                CFMitchOFHardQuality blUntangleOFRollback;
+                evaluateOpenFOAMHardQuality
+                (
+                    mesh_,
+                    blUntangleOFRollback
+                );
+                printOpenFOAMCandidateQuality
+                (
+                    "BL_UNTANGLE_POST_ROLLBACK",
+                    blUntangleOFRollback
+                );
 
                 // Verify the rollback itself.  This must reproduce the
                 // pre-transaction hard validity state.
@@ -9819,6 +11380,4852 @@ refLayers3.setNeutralLayerScaleAtMeshPoint
                 << " primitiveSkewFaces=" << ofSkewFaces.size()
                 << " primitiveMaxSkew=" << ofMaxSkew
                 << endl;
+        }
+
+
+        // CFMitch V5.1e: bounded POST-RECOVERY experiment. Default OFF.
+        // No Q1 face IDs or pass-1 provenance survive into this selection.
+        // V5.1v replaces the centre-fan/four-prism experiment with a
+        // topology-minimal two-prism diagonal split.  V5.1w keeps the final
+        // BL cell intact as a transition cap so the core-side quad and core
+        // cell geometry are unchanged.  Both use the V5.1s transaction.
+        const bool runV51v =
+            meshDict_.found("cfmitchV51vDiagonalPrismRepair")
+         && readBool
+            (
+                meshDict_.lookup
+                ("cfmitchV51vDiagonalPrismRepair")
+            );
+        const bool runV51x =
+            meshDict_.found("cfmitchV51xAssembledLineage")
+         && readBool
+            (
+                meshDict_.lookup
+                ("cfmitchV51xAssembledLineage")
+            );
+        const bool runV51wExplicit =
+            meshDict_.found("cfmitchV51wTopCapDiagonalRepair")
+         && readBool
+            (
+                meshDict_.lookup
+                ("cfmitchV51wTopCapDiagonalRepair")
+            );
+        const bool runV51w = runV51wExplicit || runV51x;
+        const bool runV51sRequested =
+            runV51v || runV51w
+         ||
+            (
+                meshDict_.found("cfmitchV51sCommitSafeColumnRepair")
+             && readBool
+                (
+                    meshDict_.lookup
+                    ("cfmitchV51sCommitSafeColumnRepair")
+                )
+            );
+        if
+        (
+            runV51sRequested
+         ||
+            (
+                meshDict_.found("cfmitchV51eFaceFan")
+             && readBool(meshDict_.lookup("cfmitchV51eFaceFan"))
+            )
+        )
+        {
+            if( Pstream::parRun()
+             || selectedBoundaryLayerArchitecture(meshDict_) != "constraintPlanner" )
+                FatalErrorIn("CFMitchV51e")
+                    << "This experiment requires serial constraintPlanner."
+                    << exit(FatalError);
+
+            const bool runV51g =
+                meshDict_.found("cfmitchV51gCellSplitProbe")
+             && readBool(meshDict_.lookup("cfmitchV51gCellSplitProbe"));
+            const bool runV51h =
+                meshDict_.found("cfmitchV51hColumnPrismProbe")
+             && readBool(meshDict_.lookup("cfmitchV51hColumnPrismProbe"));
+            const bool runV51i =
+                meshDict_.found("cfmitchV51iSingleCellPrismProbe")
+             && readBool(meshDict_.lookup("cfmitchV51iSingleCellPrismProbe"));
+            const bool runV51j =
+                meshDict_.found("cfmitchV51jColumnCensus")
+             && readBool(meshDict_.lookup("cfmitchV51jColumnCensus"));
+            const bool runV51k =
+                runV51sRequested
+             ||
+                (
+                    meshDict_.found("cfmitchV51kMultiColumnProbe")
+                 && readBool
+                    (meshDict_.lookup("cfmitchV51kMultiColumnProbe"))
+                );
+            const bool runV51o =
+                runV51sRequested
+             ||
+                (
+                    meshDict_.found("cfmitchV51oProvenanceColumnProbe")
+                 && readBool
+                    (
+                        meshDict_.lookup
+                        ("cfmitchV51oProvenanceColumnProbe")
+                    )
+                );
+            const bool runV51l =
+                runV51o
+             ||
+                (
+                    meshDict_.found("cfmitchV51lProvenanceProbe")
+                 && readBool
+                    (
+                        meshDict_.lookup
+                        ("cfmitchV51lProvenanceProbe")
+                    )
+                );
+            if
+            (
+                runV51sRequested
+             && (runV51g || runV51h || runV51i || runV51j)
+            )
+            {
+                FatalErrorIn("CFMitchV51s")
+                    << "Production column retention cannot be combined "
+                    << "with V5.1g/h/i/j probes."
+                    << exit(FatalError);
+            }
+            if( runV51v && runV51w )
+            {
+                FatalErrorIn("CFMitchV51w")
+                    << "V5.1v and V5.1w topology modes are mutually "
+                    << "exclusive."
+                    << exit(FatalError);
+            }
+            if( runV51v )
+            {
+                Info << "CFMITCH V5.1v MODE:"
+                     << " topology=twoPrismDiagonal"
+                     << " transactional=true"
+                     << " exactStockConcavity=true"
+                     << endl;
+            }
+            if( runV51w )
+            {
+                Info << "CFMITCH V5.1w MODE:"
+                     << " topology=twoPrismDiagonalTopCap"
+                     << " splitLayers=14"
+                     << " transitionCap=true"
+                     << " coreInterfaceUnchanged=true"
+                     << " transactional=true"
+                     << " exactStockConcavity=true"
+                     << endl;
+            }
+            if( runV51x )
+            {
+                Info << "CFMITCH V5.1x MODE:"
+                     << " baselineTetMargins=true"
+                     << " assembledLineage=true"
+                     << " topology=V51w"
+                     << " diagnosticOnly=true"
+                     << " exactRollback=true"
+                     << endl;
+            }
+            label v51kColumnCap = 256;
+            if( meshDict_.found("cfmitchV51kColumnCap") )
+                v51kColumnCap = readLabel
+                (
+                    meshDict_.lookup("cfmitchV51kColumnCap")
+                );
+            v51kColumnCap = Foam::min
+            (
+                label(32768), Foam::max(label(1), v51kColumnCap)
+            );
+
+            if( runV51k )
+            {
+                Info << "CFMITCH V5.1r FULL CAP:"
+                     << " requested=" << v51kColumnCap
+                     << " hardCap=32768"
+                     << endl;
+            }
+
+            // V5.1q: diagnostic-only exclusion by deterministic V5.1k
+            // selection index. This tests whether rejecting the small
+            // geometrically difficult population leaves a strict-safe set.
+            labelHashSet v51qExcludeColumnIndices;
+            if( meshDict_.found("cfmitchV51qExcludeColumns") )
+            {
+                const labelList excluded
+                (
+                    meshDict_.lookup("cfmitchV51qExcludeColumns")
+                );
+                forAll(excluded, i)
+                    if( excluded[i] >= 0 )
+                        v51qExcludeColumnIndices.insert(excluded[i]);
+            }
+
+            const label selectionCap =
+                (
+                    runV51g || runV51h || runV51i
+                 || runV51j || runV51k || runV51l
+                ) ? 1 : 32;
+
+            CFMitchOFHardQuality before;
+            evaluateOpenFOAMHardQuality(mesh_, before, true, nullptr, true);
+            printOpenFOAMCandidateQuality("V51e_BEFORE", before);
+            if( runV51x )
+            {
+                const faceListPMG& xFaces = mesh_.faces();
+                const cellListPMG& xCells = mesh_.cells();
+                const pointFieldPMG& xPoints = mesh_.points();
+                const labelList& xOwner = mesh_.owner();
+                const labelList& xNeighbour = mesh_.neighbour();
+                const label xNInternal = mesh_.nInternalFaces();
+                const scalar xTetTol = sqr(small);
+
+                auto xCellAspect =
+                [&](const label cellI) -> scalar
+                {
+                    if( cellI < 0 || cellI >= label(xCells.size()) )
+                        return -1.0;
+                    labelHashSet vertexSet;
+                    const cell& c = xCells[cellI];
+                    forAll(c, cfI)
+                    {
+                        const face& f = xFaces[c[cfI]];
+                        forAll(f, fpI) vertexSet.insert(f[fpI]);
+                    }
+                    std::vector<label> vertices;
+                    vertices.reserve(vertexSet.size());
+                    forAllConstIter(labelHashSet, vertexSet, it)
+                        vertices.push_back(it.key());
+                    scalar minDistance = GREAT;
+                    scalar maxDistance = 0.0;
+                    for(std::size_t i=0; i<vertices.size(); ++i)
+                        for(std::size_t j=i+1; j<vertices.size(); ++j)
+                        {
+                            const scalar distance = mag
+                            (xPoints[vertices[i]]-xPoints[vertices[j]]);
+                            if( distance > VSMALL )
+                                minDistance = Foam::min
+                                (minDistance, distance);
+                            maxDistance = Foam::max(maxDistance, distance);
+                        }
+                    return minDistance < GREAT
+                      ? maxDistance/Foam::max(minDistance, scalar(VSMALL))
+                      : GREAT;
+                };
+
+                OFstream xCsv("cfmitchV51x_face_tet_margins.csv");
+                xCsv << "face,owner,neighbour,nVerts,ownerBase,neighbourBase,"
+                     << "ownerEdgeWorst,neighbourEdgeWorst,bestShared,"
+                     << "bestSharedBase,tetTolerance,ownerAspect,"
+                     << "neighbourAspect" << nl;
+                label xInternalBad = 0;
+                label xAdmissible = 0;
+                label xPositiveBelow = 0;
+                label xNearNegative = 0;
+                label xMaterialNegative = 0;
+                scalar xMinBest = GREAT;
+                scalar xMaxBest = -GREAT;
+                forAllConstIter
+                (
+                    labelHashSet, before.badFaceTetFaceSet, it
+                )
+                {
+                    const label faceI = it.key();
+                    if( faceI < 0 || faceI >= xNInternal ) continue;
+                    ++xInternalBad;
+                    const scalar ownerWorst =
+                        before.faceTetOwnerWorst[faceI];
+                    const scalar neighbourWorst =
+                        before.faceTetNeighbourWorst[faceI];
+                    const scalar bestShared =
+                        before.faceTetBestShared[faceI];
+                    const label bestBase =
+                        before.faceTetBestSharedBase[faceI];
+                    xMinBest = Foam::min(xMinBest, bestShared);
+                    xMaxBest = Foam::max(xMaxBest, bestShared);
+                    if( bestShared > xTetTol ) ++xAdmissible;
+                    else if( bestShared > 0.0 ) ++xPositiveBelow;
+                    else if( bestShared >= -1.0e-12 ) ++xNearNegative;
+                    else ++xMaterialNegative;
+                    const label ownerCell = xOwner[faceI];
+                    const label neighbourCell = xNeighbour[faceI];
+                    const label ownerBase =
+                        ownerCell < v51mActiveBLProvenance.size()
+                      ? v51mActiveBLProvenance[ownerCell] : -1;
+                    const label neighbourBase =
+                        neighbourCell < v51mActiveBLProvenance.size()
+                      ? v51mActiveBLProvenance[neighbourCell] : -1;
+                    xCsv << faceI << ',' << ownerCell << ','
+                         << neighbourCell << ',' << xFaces[faceI].size()
+                         << ',' << ownerBase << ',' << neighbourBase
+                         << ',' << ownerWorst << ',' << neighbourWorst
+                         << ',' << bestShared << ',' << bestBase
+                         << ',' << xTetTol << ','
+                         << xCellAspect(ownerCell) << ','
+                         << xCellAspect(neighbourCell) << nl;
+                }
+                Info << "CFMITCH V5.1x TET MARGIN CENSUS:"
+                     << " uniqueBad="
+                     << before.badFaceTetFaceSet.size()
+                     << " internalBad=" << xInternalBad
+                     << " admissibleShared=" << xAdmissible
+                     << " positiveBelowTolerance=" << xPositiveBelow
+                     << " nearNegative=" << xNearNegative
+                     << " materialNegative=" << xMaterialNegative
+                     << " minBestShared=" << xMinBest
+                     << " maxBestShared=" << xMaxBest
+                     << " tetTolerance=" << xTetTol
+                     << " csvGood=" << xCsv.good() << endl;
+            }
+            boolList inBL(mesh_.points().size(), false);
+            forAll(blPoints_, i)
+                if( blPoints_[i] >= 0 && blPoints_[i] < inBL.size() )
+                    inBL[blPoints_[i]] = true;
+
+            boolList split(mesh_.faces().size(), false);
+            label selected = 0, eligible = 0;
+            // std::map iteration makes the bounded selection deterministic.
+            for(const auto& item : before.fanCentres)
+            {
+                const label fi = item.first;
+                const face& f = mesh_.faces()[fi];
+                bool allBL = true;
+                forAll(f, j) allBL = allBL && inBL[f[j]];
+                if( !allBL ) continue;
+                ++eligible;
+                if( selected < selectionCap ) { split[fi] = true; ++selected; }
+            }
+            Info << "CFMITCH V5.1e SELECT: eligible=" << eligible
+                 << " selected=" << selected << " cap=" << selectionCap
+                 << " nonFinite=" << before.fanNonFinite << endl;
+
+            if( selected && before.fanNonFinite == 0 )
+            {
+                PreRefBLMeshSnapshot saved;
+                takePreRefBLSnapshot(saved);
+                const label oldNP = saved.points.size();
+                const label oldNF = saved.faces.size();
+                const label oldNI = mesh_.nInternalFaces();
+                const labelLongList savedBL(blPoints_);
+                labelHashSet oldLegacyNeg, oldLegacyPyr;
+                polyMeshGenChecks::checkCellVolumes(mesh_, false, &oldLegacyNeg);
+                polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &oldLegacyPyr);
+
+                boolList v51gRequestedCells(saved.cells.size(), false);
+                if( runV51g )
+                {
+                    const labelList& preFanOwn = mesh_.owner();
+                    const labelList& preFanNei = mesh_.neighbour();
+                    forAll(split, faceI) if( split[faceI] )
+                    {
+                        v51gRequestedCells[preFanOwn[faceI]] = true;
+                        v51gRequestedCells[preFanNei[faceI]] = true;
+                    }
+                }
+
+                decomposeFaces decomposer(mesh_);
+                decomposer.decomposeMeshFaces(split);
+                const VRWGraph& mapping = decomposer.newFacesForFace();
+                polyMeshGenModifier mod(mesh_);
+                label pi = oldNP;
+                for(const auto& item : before.fanCentres)
+                    if( split[item.first] )
+                        mod.pointsAccess()[pi++] = item.second;
+                mod.clearTopologyAddressing();
+
+                // Verify every face/cell mapping before geometry evaluation.
+                bool topologyOK =
+                    mesh_.points().size() == oldNP + selected
+                 && mesh_.faces().size() == oldNF + 3*selected
+                 && mesh_.cells().size() == saved.cells.size()
+                 && mapping.size() == oldNF;
+                labelList parent(mesh_.faces().size(), -1);
+                pi = oldNP;
+                if( topologyOK )
+                {
+                    for(label old=0; old<oldNF; ++old)
+                    {
+                        const label count = split[old] ? 4 : 1;
+                        if( mapping.sizeOfRow(old) != count )
+                        { topologyOK = false; break; }
+                        for(label k=0; k<count; ++k)
+                        {
+                            const label nf = mapping(old, k);
+                            if( nf < 0 || nf >= parent.size() || parent[nf] != -1 )
+                            { topologyOK = false; break; }
+                            parent[nf] = old;
+                            const face& f = mesh_.faces()[nf];
+                            if( split[old] )
+                            {
+                                if( f.size() != 3 || f[0] != saved.faces[old][k]
+                                 || f[1] != saved.faces[old][(k+1)%4] || f[2] != pi )
+                                    topologyOK = false;
+                            }
+                            else if( f != saved.faces[old] ) topologyOK = false;
+                        }
+                        if( split[old] ) ++pi;
+                    }
+                    forAll(parent, i) if( parent[i] < 0 ) topologyOK = false;
+                    if( topologyOK ) forAll(saved.cells, ci)
+                    {
+                        const cell& c = mesh_.cells()[ci];
+                        label j = 0;
+                        forAll(saved.cells[ci], k)
+                        {
+                            const label old = saved.cells[ci][k];
+                            forAllRow(mapping, old, r)
+                            {
+                                if( j >= c.size() || c[j] != mapping(old, r) )
+                                    topologyOK = false;
+                                ++j;
+                            }
+                        }
+                        if( j != c.size() ) topologyOK = false;
+                    }
+                    for(label i=0; i<oldNP; ++i)
+                        if( mesh_.points()[i] != saved.points[i] ) topologyOK = false;
+                    const auto& patches = mesh_.boundaries();
+                    if( patches.size() != saved.patchNames.size() ) topologyOK = false;
+                    else forAll(patches, i)
+                        if( patches[i].patchName() != saved.patchNames[i]
+                         || patches[i].patchSize() != saved.patchSize[i]
+                         || patches[i].patchStart() != saved.patchStart[i] + 3*selected )
+                            topologyOK = false;
+                    if( topologyOK && mesh_.nInternalFaces() != oldNI + 3*selected )
+                        topologyOK = false;
+                }
+
+                bool accept = false;
+                if( topologyOK )
+                {
+                    CFMitchOFHardQuality after;
+                    evaluateOpenFOAMHardQuality(mesh_, after, true, nullptr, true);
+                    printOpenFOAMCandidateQuality("V51e_TRIAL", after);
+                    OFstream csv("cfmitchV51e_delta.csv");
+                    csv << "metric,status,oldId,newId\n";
+                    label novel = 0;
+                    auto compare = [&](const word& metric,
+                        const labelHashSet& a, const labelHashSet& b,
+                        const bool cellIds) -> label
+                    {
+                        labelHashSet remaining;
+                        label newBad = 0, emitted = 0;
+                        forAllConstIter(labelHashSet, b, it)
+                        {
+                            const label n = it.key();
+                            const label old = cellIds ? n : parent[n];
+                            const bool existed = a.found(old);
+                            if( existed ) remaining.insert(old);
+                            else ++newBad;
+                            if( !existed || emitted < 128 )
+                            {
+                                csv << metric << ',' << (existed ? "remaining" : "new")
+                                    << ',' << old << ',' << n << '\n';
+                                if( existed ) ++emitted;
+                            }
+                        }
+                        Info << "CFMITCH V5.1e DELTA: metric=" << metric
+                             << " old=" << a.size() << " remainingOld=" << remaining.size()
+                             << " resolvedOld=" << a.size()-remaining.size()
+                             << " newBad=" << newBad << " after=" << b.size() << endl;
+                        novel += newBad;
+                        return newBad;
+                    };
+                    compare("faceTet", before.badFaceTetFaceSet, after.badFaceTetFaceSet, false);
+                    compare("pyramid", before.badPyramidFaces, after.badPyramidFaces, false);
+                    compare("nonOrthError", before.errorNonOrthFaces, after.errorNonOrthFaces, false);
+                    compare("severeNonOrth", before.fanSevereFaces, after.fanSevereFaces, false);
+                    compare("skew", before.fanSkewFaces, after.fanSkewFaces, false);
+                    compare("weight", before.smallWeightFaceSet, after.smallWeightFaceSet, false);
+                    compare("volRatio", before.smallVolRatioFaceSet, after.smallVolRatioFaceSet, false);
+                    compare("determinant", before.smallDeterminantCellSet, after.smallDeterminantCellSet, true);
+                    compare("negativeVolume", before.fanNegativeCells, after.fanNegativeCells, true);
+                    labelHashSet newLegacyNeg, newLegacyPyr;
+                    polyMeshGenChecks::checkCellVolumes(mesh_, false, &newLegacyNeg);
+                    polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &newLegacyPyr);
+                    compare("legacyNegVol", oldLegacyNeg, newLegacyNeg, true);
+                    compare("legacyPyramid", oldLegacyPyr, newLegacyPyr, false);
+                    label repaired = 0;
+                    for(const auto& item : before.fanCentres)
+                    {
+                        const label old = item.first;
+                        if( !split[old] ) continue;
+                        bool good = true;
+                        forAllRow(mapping, old, k)
+                        {
+                            const label nf = mapping(old, k);
+                            good = good && !after.badFaceTetFaceSet.found(nf);
+                            csv << "target,child," << old << ',' << nf << '\n';
+                        }
+                        if( good ) ++repaired;
+                    }
+                    scalar maxRelVolumeChange = 0;
+                    forAll(before.fanVolumes, i)
+                        maxRelVolumeChange = Foam::max(maxRelVolumeChange,
+                            mag(after.fanVolumes[i]-before.fanVolumes[i])
+                            /Foam::max(mag(before.fanVolumes[i]), scalar(VSMALL)));
+                    // Splitting one interface into four faces creates
+                    // multiple faces between the same cell pair. OpenFOAM
+                    // topology rejects that interface, so force rollback.
+                    const label newDuplicateNeighbourPairs = selected;
+
+                    accept = newDuplicateNeighbourPairs == 0
+                        && novel == 0 && repaired == selected
+                        && after.fanNonFinite == 0 && maxRelVolumeChange < 1e-8
+                        && after.zeroFaceCells == before.zeroFaceCells
+                        && after.centreFallbackCells == before.centreFallbackCells
+                        && after.faceTetErrorEvents < before.faceTetErrorEvents
+                        && after.badFaceTetFaceSet.size() < before.badFaceTetFaceSet.size()
+                        && after.pyramidErrors <= before.pyramidErrors
+                        && after.severeNonOrthFaces <= before.severeNonOrthFaces
+                        && after.highSkewFaces <= before.highSkewFaces
+                        && after.smallWeightFaces <= before.smallWeightFaces
+                        && after.smallVolRatioFaces <= before.smallVolRatioFaces
+                        && after.errorNonOrthFaces.size() <= before.errorNonOrthFaces.size()
+                        && newLegacyPyr.size() <= oldLegacyPyr.size()
+                        && after.maxNonOrth <= before.maxNonOrth + 1e-8
+                        && after.maxSkew <= before.maxSkew + 1e-8
+                        && after.minFaceWeight + 1e-12 >= before.minFaceWeight
+                        && after.minVolRatio + 1e-12 >= before.minVolRatio
+                        && after.minDeterminant + 1e-12 >= before.minDeterminant
+                        && csv.good();
+                    Info << "CFMITCH V5.1e GATE: repaired=" << repaired
+                         << " selected=" << selected << " newBad=" << novel
+                         << " maxRelVolumeChange=" << maxRelVolumeChange
+                         << " nonFinite=" << after.fanNonFinite
+                         << " newDuplicatePairs="
+                         << newDuplicateNeighbourPairs
+                         << " streamsGood=" << csv.good()
+                         << " accept=" << accept << endl;
+                }
+                if( runV51g && topologyOK )
+                {
+                    Info << "CFMITCH V5.1g CELL SPLIT PROBE: starting selectedFaces="
+                         << selected << endl;
+
+                    decomposeCells cellDecomposer(mesh_);
+                    cellDecomposer.decomposeMesh(v51gRequestedCells);
+                    mesh_.clearAddressingData();
+
+                    CFMitchOFHardQuality cellTrial;
+                    evaluateOpenFOAMHardQuality
+                    (
+                        mesh_, cellTrial, true, nullptr, true
+                    );
+                    printOpenFOAMCandidateQuality("V51g_CELL_TRIAL", cellTrial);
+
+                    const cellListPMG& trialCells = mesh_.cells();
+                    const labelList& trialOwn = mesh_.owner();
+                    const labelList& trialNei = mesh_.neighbour();
+                    const label trialNInternal = mesh_.nInternalFaces();
+                    label duplicatePairs = 0;
+                    forAll(trialCells, cellI)
+                    {
+                        labelHashSet seen, duplicates;
+                        const cell& c = trialCells[cellI];
+                        forAll(c, cfI)
+                        {
+                            const label faceI = c[cfI];
+                            if( faceI >= trialNInternal ) continue;
+                            label other = -1;
+                            if( trialOwn[faceI] == cellI ) other = trialNei[faceI];
+                            else if( trialNei[faceI] == cellI ) other = trialOwn[faceI];
+                            else FatalErrorIn("CFMitchV51g")
+                                << "Broken cell-face addressing" << abort(FatalError);
+                            if( cellI >= other ) continue;
+                            if( seen.found(other) && !duplicates.found(other) )
+                            {
+                                duplicates.insert(other);
+                                ++duplicatePairs;
+                            }
+                            else seen.insert(other);
+                        }
+                    }
+
+                    labelHashSet trialLegacyNeg, trialLegacyPyr;
+                    polyMeshGenChecks::checkCellVolumes
+                    (
+                        mesh_, false, &trialLegacyNeg
+                    );
+                    polyMeshGenChecks::checkFacePyramids
+                    (
+                        mesh_, false, -SMALL, &trialLegacyPyr
+                    );
+                    const bool topologyError =
+                        polyMeshGenChecks::checkTopology(mesh_, false);
+
+                    Info << "CFMITCH V5.1g RESULT:"
+                         << " points=" << oldNP << "->" << mesh_.points().size()
+                         << " faces=" << oldNF << "->" << mesh_.faces().size()
+                         << " cells=" << saved.cells.size() << "->" << mesh_.cells().size()
+                         << " duplicatePairs=" << duplicatePairs
+                         << " topologyError=" << topologyError
+                         << " faceTetEvents=" << before.faceTetErrorEvents
+                         << "->" << cellTrial.faceTetErrorEvents
+                         << " faceTetUnique=" << before.badFaceTetFaceSet.size()
+                         << "->" << cellTrial.badFaceTetFaceSet.size()
+                         << " legacyNeg=" << oldLegacyNeg.size()
+                         << "->" << trialLegacyNeg.size()
+                         << " legacyPyr=" << oldLegacyPyr.size()
+                         << "->" << trialLegacyPyr.size()
+                         << " nonFinite=" << cellTrial.fanNonFinite
+                         << endl;
+
+                    // Diagnostic only in V5.1g. The enclosing transaction
+                    // restores the exact pre-probe mesh below.
+                    accept = false;
+                }
+                if( runV51h || runV51i || runV51j || runV51k || runV51l )
+                {
+                    // V5.1h starts from the exact pre-fan state.  It splits
+                    // one complete 15-cell BL column into four triangular-
+                    // prism sectors, evaluates it globally, and always rolls
+                    // back.  No production geometry is retained.
+                    if( !restorePreRefBLSnapshot(saved) )
+                        FatalErrorIn("CFMitchV51h")
+                            << "Could not restore baseline before column probe"
+                            << exit(FatalError);
+                    blPoints_ = savedBL;
+                    mesh_.clearAddressingData();
+
+                    const faceListPMG& hFaces0 = mesh_.faces();
+                    const cellListPMG& hCells0 = mesh_.cells();
+                    const pointFieldPMG& hPoints0 = mesh_.points();
+                    const labelList& hOwn0 = mesh_.owner();
+                    const labelList& hNei0 = mesh_.neighbour();
+                    const label hNInternal0 = mesh_.nInternalFaces();
+                    const label hOldNP = hPoints0.size();
+                    const label hOldNF = hFaces0.size();
+                    const label hOldNC = hCells0.size();
+
+                    // V5.1s extends the retention contract to additional
+                    // stock geometry checks not represented in the earlier
+                    // hard-quality aggregate. Compare populations so this
+                    // repair can never increase an existing defect class.
+                    labelHashSet kConcaveBefore;
+                    labelHashSet kFlatBefore;
+                    labelHashSet kAreaBefore;
+                    labelHashSet kClosedBefore;
+                    labelHashSet kStockConcaveCellsBefore;
+                    if( runV51sRequested )
+                    {
+                        cfmitchStockConcaveCells
+                        (
+                            mesh_, kStockConcaveCellsBefore
+                        );
+                        polyMeshGenChecks::checkFaceAngles
+                        (
+                            mesh_, false, 10.0, &kConcaveBefore
+                        );
+                        polyMeshGenChecks::checkFaceFlatness
+                        (
+                            mesh_, false, 0.8, &kFlatBefore
+                        );
+                        polyMeshGenChecks::checkFaceAreas
+                        (
+                            mesh_, false, VSMALL, &kAreaBefore
+                        );
+                        polyMeshGenChecks::checkClosedCells
+                        (
+                            mesh_, false, 1000.0, &kClosedBefore
+                        );
+                    }
+
+                    label seedFace = -1;
+                    forAll(split, faceI)
+                        if( split[faceI] ) { seedFace = faceI; break; }
+
+                    auto hasPoint =
+                    [&](const face& f, const label pointI) -> bool
+                    {
+                        forAll(f, fpI) if( f[fpI] == pointI ) return true;
+                        return false;
+                    };
+
+                    auto allBLFace =
+                    [&](const label faceI) -> bool
+                    {
+                        const face& f = hFaces0[faceI];
+                        if( f.size() != 4 ) return false;
+                        forAll(f, fpI)
+                            if( f[fpI] < 0 || f[fpI] >= inBL.size()
+                             || !inBL[f[fpI]] ) return false;
+                        return true;
+                    };
+
+                    auto otherCell =
+                    [&](const label faceI, const label cellI) -> label
+                    {
+                        if( faceI < 0 || faceI >= hNInternal0 ) return -1;
+                        if( hOwn0[faceI] == cellI ) return hNei0[faceI];
+                        if( hNei0[faceI] == cellI ) return hOwn0[faceI];
+                        return -1;
+                    };
+
+                    auto oppositeFace =
+                    [&](const label cellI, const label ringFace) -> label
+                    {
+                        if( cellI < 0 || cellI >= hOldNC ) return -1;
+                        const cell& c = hCells0[cellI];
+                        if( c.size() != 6 || hFaces0[ringFace].size() != 4 )
+                            return -1;
+                        label opposite = -1;
+                        label count = 0;
+                        forAll(c, cfI)
+                        {
+                            const label faceI = c[cfI];
+                            if( faceI == ringFace || hFaces0[faceI].size() != 4 )
+                                continue;
+                            bool disjoint = true;
+                            const face& candidate = hFaces0[faceI];
+                            const face& ring = hFaces0[ringFace];
+                            forAll(candidate, fpI)
+                                if( hasPoint(ring, candidate[fpI]) )
+                                { disjoint = false; break; }
+                            if( disjoint ) { opposite = faceI; ++count; }
+                        }
+                        return count == 1 ? opposite : -1;
+                    };
+
+                    auto walkColumn =
+                    [&](const label startCell, labelLongList& outCells,
+                        labelLongList& outRings) -> bool
+                    {
+                        label currentCell = startCell;
+                        label currentRing = seedFace;
+                        labelHashSet seenCells;
+                        outRings.append(seedFace);
+                        for(label step=0; step<64; ++step)
+                        {
+                            if( currentCell < 0 || seenCells.found(currentCell) )
+                                return false;
+                            seenCells.insert(currentCell);
+                            const label nextRing =
+                                oppositeFace(currentCell, currentRing);
+                            if( nextRing < 0 ) return false;
+                            outCells.append(currentCell);
+                            outRings.append(nextRing);
+                            if( nextRing >= hNInternal0 || !allBLFace(nextRing) )
+                                return true;
+                            const label nextCell =
+                                otherCell(nextRing, currentCell);
+                            if( nextCell < 0 ) return false;
+                            currentCell = nextCell;
+                            currentRing = nextRing;
+                        }
+                        return false;
+                    };
+
+
+                    if( runV51j )
+                    {
+                        label allBLCandidates = 0;
+                        label internalQuadCandidates = 0;
+                        label classifiedFaces = 0;
+                        label invalidColumns = 0;
+                        label inconsistentColumns = 0;
+                        std::map<label, label> failuresByWallFace;
+                        std::map<label, label> cellsByWallFace;
+
+                        for(const auto& badItem : before.fanCentres)
+                        {
+                            const label candidateFace = badItem.first;
+                            if( candidateFace < 0 || candidateFace >= hOldNF )
+                                continue;
+                            bool allBL = true;
+                            const face& candidate = hFaces0[candidateFace];
+                            forAll(candidate, fpI)
+                                allBL = allBL
+                                 && candidate[fpI] >= 0
+                                 && candidate[fpI] < inBL.size()
+                                 && inBL[candidate[fpI]];
+                            if( !allBL ) continue;
+                            ++allBLCandidates;
+                            if( candidateFace >= hNInternal0
+                             || candidate.size() != 4 )
+                                continue;
+                            ++internalQuadCandidates;
+
+                            seedFace = candidateFace;
+                            labelLongList caCells, caRings, cbCells, cbRings;
+                            bool ok =
+                                walkColumn(hOwn0[seedFace], caCells, caRings)
+                             && walkColumn(hNei0[seedFace], cbCells, cbRings)
+                             && caRings.size() == caCells.size()+1
+                             && cbRings.size() == cbCells.size()+1
+                             && caCells.size()+cbCells.size() > 0;
+                            label wallFace = -1;
+                            if( ok )
+                            {
+                                const label endA = caRings[caRings.size()-1];
+                                const label endB = cbRings[cbRings.size()-1];
+                                const bool boundaryA = endA >= hNInternal0;
+                                const bool boundaryB = endB >= hNInternal0;
+                                ok = boundaryA != boundaryB;
+                                if( ok ) wallFace = boundaryA ? endA : endB;
+                            }
+                            labelHashSet uniqueCells;
+                            if( ok )
+                            {
+                                forAll(caCells, i)
+                                    ok = ok && uniqueCells.insert(caCells[i]);
+                                forAll(cbCells, i)
+                                    ok = ok && uniqueCells.insert(cbCells[i]);
+                            }
+                            if( !ok )
+                            {
+                                ++invalidColumns;
+                                continue;
+                            }
+
+                            ++classifiedFaces;
+                            ++failuresByWallFace[wallFace];
+                            const label nColumnCells = uniqueCells.size();
+                            const auto found = cellsByWallFace.find(wallFace);
+                            if( found == cellsByWallFace.end() )
+                                cellsByWallFace[wallFace] = nColumnCells;
+                            else if( found->second != nColumnCells )
+                                ++inconsistentColumns;
+                        }
+
+                        label oneFailure = 0, twoFailures = 0;
+                        label threeToFour = 0, fiveToEight = 0;
+                        label nineToSixteen = 0, aboveSixteen = 0;
+                        label maxFailures = 0;
+                        for(const auto& item : failuresByWallFace)
+                        {
+                            const label count = item.second;
+                            maxFailures = Foam::max(maxFailures, count);
+                            if( count == 1 ) ++oneFailure;
+                            else if( count == 2 ) ++twoFailures;
+                            else if( count <= 4 ) ++threeToFour;
+                            else if( count <= 8 ) ++fiveToEight;
+                            else if( count <= 16 ) ++nineToSixteen;
+                            else ++aboveSixteen;
+                        }
+
+                        label totalParentCells = 0;
+                        label minColumnCells = hOldNC;
+                        label maxColumnCells = 0;
+                        for(const auto& item : cellsByWallFace)
+                        {
+                            totalParentCells += item.second;
+                            minColumnCells = Foam::min
+                            (
+                                minColumnCells, item.second
+                            );
+                            maxColumnCells = Foam::max
+                            (
+                                maxColumnCells, item.second
+                            );
+                        }
+                        if( cellsByWallFace.empty() ) minColumnCells = 0;
+                        const label uniqueColumns = failuresByWallFace.size();
+                        const label estimatedPoints =
+                            totalParentCells + uniqueColumns;
+                        const label estimatedFaces =
+                            7*totalParentCells + 3*uniqueColumns;
+                        const label estimatedCells = 3*totalParentCells;
+
+                        Info << "CFMITCH V5.1j CENSUS:"
+                             << " badFaceTetUnique="
+                             << before.badFaceTetFaceSet.size()
+                             << " fanCandidates=" << before.fanCentres.size()
+                             << " allBL=" << allBLCandidates
+                             << " internalQuads=" << internalQuadCandidates
+                             << " classified=" << classifiedFaces
+                             << " invalid=" << invalidColumns
+                             << " inconsistent=" << inconsistentColumns
+                             << " uniqueColumns=" << uniqueColumns
+                             << " parentCells=" << totalParentCells
+                             << " minColumnCells=" << minColumnCells
+                             << " maxColumnCells=" << maxColumnCells
+                             << " maxFailuresPerColumn=" << maxFailures
+                             << " hist1=" << oneFailure
+                             << " hist2=" << twoFailures
+                             << " hist3to4=" << threeToFour
+                             << " hist5to8=" << fiveToEight
+                             << " hist9to16=" << nineToSixteen
+                             << " histAbove16=" << aboveSixteen
+                             << " estimatedAddedPoints=" << estimatedPoints
+                             << " estimatedAddedFaces=" << estimatedFaces
+                             << " estimatedAddedCells=" << estimatedCells
+                             << endl;
+                    }
+
+                    if( runV51k || runV51l )
+                    {
+                        const label kColumnCap = v51kColumnCap;
+                        const label kPriorityTarget =
+                            Foam::max(label(1), kColumnCap/2);
+                        std::map<label, label> kFailuresByWall;
+                        std::map<label, label> kSeedByWall;
+                        std::map<label, label> kCellsByWall;
+                        labelList kCellWall(hOldNC, -1);
+                        label kInvalidFaces = 0;
+                        label kCellCollisions = 0;
+                        label kV51oAcceptedSimple = 0;
+                        label kV51oRejectedComplex = 0;
+
+                        // V5.1m: select from the provenance attached to the
+                        // BL candidate that survived the transactional repair
+                        // pipeline. The size equality is a mandatory final
+                        // guard against stale cell labels.
+                        const labelList& kProvenance =
+                            v51mActiveBLProvenance;
+                        const bool kProvenanceUsable =
+                            !runV51l
+                         || label(kProvenance.size()) == hOldNC;
+                        label kProvenanceAccepted = 0;
+                        label kProvenanceRejected = 0;
+
+                        // V5.1o: unlike the geometry-only walker, stop on
+                        // the internal face where accepted BL provenance
+                        // changes.  The current cell and that terminating
+                        // ring belong to the column; the next (core) cell
+                        // does not.
+                        auto kWalkColumn =
+                        [&](const label startCell, const label expectedBase,
+                            labelLongList& outCells,
+                            labelLongList& outRings) -> bool
+                        {
+                            if( !runV51o )
+                                return walkColumn
+                                (
+                                    startCell, outCells, outRings
+                                );
+                            if
+                            (
+                                !kProvenanceUsable
+                             || expectedBase < 0
+                             || startCell < 0
+                             || startCell >= label(kProvenance.size())
+                             || kProvenance[startCell] != expectedBase
+                            )
+                                return false;
+
+                            label currentCell = startCell;
+                            label currentRing = seedFace;
+                            labelHashSet seenCells;
+                            outRings.append(seedFace);
+                            for(label step=0; step<64; ++step)
+                            {
+                                if
+                                (
+                                    currentCell < 0
+                                 || currentCell >= label(kProvenance.size())
+                                 || kProvenance[currentCell] != expectedBase
+                                 || seenCells.found(currentCell)
+                                )
+                                    return false;
+                                seenCells.insert(currentCell);
+                                const label nextRing =
+                                    oppositeFace(currentCell, currentRing);
+                                if( nextRing < 0 ) return false;
+                                outCells.append(currentCell);
+                                outRings.append(nextRing);
+                                if( nextRing >= hNInternal0 ) return true;
+
+                                const label nextCell =
+                                    otherCell(nextRing, currentCell);
+                                if
+                                (
+                                    nextCell < 0
+                                 || nextCell >= label(kProvenance.size())
+                                )
+                                    return false;
+                                if( kProvenance[nextCell] != expectedBase )
+                                    return true;
+                                if( !allBLFace(nextRing) ) return true;
+
+                                currentCell = nextCell;
+                                currentRing = nextRing;
+                            }
+                            return false;
+                        };
+
+                        // V5.1n: explain any remaining overlap before a
+                        // topology transaction is allowed to start.
+                        std::map<label, label> kCellsPerBase;
+                        std::map<label, label> kSeedsPerBase;
+                        std::map<label, label> kWallForBase;
+                        std::map<label, label> kBaseForWall;
+                        if( runV51l && kProvenanceUsable )
+                        {
+                            forAll(kProvenance, cellI)
+                                if( kProvenance[cellI] >= 0 )
+                                    ++kCellsPerBase[kProvenance[cellI]];
+                        }
+                        label kWalkedCandidates = 0;
+                        label kPathProvenanceMismatchCandidates = 0;
+                        label kPathProvenanceMismatchCells = 0;
+                        label kPathSizeMismatchCandidates = 0;
+                        label kBaseMultipleWallCandidates = 0;
+                        label kWallMultipleBaseCandidates = 0;
+                        label kWallOwnerMismatchCandidates = 0;
+                        label kAnomalySamples = 0;
+
+                        for(const auto& badItem : before.fanCentres)
+                        {
+                            const label candidateFace = badItem.first;
+                            if( candidateFace < 0
+                             || candidateFace >= hNInternal0
+                             || hFaces0[candidateFace].size() != 4 )
+                                continue;
+
+                            label candidateBase = -1;
+                            if( runV51l )
+                            {
+                                if( !kProvenanceUsable )
+                                {
+                                    ++kProvenanceRejected;
+                                    continue;
+                                }
+
+                                const label candidateOwner =
+                                    hOwn0[candidateFace];
+                                const label candidateNeighbour =
+                                    hNei0[candidateFace];
+
+                                if
+                                (
+                                    candidateOwner < 0
+                                 || candidateNeighbour < 0
+                                 || candidateOwner >=
+                                    label(kProvenance.size())
+                                 || candidateNeighbour >=
+                                    label(kProvenance.size())
+                                 || kProvenance[candidateOwner] < 0
+                                 || kProvenance[candidateOwner]
+                                 != kProvenance[candidateNeighbour]
+                                )
+                                {
+                                    ++kProvenanceRejected;
+                                    continue;
+                                }
+
+                                candidateBase =
+                                    kProvenance[candidateOwner];
+                                ++kSeedsPerBase[candidateBase];
+                                ++kProvenanceAccepted;
+                            }
+
+                            const face& candidate = hFaces0[candidateFace];
+                            bool allBL = true;
+                            forAll(candidate, fpI)
+                                allBL = allBL
+                                 && candidate[fpI] >= 0
+                                 && candidate[fpI] < inBL.size()
+                                 && inBL[candidate[fpI]];
+                            if( !allBL ) continue;
+
+                            seedFace = candidateFace;
+                            labelLongList caCells, caRings, cbCells, cbRings;
+                            bool ok =
+                                kWalkColumn
+                                (
+                                    hOwn0[seedFace], candidateBase,
+                                    caCells, caRings
+                                )
+                             && kWalkColumn
+                                (
+                                    hNei0[seedFace], candidateBase,
+                                    cbCells, cbRings
+                                )
+                             && caRings.size() == caCells.size()+1
+                             && cbRings.size() == cbCells.size()+1
+                             && caCells.size()+cbCells.size() > 0;
+                            label wallFace = -1;
+                            if( ok )
+                            {
+                                const label endA = caRings[caRings.size()-1];
+                                const label endB = cbRings[cbRings.size()-1];
+                                const bool boundaryA = endA >= hNInternal0;
+                                const bool boundaryB = endB >= hNInternal0;
+                                ok = boundaryA != boundaryB;
+                                if( ok ) wallFace = boundaryA ? endA : endB;
+                            }
+                            labelHashSet uniqueCells;
+                            if( ok )
+                            {
+                                forAll(caCells, i)
+                                    ok = ok && uniqueCells.insert(caCells[i]);
+                                forAll(cbCells, i)
+                                    ok = ok && uniqueCells.insert(cbCells[i]);
+                            }
+                            if( !ok )
+                            {
+                                ++kInvalidFaces;
+                                continue;
+                            }
+
+                            if( runV51l )
+                            {
+                                ++kWalkedCandidates;
+                                label pathMismatches = 0;
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    uniqueCells,
+                                    pathCellIt
+                                )
+                                {
+                                    const label pathCell = pathCellIt.key();
+                                    if
+                                    (
+                                        pathCell < 0
+                                     || pathCell >=
+                                        label(kProvenance.size())
+                                     || kProvenance[pathCell]
+                                     != candidateBase
+                                    )
+                                        ++pathMismatches;
+                                }
+
+                                if( pathMismatches > 0 )
+                                {
+                                    ++kPathProvenanceMismatchCandidates;
+                                    kPathProvenanceMismatchCells +=
+                                        pathMismatches;
+                                }
+
+                                label assignedCells = -1;
+                                const auto cellCountIt =
+                                    kCellsPerBase.find(candidateBase);
+                                if( cellCountIt != kCellsPerBase.end() )
+                                    assignedCells = cellCountIt->second;
+                                if( assignedCells != uniqueCells.size() )
+                                    ++kPathSizeMismatchCandidates;
+
+                                const auto baseWallIt =
+                                    kWallForBase.find(candidateBase);
+                                if( baseWallIt == kWallForBase.end() )
+                                    kWallForBase[candidateBase] = wallFace;
+                                else if( baseWallIt->second != wallFace )
+                                    ++kBaseMultipleWallCandidates;
+
+                                const auto wallBaseIt =
+                                    kBaseForWall.find(wallFace);
+                                if( wallBaseIt == kBaseForWall.end() )
+                                    kBaseForWall[wallFace] = candidateBase;
+                                else if( wallBaseIt->second != candidateBase )
+                                    ++kWallMultipleBaseCandidates;
+
+                                label wallOwnerBase = -1;
+                                if
+                                (
+                                    wallFace >= 0
+                                 && wallFace < hOldNF
+                                 && hOwn0[wallFace] >= 0
+                                 && hOwn0[wallFace] <
+                                    label(kProvenance.size())
+                                )
+                                    wallOwnerBase =
+                                        kProvenance[hOwn0[wallFace]];
+                                if( wallOwnerBase != candidateBase )
+                                    ++kWallOwnerMismatchCandidates;
+
+                                const bool anomaly =
+                                    pathMismatches > 0
+                                 || assignedCells != uniqueCells.size()
+                                 || wallOwnerBase != candidateBase
+                                 || (
+                                        baseWallIt != kWallForBase.end()
+                                     && baseWallIt->second != wallFace
+                                    )
+                                 || (
+                                        wallBaseIt != kBaseForWall.end()
+                                     && wallBaseIt->second != candidateBase
+                                    );
+                                if( anomaly && kAnomalySamples < 24 )
+                                {
+                                    ++kAnomalySamples;
+                                    Info << "CFMITCH V5.1n WALK ANOMALY:"
+                                         << " face=" << candidateFace
+                                         << " base=" << candidateBase
+                                         << " wall=" << wallFace
+                                         << " pathCells="
+                                         << uniqueCells.size()
+                                         << " assignedCells="
+                                         << assignedCells
+                                         << " pathBaseMismatches="
+                                         << pathMismatches
+                                         << " wallOwnerBase="
+                                         << wallOwnerBase
+                                         << endl;
+                                }
+                            }
+
+                            if( runV51o )
+                            {
+                                bool completeSimpleGroup = true;
+                                const auto countIt =
+                                    kCellsPerBase.find(candidateBase);
+                                completeSimpleGroup =
+                                    countIt != kCellsPerBase.end()
+                                 && countIt->second == uniqueCells.size();
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    uniqueCells,
+                                    simpleCellIt
+                                )
+                                {
+                                    const label cellI = simpleCellIt.key();
+                                    completeSimpleGroup =
+                                        completeSimpleGroup
+                                     && cellI >= 0
+                                     && cellI < label(kProvenance.size())
+                                     && kProvenance[cellI]
+                                        == candidateBase;
+                                }
+                                if( !completeSimpleGroup )
+                                {
+                                    ++kV51oRejectedComplex;
+                                    continue;
+                                }
+                                ++kV51oAcceptedSimple;
+                            }
+
+                            ++kFailuresByWall[wallFace];
+                            const auto known = kSeedByWall.find(wallFace);
+                            if( known == kSeedByWall.end() )
+                            {
+                                kSeedByWall[wallFace] = candidateFace;
+                                kCellsByWall[wallFace] = uniqueCells.size();
+                                forAllConstIter(labelHashSet, uniqueCells, it)
+                                {
+                                    const label cellI = it.key();
+                                    if( kCellWall[cellI] == -1 )
+                                        kCellWall[cellI] = wallFace;
+                                    else if( kCellWall[cellI] != wallFace )
+                                        ++kCellCollisions;
+                                }
+                            }
+                            else if( kCellsByWall[wallFace] != uniqueCells.size() )
+                            {
+                                ++kCellCollisions;
+                            }
+                        }
+
+                        if( runV51l )
+                        {
+                            label kMinCellsPerSeedBase = hOldNC;
+                            label kMaxCellsPerSeedBase = 0;
+                            for(const auto& seedBase : kSeedsPerBase)
+                            {
+                                const auto countIt =
+                                    kCellsPerBase.find(seedBase.first);
+                                const label count =
+                                    countIt == kCellsPerBase.end()
+                                  ? -1 : countIt->second;
+                                if( count >= 0 )
+                                {
+                                    kMinCellsPerSeedBase = Foam::min
+                                    (
+                                        kMinCellsPerSeedBase, count
+                                    );
+                                    kMaxCellsPerSeedBase = Foam::max
+                                    (
+                                        kMaxCellsPerSeedBase, count
+                                    );
+                                }
+                            }
+                            if( kSeedsPerBase.empty() )
+                                kMinCellsPerSeedBase = 0;
+
+                            Info << "CFMITCH V5.1n LINEAGE CENSUS:"
+                                 << " mappedBases=" << kCellsPerBase.size()
+                                 << " seedBases=" << kSeedsPerBase.size()
+                                 << " walked=" << kWalkedCandidates
+                                 << " pathProvenanceMismatchCandidates="
+                                 << kPathProvenanceMismatchCandidates
+                                 << " pathProvenanceMismatchCells="
+                                 << kPathProvenanceMismatchCells
+                                 << " pathSizeMismatchCandidates="
+                                 << kPathSizeMismatchCandidates
+                                 << " baseMultipleWallCandidates="
+                                 << kBaseMultipleWallCandidates
+                                 << " wallMultipleBaseCandidates="
+                                 << kWallMultipleBaseCandidates
+                                 << " wallOwnerMismatchCandidates="
+                                 << kWallOwnerMismatchCandidates
+                                 << " minCellsPerSeedBase="
+                                 << kMinCellsPerSeedBase
+                                 << " maxCellsPerSeedBase="
+                                 << kMaxCellsPerSeedBase
+                                 << endl;
+                        }
+
+                        if( runV51o )
+                        {
+                            Info << "CFMITCH V5.1o PROVENANCE STOP FILTER:"
+                                 << " acceptedSimple="
+                                 << kV51oAcceptedSimple
+                                 << " rejectedComplex="
+                                 << kV51oRejectedComplex
+                                 << " availableColumns="
+                                 << kFailuresByWall.size()
+                                 << " residualCellCollisions="
+                                 << kCellCollisions
+                                 << endl;
+                        }
+
+                        labelLongList kSelectedWalls;
+                        labelHashSet kSelectedSet;
+                        auto appendWall = [&](const label wallFace) -> bool
+                        {
+                            if( wallFace < 0
+                             || kSelectedWalls.size() >= kColumnCap
+                             || kSelectedSet.found(wallFace)
+                             || kSeedByWall.find(wallFace) == kSeedByWall.end() )
+                                return false;
+                            kSelectedSet.insert(wallFace);
+                            kSelectedWalls.append(wallFace);
+                            return true;
+                        };
+                        auto appendBestRemaining = [&]() -> bool
+                        {
+                            label bestWall = -1;
+                            label bestFailures = -1;
+                            for(const auto& item : kFailuresByWall)
+                            {
+                                if( kSelectedSet.found(item.first) ) continue;
+                                if( item.second > bestFailures
+                                 || (item.second == bestFailures
+                                  && (bestWall < 0 || item.first < bestWall)) )
+                                {
+                                    bestWall = item.first;
+                                    bestFailures = item.second;
+                                }
+                            }
+                            return appendWall(bestWall);
+                        };
+
+                        while( kSelectedWalls.size() < kPriorityTarget
+                            && appendBestRemaining() ) {}
+                        const label kPrioritySelected = kSelectedWalls.size();
+
+                        label kNeighbourAdded = 0;
+                        for(label selectedI=0;
+                            selectedI<kSelectedWalls.size()
+                         && kSelectedWalls.size()<kColumnCap; ++selectedI)
+                        {
+                            const label wallFace = kSelectedWalls[selectedI];
+                            seedFace = kSeedByWall[wallFace];
+                            labelLongList caCells, caRings, cbCells, cbRings;
+                            const label neighbourBase =
+                                runV51o
+                              ? kProvenance[hOwn0[seedFace]] : -1;
+                            const bool walked =
+                                kWalkColumn
+                                (
+                                    hOwn0[seedFace], neighbourBase,
+                                    caCells, caRings
+                                )
+                             && kWalkColumn
+                                (
+                                    hNei0[seedFace], neighbourBase,
+                                    cbCells, cbRings
+                                );
+                            if( !walked ) continue;
+                            for(label side=0; side<2
+                             && kSelectedWalls.size()<kColumnCap; ++side)
+                            {
+                                const labelLongList& sideCells =
+                                    side == 0 ? caCells : cbCells;
+                                forAll(sideCells, ci)
+                                {
+                                    const label cellI = sideCells[ci];
+                                    const cell& c = hCells0[cellI];
+                                    forAll(c, cfI)
+                                    {
+                                        const label other =
+                                            otherCell(c[cfI], cellI);
+                                        if( other >= 0 && other < hOldNC )
+                                        {
+                                            const label neighbourWall =
+                                                kCellWall[other];
+                                            if( neighbourWall != wallFace
+                                             && appendWall(neighbourWall) )
+                                                ++kNeighbourAdded;
+                                        }
+                                        if( kSelectedWalls.size()
+                                         >= kColumnCap ) break;
+                                    }
+                                    if( kSelectedWalls.size()
+                                     >= kColumnCap ) break;
+                                }
+                            }
+                        }
+
+                        const label kBeforeFill = kSelectedWalls.size();
+                        while( kSelectedWalls.size() < kColumnCap
+                            && appendBestRemaining() ) {}
+                        const label kFillAdded =
+                            kSelectedWalls.size()-kBeforeFill;
+
+                        const label kV51qBefore =
+                            kSelectedWalls.size();
+                        labelLongList kOriginalSelectionIndices;
+                        forAll(kSelectedWalls, selectedI)
+                            kOriginalSelectionIndices.append(selectedI);
+
+                        label kV51qRemoved = 0;
+                        if( !v51qExcludeColumnIndices.empty() )
+                        {
+                            labelLongList retainedWalls;
+                            labelLongList retainedOriginalIndices;
+                            forAll(kSelectedWalls, selectedI)
+                            {
+                                if
+                                (
+                                    v51qExcludeColumnIndices.found
+                                    (selectedI)
+                                )
+                                {
+                                    ++kV51qRemoved;
+                                    continue;
+                                }
+                                retainedWalls.append
+                                (kSelectedWalls[selectedI]);
+                                retainedOriginalIndices.append
+                                (kOriginalSelectionIndices[selectedI]);
+                            }
+                            kSelectedWalls.transfer(retainedWalls);
+                            kOriginalSelectionIndices.transfer
+                            (retainedOriginalIndices);
+                        }
+
+                        Info << "CFMITCH V5.1q EXCLUSION:"
+                             << " requested="
+                             << v51qExcludeColumnIndices.size()
+                             << " before=" << kV51qBefore
+                             << " removed=" << kV51qRemoved
+                             << " retained="
+                             << kSelectedWalls.size()
+                             << " strictGateUnchanged=true"
+                             << endl;
+
+                        auto assembleColumn =
+                        [&](const label columnSeed,
+                            labelLongList& outCells,
+                            labelLongList& outRings) -> bool
+                        {
+                            seedFace = columnSeed;
+                            labelLongList aCells, aRings, bCells, bRings;
+                            const label columnBase =
+                                runV51o
+                              ? kProvenance[hOwn0[seedFace]] : -1;
+                            bool ok =
+                                kWalkColumn
+                                (
+                                    hOwn0[seedFace], columnBase,
+                                    aCells, aRings
+                                )
+                             && kWalkColumn
+                                (
+                                    hNei0[seedFace], columnBase,
+                                    bCells, bRings
+                                );
+                            if( !ok ) return false;
+                            for(label i=aCells.size()-1; i>=0; --i)
+                                outCells.append(aCells[i]);
+                            forAll(bCells, i) outCells.append(bCells[i]);
+                            for(label i=aRings.size()-1; i>=0; --i)
+                                outRings.append(aRings[i]);
+                            for(label i=1; i<bRings.size(); ++i)
+                                outRings.append(bRings[i]);
+                            if( outRings.size() != outCells.size()+1
+                             || outCells.size() == 0 ) return false;
+                            labelHashSet uniqueCells;
+                            forAll(outCells, i)
+                                ok = ok && uniqueCells.insert(outCells[i]);
+                            return ok;
+                        };
+
+                        const label kNColumns = kSelectedWalls.size();
+                        List<labelLongList> kColumnCells(kNColumns);
+                        List<labelLongList> kRingFaces(kNColumns);
+                        List<List<labelList>> kRingPoints(kNColumns);
+                        List<List<FixedList<label, 4>>> kSideFaces(kNColumns);
+                        labelHashSet kAllParents, kAllRings;
+                        std::map<label, label> kSideUse;
+                        label kExpectedFailures = 0;
+                        label kTotalParents = 0;
+                        bool kDiscoveryOK =
+                            kNColumns > 0
+                         && kCellCollisions == 0
+                         && kProvenanceUsable;
+
+                        for(label colI=0; colI<kNColumns && kDiscoveryOK; ++colI)
+                        {
+                            const label wallFace = kSelectedWalls[colI];
+                            kDiscoveryOK = assembleColumn
+                            (
+                                kSeedByWall[wallFace],
+                                kColumnCells[colI],
+                                kRingFaces[colI]
+                            );
+                            if( !kDiscoveryOK ) break;
+                            kExpectedFailures += kFailuresByWall[wallFace];
+                            kTotalParents += kColumnCells[colI].size();
+                            forAll(kColumnCells[colI], layerI)
+                                kDiscoveryOK = kDiscoveryOK
+                                 && kAllParents.insert
+                                    (kColumnCells[colI][layerI]);
+                            forAll(kRingFaces[colI], ringI)
+                                kDiscoveryOK = kDiscoveryOK
+                                 && kAllRings.insert(kRingFaces[colI][ringI]);
+                            if( !kDiscoveryOK ) break;
+
+                            kRingPoints[colI].setSize
+                            (
+                                kRingFaces[colI].size()
+                            );
+                            kSideFaces[colI].setSize
+                            (
+                                kColumnCells[colI].size()
+                            );
+                            kRingPoints[colI][0].setSize(4);
+                            for(label j=0; j<4; ++j)
+                                kRingPoints[colI][0][j] =
+                                    hFaces0[kRingFaces[colI][0]][j];
+
+                            forAll(kColumnCells[colI], layerI)
+                            {
+                                const label lowFace =
+                                    kRingFaces[colI][layerI];
+                                const label highFace =
+                                    kRingFaces[colI][layerI+1];
+                                const face& high = hFaces0[highFace];
+                                kRingPoints[colI][layerI+1].setSize(4, -1);
+                                for(label j=0; j<4; ++j)
+                                {
+                                    const label lowPoint =
+                                        kRingPoints[colI][layerI][j];
+                                    label count[4] = {0, 0, 0, 0};
+                                    const cell& c =
+                                        hCells0[kColumnCells[colI][layerI]];
+                                    forAll(c, cfI)
+                                    {
+                                        const label faceI = c[cfI];
+                                        if( faceI == lowFace
+                                         || faceI == highFace ) continue;
+                                        const face& sf = hFaces0[faceI];
+                                        if( !hasPoint(sf, lowPoint) ) continue;
+                                        for(label q=0; q<4; ++q)
+                                            if( hasPoint(sf, high[q]) )
+                                                ++count[q];
+                                    }
+                                    label best=-1, bestCount=0, ties=0;
+                                    for(label q=0; q<4; ++q)
+                                    {
+                                        if( count[q] > bestCount )
+                                        {
+                                            best=q;
+                                            bestCount=count[q];
+                                            ties=1;
+                                        }
+                                        else if( count[q] == bestCount
+                                              && count[q] > 0 ) ++ties;
+                                    }
+                                    if( bestCount < 2 || ties != 1 )
+                                    {
+                                        kDiscoveryOK = false;
+                                        break;
+                                    }
+                                    kRingPoints[colI][layerI+1][j] =
+                                        high[best];
+                                }
+                                if( !kDiscoveryOK ) break;
+
+                                labelHashSet uniqueHigh;
+                                for(label j=0; j<4; ++j)
+                                    kDiscoveryOK = kDiscoveryOK
+                                     && uniqueHigh.insert
+                                        (kRingPoints[colI][layerI+1][j]);
+                                if( !kDiscoveryOK ) break;
+
+                                for(label j=0; j<4; ++j)
+                                {
+                                    const label n = (j+1)%4;
+                                    label found=-1, nFound=0;
+                                    const cell& c =
+                                        hCells0[kColumnCells[colI][layerI]];
+                                    forAll(c, cfI)
+                                    {
+                                        const label faceI = c[cfI];
+                                        if( faceI == lowFace
+                                         || faceI == highFace ) continue;
+                                        const face& sf = hFaces0[faceI];
+                                        if( sf.size() == 4
+                                         && hasPoint
+                                            (
+                                                sf,
+                                                kRingPoints[colI][layerI][j]
+                                            )
+                                         && hasPoint
+                                            (
+                                                sf,
+                                                kRingPoints[colI][layerI][n]
+                                            )
+                                         && hasPoint
+                                            (
+                                                sf,
+                                                kRingPoints[colI][layerI+1][j]
+                                            )
+                                         && hasPoint
+                                            (
+                                                sf,
+                                                kRingPoints[colI][layerI+1][n]
+                                            ) )
+                                        {
+                                            found = faceI;
+                                            ++nFound;
+                                        }
+                                    }
+                                    if( nFound != 1 )
+                                    {
+                                        kDiscoveryOK = false;
+                                        break;
+                                    }
+                                    kSideFaces[colI][layerI][j] = found;
+                                    ++kSideUse[found];
+                                }
+                            }
+                        }
+
+                        label kSharedSides = 0;
+                        label kMaxSideUse = 0;
+                        for(const auto& item : kSideUse)
+                        {
+                            kMaxSideUse = Foam::max
+                            (
+                                kMaxSideUse, item.second
+                            );
+                            if( item.second == 2 ) ++kSharedSides;
+                            if( item.second > 2 ) kDiscoveryOK = false;
+                        }
+
+                        if( runV51l )
+                        {
+                            Info << "CFMITCH V5.1m ACTIVE PROVENANCE:"
+                                 << " usable=" << kProvenanceUsable
+                                 << " stage="
+                                 << v51mActiveBLProvenanceStage
+                                 << " pass2=" << blPointsFromPass2
+                                 << " provenanceSize="
+                                 << kProvenance.size()
+                                 << " meshCells=" << hOldNC
+                                 << " acceptedSameBase="
+                                 << kProvenanceAccepted
+                                 << " rejectedOther="
+                                 << kProvenanceRejected
+                                 << endl;
+                        }
+
+                        Info << "CFMITCH V5.1k SELECT:"
+                             << " cap=" << kColumnCap
+                             << " available=" << kFailuresByWall.size()
+                             << " priority=" << kPrioritySelected
+                             << " neighbourAdded=" << kNeighbourAdded
+                             << " fillAdded=" << kFillAdded
+                             << " selected=" << kNColumns
+                             << " expectedFailures=" << kExpectedFailures
+                             << " invalidFaces=" << kInvalidFaces
+                             << " cellCollisions=" << kCellCollisions
+                             << endl;
+                        Info << "CFMITCH V5.1k DISCOVERY:"
+                             << " columns=" << kNColumns
+                             << " parents=" << kTotalParents
+                             << " rings=" << kAllRings.size()
+                             << " sharedSideFaces=" << kSharedSides
+                             << " maxSideUse=" << kMaxSideUse
+                             << " valid=" << kDiscoveryOK
+                             << endl;
+
+                        if( kDiscoveryOK && (runV51v || runV51w) )
+                        {
+                            auto vFaceSignature =
+                            [](const face& f) -> std::string
+                            {
+                                std::vector<label> vertices;
+                                vertices.reserve(f.size());
+                                forAll(f, fpI) vertices.push_back(f[fpI]);
+                                std::sort(vertices.begin(), vertices.end());
+                                std::ostringstream os;
+                                os << vertices.size() << ':';
+                                for(std::size_t i=0; i<vertices.size(); ++i)
+                                    os << vertices[i] << ',';
+                                return os.str();
+                            };
+                            auto vCellSignature =
+                            [&](const cell& c, const faceListPMG& fs)
+                                -> std::string
+                            {
+                                std::set<label> uniqueVertices;
+                                forAll(c, cfI)
+                                {
+                                    const face& f = fs[c[cfI]];
+                                    forAll(f, fpI)
+                                        uniqueVertices.insert(f[fpI]);
+                                }
+                                std::ostringstream os;
+                                os << uniqueVertices.size() << ':';
+                                for
+                                (
+                                    std::set<label>::const_iterator it =
+                                        uniqueVertices.begin();
+                                    it != uniqueVertices.end(); ++it
+                                )
+                                    os << *it << ',';
+                                return os.str();
+                            };
+                            std::set<std::string> vBaselineSevereKeys;
+                            std::set<std::string> vBaselineConcaveKeys;
+                            std::map<std::string, CFMitchV51xLineage>
+                                vFaceLineage;
+                            std::map<std::string, CFMitchV51xLineage>
+                                vCellLineage;
+                            std::set<label> vLineagePoints;
+                            auto vRecordFaceLineage =
+                            [&]
+                            (
+                                const face& f,
+                                const CFMitchV51xLineage& lineage
+                            )
+                            {
+                                vFaceLineage[vFaceSignature(f)] = lineage;
+                                forAll(f, fpI)
+                                    vLineagePoints.insert(f[fpI]);
+                            };
+                            if( runV51x )
+                            {
+                                forAllConstIter
+                                (
+                                    labelHashSet, before.fanSevereFaces, it
+                                )
+                                    vBaselineSevereKeys.insert
+                                    (vFaceSignature(hFaces0[it.key()]));
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    kStockConcaveCellsBefore, it
+                                )
+                                    vBaselineConcaveKeys.insert
+                                    (
+                                        vCellSignature
+                                        (hCells0[it.key()], hFaces0)
+                                    );
+                            }
+                            // V5.1v: choose one of the two quad diagonals for
+                            // every complete column.  A chosen hexahedron is
+                            // replaced by two triangular prisms.  The four
+                            // side quads are retained verbatim, so repaired
+                            // neighbours need no transition fan and no new
+                            // points are introduced.
+                            auto vFaceGeometry =
+                            [&](const face& f, vector& area, point& centre)
+                            {
+                                if( f.size() == 3 )
+                                {
+                                    const point& p0 = hPoints0[f[0]];
+                                    const point& p1 = hPoints0[f[1]];
+                                    const point& p2 = hPoints0[f[2]];
+                                    area =
+                                        (1.0/2.0)*((p1-p0)^(p2-p0));
+                                    centre =
+                                        (1.0/3.0)*(p0+p1+p2);
+                                    return;
+                                }
+
+                                point pAvg = point::zero;
+                                forAll(f, fpI)
+                                    pAvg += hPoints0[f[fpI]];
+                                if( f.size() ) pAvg /= f.size();
+                                vector sumA = vector::zero;
+                                forAll(f, fpI)
+                                    sumA +=
+                                        (hPoints0[f.nextLabel(fpI)]
+                                       - hPoints0[f[fpI]])
+                                      ^ (pAvg-hPoints0[f[fpI]]);
+                                const vector sumAHat = normalised(sumA);
+                                scalar sumAn = 0.0;
+                                vector sumAnc = vector::zero;
+                                forAll(f, fpI)
+                                {
+                                    const point& p0 =
+                                        hPoints0[f[fpI]];
+                                    const point& p1 =
+                                        hPoints0[f.nextLabel(fpI)];
+                                    const vector a =
+                                        (p1-p0)^(pAvg-p0);
+                                    const scalar an = a & sumAHat;
+                                    sumAn += an;
+                                    sumAnc += an*(p0+p1+pAvg);
+                                }
+                                area = (1.0/2.0)*sumA;
+                                centre = sumAn > vSmall
+                                    ? point((1.0/3.0)*sumAnc/sumAn)
+                                    : pAvg;
+                            };
+
+                            auto vTriangle =
+                            [&](const label a, const label b,
+                                const label c) -> face
+                            {
+                                face f(3);
+                                f[0]=a; f[1]=b; f[2]=c;
+                                return f;
+                            };
+
+                            auto vDiagonalFace =
+                            [&](const label colI, const label layerI,
+                                const label diagonal) -> face
+                            {
+                                const label a = diagonal;
+                                const label c = (diagonal+2)%4;
+                                face f(4);
+                                f[0] = kRingPoints[colI][layerI][a];
+                                f[1] =
+                                    kRingPoints[colI][layerI+1][a];
+                                f[2] =
+                                    kRingPoints[colI][layerI+1][c];
+                                f[3] = kRingPoints[colI][layerI][c];
+                                return f;
+                            };
+
+                            // Exact local equivalent of the stock V13
+                            // face-plane concavity test for a synthetic cell.
+                            auto vSyntheticCellConcave =
+                            [&](const List<face>& cellFaces,
+                                scalar& worstCosine) -> bool
+                            {
+                                labelHashSet vertices;
+                                forAll(cellFaces, cfI)
+                                    forAll(cellFaces[cfI], fpI)
+                                        vertices.insert
+                                        (cellFaces[cfI][fpI]);
+                                point estimate = point::zero;
+                                forAllConstIter
+                                (
+                                    labelHashSet, vertices, it
+                                )
+                                    estimate += hPoints0[it.key()];
+                                if( vertices.size() )
+                                    estimate /= vertices.size();
+
+                                vectorField areas(cellFaces.size());
+                                vectorField centres(cellFaces.size());
+                                forAll(cellFaces, cfI)
+                                {
+                                    vFaceGeometry
+                                    (
+                                        cellFaces[cfI],
+                                        areas[cfI], centres[cfI]
+                                    );
+                                    if
+                                    (
+                                        (areas[cfI]
+                                       &(centres[cfI]-estimate)) < 0
+                                    )
+                                        areas[cfI] *= -1.0;
+                                    areas[cfI] /= Foam::max
+                                    (
+                                        mag(areas[cfI]),
+                                        scalar(vSmall)
+                                    );
+                                }
+
+                                bool bad = false;
+                                worstCosine = -GREAT;
+                                forAll(cellFaces, i)
+                                    forAll(cellFaces, j)
+                                        if( i != j )
+                                        {
+                                            vector direction =
+                                                centres[j]-centres[i];
+                                            direction /= Foam::max
+                                            (
+                                                mag(direction),
+                                                scalar(vSmall)
+                                            );
+                                            const scalar cosine =
+                                                direction & areas[i];
+                                            worstCosine = Foam::max
+                                            (
+                                                worstCosine, cosine
+                                            );
+                                            if( cosine > -1.0e-6 )
+                                                bad = true;
+                                        }
+                                return bad;
+                            };
+
+                            // Score the prism children and, for V5.1w, the
+                            // untouched top transition cell with its lower
+                            // quad replaced by the two chosen triangles.
+                            auto vScoreDiagonal =
+                            [&](const label colI, const label diagonal,
+                                label& badChildren, scalar& worstCosine)
+                            {
+                                badChildren = 0;
+                                worstCosine = -GREAT;
+                                const label a = diagonal;
+                                const label b = (diagonal+1)%4;
+                                const label c = (diagonal+2)%4;
+                                const label d = (diagonal+3)%4;
+                                const label nColumnCells =
+                                    kColumnCells[colI].size();
+                                const label nSplitParents =
+                                    nColumnCells-(runV51w ? 1 : 0);
+
+                                for(label layerI=0;
+                                    layerI<nSplitParents; ++layerI)
+                                {
+                                    const face diagonalFace =
+                                        vDiagonalFace
+                                        (colI, layerI, diagonal);
+                                    for(label childI=0;
+                                        childI<2; ++childI)
+                                    {
+                                        const label t0 = childI ? a : a;
+                                        const label t1 = childI ? c : b;
+                                        const label t2 = childI ? d : c;
+                                        const label s0 = childI ? c : a;
+                                        const label s1 = childI ? d : b;
+
+                                        List<face> prismFaces(5);
+                                        prismFaces[0] = vTriangle
+                                        (
+                                            kRingPoints[colI][layerI][t0],
+                                            kRingPoints[colI][layerI][t1],
+                                            kRingPoints[colI][layerI][t2]
+                                        );
+                                        prismFaces[1] = vTriangle
+                                        (
+                                            kRingPoints[colI][layerI+1][t0],
+                                            kRingPoints[colI][layerI+1][t1],
+                                            kRingPoints[colI][layerI+1][t2]
+                                        );
+                                        prismFaces[2] = hFaces0
+                                        [
+                                            kSideFaces[colI][layerI][s0]
+                                        ];
+                                        prismFaces[3] = hFaces0
+                                        [
+                                            kSideFaces[colI][layerI][s1]
+                                        ];
+                                        prismFaces[4] = diagonalFace;
+                                        scalar childWorst = -GREAT;
+                                        const bool childBad =
+                                            vSyntheticCellConcave
+                                            (prismFaces, childWorst);
+                                        worstCosine = Foam::max
+                                        (
+                                            worstCosine, childWorst
+                                        );
+                                        if( childBad ) ++badChildren;
+                                    }
+                                }
+
+                                if( runV51w && nColumnCells > 0 )
+                                {
+                                    const label capLayer =
+                                        nColumnCells-1;
+                                    const label capCell =
+                                        kColumnCells[colI][capLayer];
+                                    const label splitFace =
+                                        kRingFaces[colI][capLayer];
+                                    const cell& oldCap = hCells0[capCell];
+                                    List<face> capFaces(oldCap.size()+1);
+                                    labelList capSources(oldCap.size()+1);
+                                    label capPos = 0;
+                                    forAll(oldCap, cfI)
+                                    {
+                                        const label oldFace = oldCap[cfI];
+                                        if( oldFace == splitFace )
+                                        {
+                                            capFaces[capPos++] = vTriangle
+                                            (
+                                                kRingPoints[colI][capLayer][a],
+                                                kRingPoints[colI][capLayer][b],
+                                                kRingPoints[colI][capLayer][c]
+                                            );
+                                            capSources[capPos-1] = oldFace;
+                                            capFaces[capPos++] = vTriangle
+                                            (
+                                                kRingPoints[colI][capLayer][a],
+                                                kRingPoints[colI][capLayer][c],
+                                                kRingPoints[colI][capLayer][d]
+                                            );
+                                            capSources[capPos-1] = oldFace;
+                                        }
+                                        else
+                                        {
+                                            capFaces[capPos++] =
+                                                hFaces0[oldFace];
+                                            capSources[capPos-1] = oldFace;
+                                        }
+                                    }
+                                    scalar capWorst = -GREAT;
+                                    bool capBad =
+                                        capPos != capFaces.size();
+                                    if( !capBad )
+                                    {
+                                        vectorField capAreas
+                                        (capFaces.size());
+                                        vectorField capCentres
+                                        (capFaces.size());
+                                        forAll(capFaces, cfI)
+                                        {
+                                            vFaceGeometry
+                                            (
+                                                capFaces[cfI],
+                                                capAreas[cfI],
+                                                capCentres[cfI]
+                                            );
+                                            if
+                                            (
+                                                hOwn0[capSources[cfI]]
+                                             != capCell
+                                            )
+                                                capAreas[cfI] *= -1.0;
+                                            capAreas[cfI] /= Foam::max
+                                            (
+                                                mag(capAreas[cfI]),
+                                                scalar(vSmall)
+                                            );
+                                        }
+                                        forAll(capFaces, i)
+                                            forAll(capFaces, j)
+                                                if( i != j )
+                                                {
+                                                    vector direction =
+                                                        capCentres[j]
+                                                      - capCentres[i];
+                                                    direction /= Foam::max
+                                                    (
+                                                        mag(direction),
+                                                        scalar(vSmall)
+                                                    );
+                                                    const scalar cosine =
+                                                        direction
+                                                      & capAreas[i];
+                                                    capWorst = Foam::max
+                                                    (
+                                                        capWorst, cosine
+                                                    );
+                                                    if
+                                                    (
+                                                        cosine > -1.0e-6
+                                                    )
+                                                        capBad = true;
+                                                }
+                                    }
+                                    worstCosine = Foam::max
+                                    (
+                                        worstCosine, capWorst
+                                    );
+                                    if
+                                    (
+                                        capPos != capFaces.size()
+                                     ||
+                                        (
+                                            capBad
+                                         && !kStockConcaveCellsBefore.found
+                                            (capCell)
+                                        )
+                                    )
+                                        ++badChildren;
+                                }
+                            };
+
+                            labelList vDiagonal(kNColumns, -1);
+                            boolList vUseColumn(kNColumns, false);
+                            label vRejectedBoth = 0;
+                            label vChoseZero = 0;
+                            label vChoseOne = 0;
+                            label vParents = 0;
+                            labelHashSet vRings;
+                            label vExpectedFailures = 0;
+
+                            for(label colI=0; colI<kNColumns; ++colI)
+                            {
+                                label bad0=0, bad1=0;
+                                scalar worst0=-GREAT, worst1=-GREAT;
+                                vScoreDiagonal
+                                (colI, 0, bad0, worst0);
+                                vScoreDiagonal
+                                (colI, 1, bad1, worst1);
+                                const label chosen =
+                                    bad0 < bad1 ? 0
+                                  : bad1 < bad0 ? 1
+                                  : worst0 <= worst1 ? 0 : 1;
+                                const label chosenBad =
+                                    chosen == 0 ? bad0 : bad1;
+
+                                if( chosenBad )
+                                {
+                                    ++vRejectedBoth;
+                                    continue;
+                                }
+
+                                vUseColumn[colI] = true;
+                                vDiagonal[colI] = chosen;
+                                if( chosen == 0 ) ++vChoseZero;
+                                else ++vChoseOne;
+                                const label nSplitParents =
+                                    kColumnCells[colI].size()
+                                  - (runV51w ? 1 : 0);
+                                vParents += nSplitParents;
+                                vExpectedFailures +=
+                                    kFailuresByWall
+                                    [kSelectedWalls[colI]];
+                                for(label ringI=0;
+                                    ringI<nSplitParents+1; ++ringI)
+                                    vRings.insert
+                                    (kRingFaces[colI][ringI]);
+                            }
+
+                            const char* vSelectMarker = runV51w
+                              ? "CFMITCH V5.1w DIAGONAL SELECT:"
+                              : "CFMITCH V5.1v DIAGONAL SELECT:";
+                            Info << vSelectMarker
+                                 << " considered=" << kNColumns
+                                 << " accepted="
+                                 << vChoseZero+vChoseOne
+                                 << " diagonal0=" << vChoseZero
+                                 << " diagonal1=" << vChoseOne
+                                 << " rejectedBoth=" << vRejectedBoth
+                                 << " parents=" << vParents
+                                 << " rings=" << vRings.size()
+                                 << " expectedFailures="
+                                 << vExpectedFailures
+                                 << endl;
+
+                            bool vBuildOK =
+                                vParents > 0 && vRings.size() > 0;
+                            labelList vMapStart(hOldNF, -1);
+                            labelList vMapCount(hOldNF, 1);
+                            std::map<label, FixedList<label, 2>>
+                                vDiagonalEndpoints;
+                            std::map<label, label> vParentColumn;
+                            std::map<label, label> vParentLayer;
+
+                            for(label colI=0; colI<kNColumns; ++colI)
+                                if( vUseColumn[colI] )
+                                {
+                                    const label diagonal =
+                                        vDiagonal[colI];
+                                    const label a = diagonal;
+                                    const label c = (diagonal+2)%4;
+                                    const label nSplitParents =
+                                        kColumnCells[colI].size()
+                                      - (runV51w ? 1 : 0);
+                                    for(label ringI=0;
+                                        ringI<nSplitParents+1; ++ringI)
+                                    {
+                                        FixedList<label, 2> endpoints;
+                                        endpoints[0] =
+                                            kRingPoints[colI][ringI][a];
+                                        endpoints[1] =
+                                            kRingPoints[colI][ringI][c];
+                                        vDiagonalEndpoints
+                                        [kRingFaces[colI][ringI]] =
+                                            endpoints;
+                                    }
+                                    for(label layerI=0;
+                                        layerI<nSplitParents; ++layerI)
+                                    {
+                                        const label parent =
+                                            kColumnCells[colI][layerI];
+                                        vParentColumn[parent] = colI;
+                                        vParentLayer[parent] = layerI;
+                                    }
+                                }
+
+                            polyMeshGenModifier vMod(mesh_);
+                            faceListPMG& vFaces = vMod.facesAccess();
+                            cellListPMG& vCells = vMod.cellsAccess();
+                            const label vMappedFaceCount =
+                                hOldNF+vRings.size();
+                            const label vDiagonalStart =
+                                vMappedFaceCount;
+                            const label vFinalFaceCount =
+                                vMappedFaceCount+vParents;
+                            vFaces.setSize(vFinalFaceCount);
+
+                            label nextFace = 0;
+                            for(label oldFace=0;
+                                oldFace<hOldNF; ++oldFace)
+                            {
+                                vMapStart[oldFace] = nextFace;
+                                const auto endpointIt =
+                                    vDiagonalEndpoints.find(oldFace);
+                                if
+                                (
+                                    endpointIt ==
+                                    vDiagonalEndpoints.end()
+                                )
+                                {
+                                    vFaces[nextFace++] =
+                                        saved.faces[oldFace];
+                                    continue;
+                                }
+
+                                vMapCount[oldFace] = 2;
+                                const face& old = saved.faces[oldFace];
+                                const label startPoint =
+                                    endpointIt->second[0];
+                                const label endPoint =
+                                    endpointIt->second[1];
+                                label startPos = -1;
+                                forAll(old, fpI)
+                                    if( old[fpI] == startPoint )
+                                        startPos = fpI;
+                                if
+                                (
+                                    old.size() != 4 || startPos < 0
+                                 || old[(startPos+2)%4] != endPoint
+                                )
+                                {
+                                    vBuildOK = false;
+                                    break;
+                                }
+                                vFaces[nextFace++] = vTriangle
+                                (
+                                    old[startPos],
+                                    old[(startPos+1)%4],
+                                    old[(startPos+2)%4]
+                                );
+                                vFaces[nextFace++] = vTriangle
+                                (
+                                    old[startPos],
+                                    old[(startPos+2)%4],
+                                    old[(startPos+3)%4]
+                                );
+                            }
+                            vBuildOK = vBuildOK
+                             && nextFace == vMappedFaceCount;
+
+                            label vParentFlat = 0;
+                            if( vBuildOK )
+                            {
+                                for(label colI=0;
+                                    colI<kNColumns; ++colI)
+                                    if( vUseColumn[colI] )
+                                        for(label layerI=0;
+                                            layerI<
+                                            kColumnCells[colI].size()
+                                              -(runV51w ? 1 : 0);
+                                            ++layerI)
+                                        {
+                                            vFaces
+                                            [vDiagonalStart+vParentFlat] =
+                                                vDiagonalFace
+                                                (
+                                                    colI, layerI,
+                                                    vDiagonal[colI]
+                                                );
+                                            ++vParentFlat;
+                                        }
+                                vBuildOK = vParentFlat == vParents;
+                            }
+
+                            auto vMappedTriangle =
+                            [&](const label oldFace, const label p0,
+                                const label p1, const label p2) -> label
+                            {
+                                label found=-1, nFound=0;
+                                for(label r=0;
+                                    r<vMapCount[oldFace]; ++r)
+                                {
+                                    const label faceI =
+                                        vMapStart[oldFace]+r;
+                                    const face& f = vFaces[faceI];
+                                    if
+                                    (
+                                        f.size() == 3
+                                     && hasPoint(f, p0)
+                                     && hasPoint(f, p1)
+                                     && hasPoint(f, p2)
+                                    )
+                                    {
+                                        found = faceI;
+                                        ++nFound;
+                                    }
+                                }
+                                return nFound == 1 ? found : -1;
+                            };
+
+                            // Unselected cells inherit the expanded ring
+                            // faces. Selected parents are replaced below.
+                            vCells.setSize(hOldNC+vParents);
+                            for(label cellI=0;
+                                cellI<hOldNC && vBuildOK; ++cellI)
+                            {
+                                if
+                                (
+                                    vParentColumn.find(cellI)
+                                 != vParentColumn.end()
+                                )
+                                    continue;
+                                const cell& oldCell = saved.cells[cellI];
+                                label nNewFaces = 0;
+                                forAll(oldCell, cfI)
+                                    nNewFaces +=
+                                        vMapCount[oldCell[cfI]];
+                                cell rebuilt(nNewFaces);
+                                label pos = 0;
+                                forAll(oldCell, cfI)
+                                {
+                                    const label oldFace = oldCell[cfI];
+                                    for(label r=0;
+                                        r<vMapCount[oldFace]; ++r)
+                                        rebuilt[pos++] =
+                                            vMapStart[oldFace]+r;
+                                }
+                                vCells[cellI].transfer(rebuilt);
+                            }
+
+                            boolList vTouchedFaces
+                            (vFinalFaceCount, false);
+                            label nextChild = hOldNC;
+                            vParentFlat = 0;
+                            for(label colI=0;
+                                colI<kNColumns && vBuildOK; ++colI)
+                                if( vUseColumn[colI] )
+                                    for(label layerI=0;
+                                        layerI<
+                                        kColumnCells[colI].size()
+                                          -(runV51w ? 1 : 0);
+                                        ++layerI)
+                                    {
+                                        const label diagonal =
+                                            vDiagonal[colI];
+                                        const label a = diagonal;
+                                        const label b = (diagonal+1)%4;
+                                        const label c = (diagonal+2)%4;
+                                        const label d = (diagonal+3)%4;
+                                        const label lowFace =
+                                            kRingFaces[colI][layerI];
+                                        const label highFace =
+                                            kRingFaces[colI][layerI+1];
+                                        const label lowA = vMappedTriangle
+                                        (
+                                            lowFace,
+                                            kRingPoints[colI][layerI][a],
+                                            kRingPoints[colI][layerI][b],
+                                            kRingPoints[colI][layerI][c]
+                                        );
+                                        const label lowB = vMappedTriangle
+                                        (
+                                            lowFace,
+                                            kRingPoints[colI][layerI][a],
+                                            kRingPoints[colI][layerI][c],
+                                            kRingPoints[colI][layerI][d]
+                                        );
+                                        const label highA = vMappedTriangle
+                                        (
+                                            highFace,
+                                            kRingPoints[colI][layerI+1][a],
+                                            kRingPoints[colI][layerI+1][b],
+                                            kRingPoints[colI][layerI+1][c]
+                                        );
+                                        const label highB = vMappedTriangle
+                                        (
+                                            highFace,
+                                            kRingPoints[colI][layerI+1][a],
+                                            kRingPoints[colI][layerI+1][c],
+                                            kRingPoints[colI][layerI+1][d]
+                                        );
+                                        const label sideA0 =
+                                            vMapStart
+                                            [kSideFaces[colI][layerI][a]];
+                                        const label sideA1 =
+                                            vMapStart
+                                            [kSideFaces[colI][layerI][b]];
+                                        const label sideB0 =
+                                            vMapStart
+                                            [kSideFaces[colI][layerI][c]];
+                                        const label sideB1 =
+                                            vMapStart
+                                            [kSideFaces[colI][layerI][d]];
+                                        const label diagonalFace =
+                                            vDiagonalStart+vParentFlat;
+                                        vBuildOK =
+                                            lowA >= 0 && lowB >= 0
+                                         && highA >= 0 && highB >= 0
+                                         && vMapCount
+                                            [kSideFaces[colI][layerI][a]]==1
+                                         && vMapCount
+                                            [kSideFaces[colI][layerI][b]]==1
+                                         && vMapCount
+                                            [kSideFaces[colI][layerI][c]]==1
+                                         && vMapCount
+                                            [kSideFaces[colI][layerI][d]]==1;
+                                        if( !vBuildOK ) break;
+
+                                        cell childA(5), childB(5);
+                                        childA[0]=lowA;
+                                        childA[1]=highA;
+                                        childA[2]=sideA0;
+                                        childA[3]=sideA1;
+                                        childA[4]=diagonalFace;
+                                        childB[0]=lowB;
+                                        childB[1]=highB;
+                                        childB[2]=sideB0;
+                                        childB[3]=sideB1;
+                                        childB[4]=diagonalFace;
+                                        const label parent =
+                                            kColumnCells[colI][layerI];
+                                        vCells[parent].transfer(childA);
+                                        vCells[nextChild++].transfer(childB);
+                                        forAll(vCells[parent], cfI)
+                                            vTouchedFaces
+                                            [vCells[parent][cfI]] = true;
+                                        forAll(vCells[nextChild-1], cfI)
+                                            vTouchedFaces
+                                            [vCells[nextChild-1][cfI]] = true;
+                                        ++vParentFlat;
+                                    }
+                            vBuildOK = vBuildOK
+                             && nextChild == hOldNC+vParents
+                             && vParentFlat == vParents;
+
+                            if( vBuildOK && runV51x )
+                            {
+                                label childI = hOldNC;
+                                label diagonalI = 0;
+                                for(label colI=0; colI<kNColumns; ++colI)
+                                    if( vUseColumn[colI] )
+                                    {
+                                        const label nSplitParents =
+                                            kColumnCells[colI].size()
+                                          - (runV51w ? 1 : 0);
+                                        for(label ringI=0;
+                                            ringI<nSplitParents+1; ++ringI)
+                                        {
+                                            const label oldRing =
+                                                kRingFaces[colI][ringI];
+                                            for(label r=0;
+                                                r<vMapCount[oldRing]; ++r)
+                                                vRecordFaceLineage
+                                                (
+                                                    vFaces
+                                                    [vMapStart[oldRing]+r],
+                                                    CFMitchV51xLineage
+                                                    (colI, ringI, 1)
+                                                );
+                                        }
+                                        for(label layerI=0;
+                                            layerI<nSplitParents; ++layerI)
+                                        {
+                                            const label parent =
+                                                kColumnCells[colI][layerI];
+                                            vRecordFaceLineage
+                                            (
+                                                vFaces
+                                                [vDiagonalStart+diagonalI],
+                                                CFMitchV51xLineage
+                                                (colI, layerI, 2)
+                                            );
+                                            for(label edgeI=0; edgeI<4; ++edgeI)
+                                            {
+                                                const label side =
+                                                    vMapStart
+                                                    [kSideFaces[colI]
+                                                        [layerI][edgeI]];
+                                                const std::string key =
+                                                    vFaceSignature
+                                                    (vFaces[side]);
+                                                if
+                                                (
+                                                    vFaceLineage.find(key)
+                                                 == vFaceLineage.end()
+                                                )
+                                                    vRecordFaceLineage
+                                                    (
+                                                        vFaces[side],
+                                                        CFMitchV51xLineage
+                                                        (colI, layerI, 3)
+                                                    );
+                                            }
+                                            vCellLineage
+                                            [vCellSignature
+                                                (vCells[parent], vFaces)] =
+                                                CFMitchV51xLineage
+                                                (colI, layerI, 1);
+                                            vCellLineage
+                                            [vCellSignature
+                                                (vCells[childI], vFaces)] =
+                                                CFMitchV51xLineage
+                                                (colI, layerI, 2);
+                                            ++childI;
+                                            ++diagonalI;
+                                        }
+                                        if( runV51w )
+                                        {
+                                            const label cap =
+                                                kColumnCells[colI]
+                                                [kColumnCells[colI].size()-1];
+                                            vCellLineage
+                                            [vCellSignature
+                                                (vCells[cap], vFaces)] =
+                                                CFMitchV51xLineage
+                                                (colI, nSplitParents, 3);
+                                        }
+                                    }
+                            }
+
+                            if( vBuildOK )
+                            {
+                                PtrList<boundaryPatch>& vPatches =
+                                    vMod.boundariesAccess();
+                                forAll(vPatches, patchI)
+                                {
+                                    const label oldStart =
+                                        saved.patchStart[patchI];
+                                    const label oldSize =
+                                        saved.patchSize[patchI];
+                                    label newSize = 0;
+                                    for(label oldFace=oldStart;
+                                        oldFace<oldStart+oldSize;
+                                        ++oldFace)
+                                        newSize += vMapCount[oldFace];
+                                    vPatches[patchI].patchStart() =
+                                        vMapStart[oldStart];
+                                    vPatches[patchI].patchSize() =
+                                        newSize;
+                                }
+
+                                vMod.clearTopologyAddressing();
+                                const labelList& vTrialOwner0 =
+                                    mesh_.owner();
+                                std::map<label, vector> vOwnerEstimate;
+                                forAll(vTouchedFaces, faceI)
+                                    if( vTouchedFaces[faceI] )
+                                    {
+                                        const label owner =
+                                            vTrialOwner0[faceI];
+                                        if
+                                        (
+                                            vOwnerEstimate.find(owner)
+                                         != vOwnerEstimate.end()
+                                        )
+                                            continue;
+                                        labelHashSet vertices;
+                                        const cell& c = vCells[owner];
+                                        forAll(c, cfI)
+                                        {
+                                            const face& f =
+                                                vFaces[c[cfI]];
+                                            forAll(f, fpI)
+                                                vertices.insert(f[fpI]);
+                                        }
+                                        vector estimate = vector::zero;
+                                        forAllConstIter
+                                        (
+                                            labelHashSet, vertices, it
+                                        )
+                                            estimate += hPoints0[it.key()];
+                                        if( vertices.size() )
+                                            estimate /= vertices.size();
+                                        vOwnerEstimate[owner] = estimate;
+                                    }
+
+                                label vFlippedFaces = 0;
+                                forAll(vTouchedFaces, faceI)
+                                {
+                                    if( !vTouchedFaces[faceI] ) continue;
+                                    const face& f = vFaces[faceI];
+                                    point centre = point::zero;
+                                    forAll(f, fpI)
+                                        centre += hPoints0[f[fpI]];
+                                    centre /= f.size();
+                                    const label owner =
+                                        vTrialOwner0[faceI];
+                                    if
+                                    (
+                                        (f.normal(hPoints0)
+                                       &(centre-vOwnerEstimate[owner])) < 0
+                                    )
+                                    {
+                                        vFaces[faceI] = f.reverseFace();
+                                        ++vFlippedFaces;
+                                    }
+                                }
+
+                                vMod.clearTopologyAddressing();
+                                vMod.renumberMesh();
+                                PtrList<boundaryPatch>& vPatchesAfter =
+                                    vMod.boundariesAccess();
+                                forAll(vPatchesAfter, patchI)
+                                    vPatchesAfter[patchI].patchStart() +=
+                                        vParents;
+                                vMod.clearTopologyAddressing();
+
+                                const bool vOrderError =
+                                    polyMeshGenChecks::checkUpperTriangular
+                                    (mesh_, true);
+                                const bool vZipError =
+                                    polyMeshGenChecks::checkCellsZipUp
+                                    (mesh_, true);
+                                const bool vFaceVertexError =
+                                    polyMeshGenChecks::checkFaceVertices
+                                    (mesh_, true);
+                                const label vExpectedFaces =
+                                    hOldNF+vRings.size()+vParents;
+                                const label vExpectedCells =
+                                    hOldNC+vParents;
+                                const bool vCountError =
+                                    mesh_.points().size()!=hOldNP
+                                 || mesh_.faces().size()!=vExpectedFaces
+                                 || mesh_.cells().size()!=vExpectedCells;
+
+                                const cellListPMG& vFinalCells =
+                                    mesh_.cells();
+                                const labelList& vFinalOwner =
+                                    mesh_.owner();
+                                const labelList& vFinalNeighbour =
+                                    mesh_.neighbour();
+                                const label vNInternal =
+                                    mesh_.nInternalFaces();
+                                label vDuplicateMasterCells = 0;
+                                forAll(vFinalCells, cellI)
+                                {
+                                    labelHashSet neighbours;
+                                    const cell& c = vFinalCells[cellI];
+                                    bool duplicate = false;
+                                    forAll(c, cfI)
+                                    {
+                                        const label faceI = c[cfI];
+                                        if( faceI >= vNInternal ) continue;
+                                        const label other =
+                                            vFinalOwner[faceI] == cellI
+                                          ? vFinalNeighbour[faceI]
+                                          : vFinalOwner[faceI];
+                                        if( neighbours.found(other) )
+                                            duplicate = true;
+                                        neighbours.insert(other);
+                                    }
+                                    if( duplicate )
+                                        ++vDuplicateMasterCells;
+                                }
+
+                                CFMitchOFHardQuality vTrial;
+                                evaluateOpenFOAMHardQuality
+                                (mesh_, vTrial, true, nullptr, true);
+                                printOpenFOAMCandidateQuality
+                                (
+                                    runV51w
+                                  ? "V51w_TOP_CAP_TRIAL"
+                                  : "V51v_DIAGONAL_TRIAL",
+                                    vTrial
+                                );
+                                labelHashSet vLegacyNeg, vLegacyPyr;
+                                polyMeshGenChecks::checkCellVolumes
+                                (mesh_, false, &vLegacyNeg);
+                                polyMeshGenChecks::checkFacePyramids
+                                (mesh_, false, -SMALL, &vLegacyPyr);
+
+                                labelHashSet vStockConcaveAfter;
+                                std::map
+                                <
+                                    label, CFMitchConcaveCellWitness
+                                > vStockConcaveWitnesses;
+                                labelHashSet vConcaveAfter;
+                                labelHashSet vFlatAfter;
+                                labelHashSet vAreaAfter;
+                                labelHashSet vClosedAfter;
+                                cfmitchStockConcaveCells
+                                (
+                                    mesh_, vStockConcaveAfter,
+                                    runV51x
+                                  ? &vStockConcaveWitnesses : nullptr
+                                );
+                                polyMeshGenChecks::checkFaceAngles
+                                (mesh_, false, 10.0, &vConcaveAfter);
+                                polyMeshGenChecks::checkFaceFlatness
+                                (mesh_, false, 0.8, &vFlatAfter);
+                                polyMeshGenChecks::checkFaceAreas
+                                (mesh_, false, VSMALL, &vAreaAfter);
+                                polyMeshGenChecks::checkClosedCells
+                                (mesh_, false, 1000.0, &vClosedAfter);
+
+                                if( runV51x )
+                                {
+                                    const faceListPMG& xFaces =
+                                        mesh_.faces();
+                                    const cellListPMG& xCells =
+                                        mesh_.cells();
+                                    const pointFieldPMG& xPoints =
+                                        mesh_.points();
+                                    const labelList& xOwner =
+                                        mesh_.owner();
+                                    const labelList& xNeighbour =
+                                        mesh_.neighbour();
+                                    std::map<label, scalar> xAspectCache;
+                                    auto xCellAspect =
+                                    [&](const label cellI) -> scalar
+                                    {
+                                        if
+                                        (
+                                            cellI < 0
+                                         || cellI >= label(xCells.size())
+                                        )
+                                            return -1.0;
+                                        const auto cached =
+                                            xAspectCache.find(cellI);
+                                        if( cached != xAspectCache.end() )
+                                            return cached->second;
+                                        labelHashSet vertexSet;
+                                        const cell& c = xCells[cellI];
+                                        forAll(c, cfI)
+                                        {
+                                            const face& f =
+                                                xFaces[c[cfI]];
+                                            forAll(f, fpI)
+                                                vertexSet.insert(f[fpI]);
+                                        }
+                                        std::vector<label> vertices;
+                                        vertices.reserve(vertexSet.size());
+                                        forAllConstIter
+                                        (labelHashSet, vertexSet, it)
+                                            vertices.push_back(it.key());
+                                        scalar minDistance = GREAT;
+                                        scalar maxDistance = 0.0;
+                                        for(std::size_t i=0;
+                                            i<vertices.size(); ++i)
+                                            for(std::size_t j=i+1;
+                                                j<vertices.size(); ++j)
+                                            {
+                                                const scalar distance = mag
+                                                (
+                                                    xPoints[vertices[i]]
+                                                  - xPoints[vertices[j]]
+                                                );
+                                                if( distance > VSMALL )
+                                                    minDistance = Foam::min
+                                                    (minDistance, distance);
+                                                maxDistance = Foam::max
+                                                    (maxDistance, distance);
+                                            }
+                                        const scalar aspect =
+                                            minDistance < GREAT
+                                          ? maxDistance/Foam::max
+                                            (minDistance, scalar(VSMALL))
+                                          : GREAT;
+                                        xAspectCache[cellI] = aspect;
+                                        return aspect;
+                                    };
+
+                                    OFstream xFaceCsv
+                                    ("cfmitchV51x_assembled_faces.csv");
+                                    xFaceCsv
+                                        << "face,column,layer,role,angle,"
+                                        << "skew,owner,neighbour,ownerAspect,"
+                                        << "neighbourAspect,nVerts" << nl;
+                                    label xNewSevere = 0;
+                                    label xFaceUnmapped = 0;
+                                    FixedList<label, 4> xFaceRoles(label(0));
+                                    FixedList<label, 4> xAspectBins(label(0));
+                                    scalar xMaxAspect = 0.0;
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        vTrial.fanSevereFaces, it
+                                    )
+                                    {
+                                        const label faceI = it.key();
+                                        const std::string key =
+                                            vFaceSignature(xFaces[faceI]);
+                                        if
+                                        (
+                                            vBaselineSevereKeys.find(key)
+                                         != vBaselineSevereKeys.end()
+                                        )
+                                            continue;
+                                        ++xNewSevere;
+                                        CFMitchV51xLineage lineage;
+                                        const auto lineageIt =
+                                            vFaceLineage.find(key);
+                                        if
+                                        (
+                                            lineageIt !=
+                                            vFaceLineage.end()
+                                        )
+                                            lineage = lineageIt->second;
+                                        else
+                                            ++xFaceUnmapped;
+                                        if
+                                        (
+                                            lineage.role >= 0
+                                         && lineage.role < xFaceRoles.size()
+                                        )
+                                            ++xFaceRoles[lineage.role];
+                                        const label ownCell = xOwner[faceI];
+                                        const label neiCell =
+                                            xNeighbour[faceI];
+                                        const scalar ownAspect =
+                                            xCellAspect(ownCell);
+                                        const scalar neiAspect =
+                                            xCellAspect(neiCell);
+                                        const scalar aspect = Foam::max
+                                            (ownAspect, neiAspect);
+                                        xMaxAspect = Foam::max
+                                            (xMaxAspect, aspect);
+                                        if( aspect < 10.0 ) ++xAspectBins[0];
+                                        else if( aspect < 100.0 )
+                                            ++xAspectBins[1];
+                                        else if( aspect < 1000.0 )
+                                            ++xAspectBins[2];
+                                        else ++xAspectBins[3];
+                                        const scalar angle =
+                                            vTrial.fanNonOrthDegrees[faceI];
+                                        const scalar skew =
+                                            vTrial.fanSevereSkew[faceI];
+                                        xFaceCsv << faceI << ','
+                                            << lineage.column << ','
+                                            << lineage.layer << ','
+                                            << lineage.role << ','
+                                            << angle << ',' << skew << ','
+                                            << ownCell << ',' << neiCell
+                                            << ',' << ownAspect << ','
+                                            << neiAspect << ','
+                                            << xFaces[faceI].size() << nl;
+                                    }
+
+                                    FixedList<label, 4>
+                                        xGeneratedByAspect(label(0));
+                                    FixedList<label, 4>
+                                        xSevereByAspect(label(0));
+                                    FixedList<scalar, 4>
+                                        xAngleSumByAspect(scalar(0));
+                                    label xAttributedFaces = 0;
+                                    for(label faceI=0;
+                                        faceI<mesh_.nInternalFaces(); ++faceI)
+                                    {
+                                        bool touchesLineage = false;
+                                        const face& candidateFace =
+                                            xFaces[faceI];
+                                        forAll(candidateFace, fpI)
+                                            if
+                                            (
+                                                vLineagePoints.find
+                                                (candidateFace[fpI])
+                                             != vLineagePoints.end()
+                                            )
+                                            {
+                                                touchesLineage = true;
+                                                break;
+                                            }
+                                        if( !touchesLineage ) continue;
+                                        const std::string key =
+                                            vFaceSignature(candidateFace);
+                                        if
+                                        (
+                                            vFaceLineage.find(key)
+                                         == vFaceLineage.end()
+                                        )
+                                            continue;
+                                        ++xAttributedFaces;
+                                        const scalar aspect = Foam::max
+                                        (
+                                            xCellAspect(xOwner[faceI]),
+                                            xCellAspect(xNeighbour[faceI])
+                                        );
+                                        label bin = 3;
+                                        if( aspect < 10.0 ) bin = 0;
+                                        else if( aspect < 100.0 ) bin = 1;
+                                        else if( aspect < 1000.0 ) bin = 2;
+                                        const scalar angle =
+                                            vTrial.fanAllNonOrthDegrees[faceI];
+                                        ++xGeneratedByAspect[bin];
+                                        xAngleSumByAspect[bin] += angle;
+                                        if( angle > 70.0 )
+                                            ++xSevereByAspect[bin];
+                                    }
+
+                                    OFstream xCellCsv
+                                    ("cfmitchV51x_assembled_cells.csv");
+                                    xCellCsv
+                                        << "cell,column,layer,role,aspect,"
+                                        << "witnessFace,otherFace,"
+                                        << "witnessCosine" << nl;
+                                    label xNewConcave = 0;
+                                    label xCellUnmapped = 0;
+                                    FixedList<label, 4> xCellRoles(label(0));
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        vStockConcaveAfter, it
+                                    )
+                                    {
+                                        const label cellI = it.key();
+                                        const std::string key =
+                                            vCellSignature
+                                            (xCells[cellI], xFaces);
+                                        if
+                                        (
+                                            vBaselineConcaveKeys.find(key)
+                                         != vBaselineConcaveKeys.end()
+                                        )
+                                            continue;
+                                        ++xNewConcave;
+                                        CFMitchV51xLineage lineage;
+                                        const auto lineageIt =
+                                            vCellLineage.find(key);
+                                        if
+                                        (
+                                            lineageIt !=
+                                            vCellLineage.end()
+                                        )
+                                            lineage = lineageIt->second;
+                                        else
+                                            ++xCellUnmapped;
+                                        if
+                                        (
+                                            lineage.role >= 0
+                                         && lineage.role < xCellRoles.size()
+                                        )
+                                            ++xCellRoles[lineage.role];
+                                        const CFMitchConcaveCellWitness& w =
+                                            vStockConcaveWitnesses[cellI];
+                                        xCellCsv << cellI << ','
+                                            << lineage.column << ','
+                                            << lineage.layer << ','
+                                            << lineage.role << ','
+                                            << xCellAspect(cellI) << ','
+                                            << w.faceI << ','
+                                            << w.otherFaceI << ','
+                                            << w.cosine << nl;
+                                    }
+                                    Info
+                                        << "CFMITCH V5.1x ASSEMBLED FACE LINEAGE:"
+                                        << " newSevere=" << xNewSevere
+                                        << " unmapped=" << xFaceUnmapped
+                                        << " roleUnknown=" << xFaceRoles[0]
+                                        << " ring=" << xFaceRoles[1]
+                                        << " diagonal=" << xFaceRoles[2]
+                                        << " side=" << xFaceRoles[3]
+                                        << " aspectLT10=" << xAspectBins[0]
+                                        << " aspect10to100=" << xAspectBins[1]
+                                        << " aspect100to1000=" << xAspectBins[2]
+                                        << " aspectGE1000=" << xAspectBins[3]
+                                        << " maxAspect=" << xMaxAspect
+                                        << " csvGood=" << xFaceCsv.good()
+                                        << endl;
+                                    Info
+                                        << "CFMITCH V5.1x ASPECT INCIDENCE:"
+                                        << " attributedFaces="
+                                        << xAttributedFaces
+                                        << " lt10="
+                                        << xSevereByAspect[0] << '/'
+                                        << xGeneratedByAspect[0]
+                                        << " 10to100="
+                                        << xSevereByAspect[1] << '/'
+                                        << xGeneratedByAspect[1]
+                                        << " 100to1000="
+                                        << xSevereByAspect[2] << '/'
+                                        << xGeneratedByAspect[2]
+                                        << " ge1000="
+                                        << xSevereByAspect[3] << '/'
+                                        << xGeneratedByAspect[3]
+                                        << " meanAngleLT10="
+                                        << xAngleSumByAspect[0]/Foam::max
+                                           (label(1), xGeneratedByAspect[0])
+                                        << " meanAngle10to100="
+                                        << xAngleSumByAspect[1]/Foam::max
+                                           (label(1), xGeneratedByAspect[1])
+                                        << " meanAngle100to1000="
+                                        << xAngleSumByAspect[2]/Foam::max
+                                           (label(1), xGeneratedByAspect[2])
+                                        << " meanAngleGE1000="
+                                        << xAngleSumByAspect[3]/Foam::max
+                                           (label(1), xGeneratedByAspect[3])
+                                        << endl;
+                                    Info
+                                        << "CFMITCH V5.1x ASSEMBLED CELL LINEAGE:"
+                                        << " newConcave=" << xNewConcave
+                                        << " unmapped=" << xCellUnmapped
+                                        << " roleUnknown=" << xCellRoles[0]
+                                        << " childA=" << xCellRoles[1]
+                                        << " childB=" << xCellRoles[2]
+                                        << " cap=" << xCellRoles[3]
+                                        << " csvGood=" << xCellCsv.good()
+                                        << endl;
+                                }
+
+                                const label vResolvedUnique =
+                                    before.badFaceTetFaceSet.size()
+                                  - vTrial.badFaceTetFaceSet.size();
+                                const bool vTopologyError =
+                                    vOrderError || vZipError
+                                 || vFaceVertexError || vCountError
+                                 || vDuplicateMasterCells != 0;
+                                const bool vSafe =
+                                    !vTopologyError
+                                 && vResolvedUnique >= vExpectedFailures
+                                 && vTrial.faceTetErrorEvents
+                                      < before.faceTetErrorEvents
+                                 && vTrial.fanNonFinite == 0
+                                 && vTrial.pyramidErrors
+                                      <= before.pyramidErrors
+                                 && vTrial.severeNonOrthFaces
+                                      <= before.severeNonOrthFaces
+                                 && vTrial.errorNonOrthFaces.size()
+                                      <= before.errorNonOrthFaces.size()
+                                 && vTrial.highSkewFaces
+                                      <= before.highSkewFaces
+                                 && vTrial.smallWeightFaces
+                                      <= before.smallWeightFaces
+                                 && vTrial.smallVolRatioFaces
+                                      <= before.smallVolRatioFaces
+                                 && vTrial.smallDeterminantCells
+                                      <= before.smallDeterminantCells
+                                 && vTrial.maxNonOrth
+                                      <= before.maxNonOrth+1e-8
+                                 && vTrial.maxSkew
+                                      <= before.maxSkew+1e-8
+                                 && vTrial.minFaceWeight+1e-12
+                                      >= before.minFaceWeight
+                                 && vTrial.minVolRatio+1e-12
+                                      >= before.minVolRatio
+                                 && vTrial.minDeterminant+1e-12
+                                      >= before.minDeterminant
+                                 && vLegacyNeg.size()
+                                      <= oldLegacyNeg.size()
+                                 && vLegacyPyr.size()
+                                      <= oldLegacyPyr.size()
+                                 && vStockConcaveAfter.size()
+                                      <= kStockConcaveCellsBefore.size()
+                                 && vConcaveAfter.size()
+                                      <= kConcaveBefore.size()
+                                 && vFlatAfter.size()
+                                      <= kFlatBefore.size()
+                                 && vAreaAfter.size()
+                                      <= kAreaBefore.size()
+                                 && vClosedAfter.size()
+                                      <= kClosedBefore.size();
+
+                                const char* vResultMarker = runV51w
+                                  ? "CFMITCH V5.1w RESULT:"
+                                  : "CFMITCH V5.1v RESULT:";
+                                const char* vGateMarker = runV51w
+                                  ? "CFMITCH V5.1w GATE:"
+                                  : "CFMITCH V5.1v GATE:";
+                                Info << vResultMarker
+                                     << " columns="
+                                     << vChoseZero+vChoseOne
+                                     << " parents=" << vParents
+                                     << " rings=" << vRings.size()
+                                     << " transitionCaps="
+                                     << (runV51w
+                                         ? vChoseZero+vChoseOne : 0)
+                                     << " addedPoints=0"
+                                     << " addedFaces="
+                                     << vRings.size()+vParents
+                                     << " addedCells=" << vParents
+                                     << " flippedFaces="
+                                     << vFlippedFaces
+                                     << " duplicateMasterCells="
+                                     << vDuplicateMasterCells
+                                     << " topologyError="
+                                     << vTopologyError
+                                     << " expectedResolved="
+                                     << vExpectedFailures
+                                     << " resolvedUnique="
+                                     << vResolvedUnique
+                                     << " faceTet="
+                                     << before.badFaceTetFaceSet.size()
+                                     << "->"
+                                     << vTrial.badFaceTetFaceSet.size()
+                                     << " severeNonOrth="
+                                     << before.severeNonOrthFaces
+                                     << "->"
+                                     << vTrial.severeNonOrthFaces
+                                     << " skew="
+                                     << before.highSkewFaces
+                                     << "->" << vTrial.highSkewFaces
+                                     << " smallDet="
+                                     << before.smallDeterminantCells
+                                     << "->"
+                                     << vTrial.smallDeterminantCells
+                                     << " stockConcaveCells="
+                                     << kStockConcaveCellsBefore.size()
+                                     << "->"
+                                     << vStockConcaveAfter.size()
+                                     << " flatFaces="
+                                     << kFlatBefore.size() << "->"
+                                     << vFlatAfter.size()
+                                     << endl;
+                                Info << vGateMarker
+                                     << " safe=" << vSafe
+                                     << " countError=" << vCountError
+                                     << " orderError=" << vOrderError
+                                     << " zipError=" << vZipError
+                                     << " faceVertexError="
+                                     << vFaceVertexError
+                                     << " retain=" << vSafe
+                                     << endl;
+                                if( runV51x )
+                                {
+                                    Info << "CFMITCH V5.1x GATE:"
+                                         << " candidateSafe=" << vSafe
+                                         << " forcedRollback=true"
+                                         << " retain=false" << endl;
+                                }
+                                topologyOK =
+                                    topologyOK && vSafe && !runV51x;
+                            }
+                            else
+                            {
+                                topologyOK = false;
+                                Info << (runV51w
+                                    ? "CFMITCH V5.1w SKIP:"
+                                    : "CFMITCH V5.1v SKIP:")
+                                     << " diagonal topology assembly failed"
+                                     << endl;
+                            }
+                        }
+
+                        if( kDiscoveryOK && !runV51v && !runV51w )
+                        {
+                            auto kFoundationCentre =
+                            [&](const face& f) -> point
+                            {
+                                point pAvg = point::zero;
+                                forAll(f, fpI) pAvg += hPoints0[f[fpI]];
+                                pAvg /= f.size();
+                                vector sumA = vector::zero;
+                                forAll(f, fpI)
+                                    sumA +=
+                                        (hPoints0[f.nextLabel(fpI)]
+                                       - hPoints0[f[fpI]])
+                                      ^ (pAvg-hPoints0[f[fpI]]);
+                                const vector sumAHat = normalised(sumA);
+                                scalar sumAn = 0.0;
+                                vector sumAnc = vector::zero;
+                                forAll(f, fpI)
+                                {
+                                    const point& p0 = hPoints0[f[fpI]];
+                                    const point& p1 =
+                                        hPoints0[f.nextLabel(fpI)];
+                                    const vector a = (p1-p0)^(pAvg-p0);
+                                    const scalar an = a & sumAHat;
+                                    sumAn += an;
+                                    sumAnc += an*(p0+p1+pAvg);
+                                }
+                                return sumAn > VSMALL
+                                    ? point((1.0/3.0)*sumAnc/sumAn)
+                                    : pAvg;
+                            };
+
+                            boolList kFanRings(hOldNF, false);
+                            std::map<label, point> kRingCentre;
+                            forAll(kRingFaces, colI)
+                                forAll(kRingFaces[colI], ringI)
+                                {
+                                    const label faceI =
+                                        kRingFaces[colI][ringI];
+                                    kFanRings[faceI] = true;
+                                    kRingCentre[faceI] =
+                                        kFoundationCentre(hFaces0[faceI]);
+                                }
+
+                            labelList kCentrePoint(hOldNF, -1);
+                            label nextCentre = hOldNP;
+                            forAll(kFanRings, faceI)
+                                if( kFanRings[faceI] )
+                                    kCentrePoint[faceI] = nextCentre++;
+
+                            // V5.1p lineage for classifying any new severe
+                            // non-orthogonal faces after renumbering.
+                            // role: 1=wall ring, 2=interior layer ring,
+                            //       3=top BL/core ring.
+                            std::map<label, label> kCentreColumn;
+                            std::map<label, label> kCentreRing;
+                            std::map<label, label> kCentreRole;
+                            forAll(kRingFaces, colI)
+                                forAll(kRingFaces[colI], ringI)
+                                {
+                                    const label oldRing =
+                                        kRingFaces[colI][ringI];
+                                    const label centrePoint =
+                                        kCentrePoint[oldRing];
+                                    kCentreColumn[centrePoint] = colI;
+                                    kCentreRing[centrePoint] = ringI;
+                                    if( oldRing >= hNInternal0 )
+                                        kCentreRole[centrePoint] = 1;
+                                    else if
+                                    (
+                                        ringI == 0
+                                     || ringI+1 ==
+                                        kRingFaces[colI].size()
+                                    )
+                                        kCentreRole[centrePoint] = 3;
+                                    else
+                                        kCentreRole[centrePoint] = 2;
+                                }
+
+                            decomposeFaces kColumnFan(mesh_);
+                            kColumnFan.decomposeMeshFaces(kFanRings);
+                            const VRWGraph& kMap =
+                                kColumnFan.newFacesForFace();
+                            polyMeshGenModifier kMod(mesh_);
+                            pointFieldPMG& kPoints = kMod.pointsAccess();
+                            for(const auto& item : kRingCentre)
+                                kPoints[kCentrePoint[item.first]] = item.second;
+
+                            auto kMappedSide =
+                            [&](const label oldFace) -> label
+                            {
+                                return kMap.sizeOfRow(oldFace) == 1
+                                    ? kMap(oldFace, 0) : -1;
+                            };
+                            auto kMappedTriangle =
+                            [&](const label oldFace, const label p0,
+                                const label p1) -> label
+                            {
+                                label found=-1, nFound=0;
+                                const faceListPMG& fs = mesh_.faces();
+                                forAllRow(kMap, oldFace, r)
+                                {
+                                    const label faceI = kMap(oldFace, r);
+                                    if( fs[faceI].size() == 3
+                                     && hasPoint(fs[faceI], p0)
+                                     && hasPoint(fs[faceI], p1) )
+                                    {
+                                        found=faceI;
+                                        ++nFound;
+                                    }
+                                }
+                                return nFound == 1 ? found : -1;
+                            };
+
+                            List<List<FixedList<label, 4>>>
+                                kLowTriangles(kNColumns);
+                            List<List<FixedList<label, 4>>>
+                                kHighTriangles(kNColumns);
+                            List<List<FixedList<label, 4>>>
+                                kMappedSides(kNColumns);
+                            for(label colI=0;
+                                colI<kNColumns && kDiscoveryOK; ++colI)
+                            {
+                                const label nParents =
+                                    kColumnCells[colI].size();
+                                kLowTriangles[colI].setSize(nParents);
+                                kHighTriangles[colI].setSize(nParents);
+                                kMappedSides[colI].setSize(nParents);
+                                for(label layerI=0;
+                                    layerI<nParents && kDiscoveryOK; ++layerI)
+                                    for(label j=0; j<4; ++j)
+                                    {
+                                        const label n = (j+1)%4;
+                                        kLowTriangles[colI][layerI][j] =
+                                            kMappedTriangle
+                                            (
+                                                kRingFaces[colI][layerI],
+                                                kRingPoints[colI][layerI][j],
+                                                kRingPoints[colI][layerI][n]
+                                            );
+                                        kHighTriangles[colI][layerI][j] =
+                                            kMappedTriangle
+                                            (
+                                                kRingFaces[colI][layerI+1],
+                                                kRingPoints[colI][layerI+1][j],
+                                                kRingPoints[colI][layerI+1][n]
+                                            );
+                                        kMappedSides[colI][layerI][j] =
+                                            kMappedSide
+                                            (
+                                                kSideFaces[colI][layerI][j]
+                                            );
+                                        kDiscoveryOK = kDiscoveryOK
+                                         && kLowTriangles[colI][layerI][j]>=0
+                                         && kHighTriangles[colI][layerI][j]>=0
+                                         && kMappedSides[colI][layerI][j]>=0;
+                                    }
+                            }
+
+                            if( kDiscoveryOK )
+                            {
+                                faceListPMG& kFaces = kMod.facesAccess();
+                                cellListPMG& kCells = kMod.cellsAccess();
+                                const label kRadialStart = kFaces.size();
+                                const label kNRadial = 4*kTotalParents;
+                                kFaces.setSize(kRadialStart+kNRadial);
+                                label flatParent = 0;
+                                for(label colI=0; colI<kNColumns; ++colI)
+                                    forAll(kColumnCells[colI], layerI)
+                                    {
+                                        const label lowCentre =
+                                            kCentrePoint
+                                            [kRingFaces[colI][layerI]];
+                                        const label highCentre =
+                                            kCentrePoint
+                                            [kRingFaces[colI][layerI+1]];
+                                        for(label j=0; j<4; ++j)
+                                        {
+                                            face radial(4);
+                                            radial[0] =
+                                                kRingPoints[colI][layerI][j];
+                                            radial[1] =
+                                                kRingPoints[colI][layerI+1][j];
+                                            radial[2] = highCentre;
+                                            radial[3] = lowCentre;
+                                            kFaces
+                                            [kRadialStart+4*flatParent+j]
+                                                .transfer(radial);
+                                        }
+                                        ++flatParent;
+                                    }
+
+                                List<List<FixedList<label, 4>>>
+                                    kChildCells(kNColumns);
+                                label nextCell = hOldNC;
+                                for(label colI=0; colI<kNColumns; ++colI)
+                                {
+                                    kChildCells[colI].setSize
+                                    (
+                                        kColumnCells[colI].size()
+                                    );
+                                    forAll(kColumnCells[colI], layerI)
+                                    {
+                                        kChildCells[colI][layerI][0] =
+                                            kColumnCells[colI][layerI];
+                                        for(label j=1; j<4; ++j)
+                                            kChildCells[colI][layerI][j] =
+                                                nextCell++;
+                                    }
+                                }
+                                kCells.setSize(nextCell);
+                                boolList kTouchedFaces
+                                (
+                                    kFaces.size(), false
+                                );
+                                flatParent = 0;
+                                for(label colI=0; colI<kNColumns; ++colI)
+                                    forAll(kColumnCells[colI], layerI)
+                                    {
+                                        for(label j=0; j<4; ++j)
+                                        {
+                                            const label n=(j+1)%4;
+                                            cell prism(5);
+                                            prism[0] =
+                                                kLowTriangles[colI][layerI][j];
+                                            prism[1] =
+                                                kHighTriangles[colI][layerI][j];
+                                            prism[2] =
+                                                kMappedSides[colI][layerI][j];
+                                            prism[3] =
+                                                kRadialStart+4*flatParent+j;
+                                            prism[4] =
+                                                kRadialStart+4*flatParent+n;
+                                            const label child =
+                                                kChildCells[colI][layerI][j];
+                                            kCells[child].transfer(prism);
+                                            for(label q=0; q<5; ++q)
+                                                kTouchedFaces
+                                                [kCells[child][q]] = true;
+                                        }
+                                        ++flatParent;
+                                    }
+                                kMod.clearTopologyAddressing();
+
+                                const labelList& kTrialOwner0 = mesh_.owner();
+                                auto kEstimateCell =
+                                [&](const label cellI) -> vector
+                                {
+                                    labelHashSet vertices;
+                                    const cell& c = kCells[cellI];
+                                    forAll(c, cfI)
+                                    {
+                                        const face& f = kFaces[c[cfI]];
+                                        forAll(f, fpI)
+                                            vertices.insert(f[fpI]);
+                                    }
+                                    vector estimate = vector::zero;
+                                    forAllConstIter
+                                    (
+                                        labelHashSet, vertices, it
+                                    )
+                                        estimate += kPoints[it.key()];
+                                    if( vertices.size() )
+                                        estimate /= vertices.size();
+                                    return estimate;
+                                };
+                                std::map<label, vector> kOwnerEstimate;
+                                forAll(kTouchedFaces, faceI)
+                                    if( kTouchedFaces[faceI] )
+                                    {
+                                        const label owner =
+                                            kTrialOwner0[faceI];
+                                        if( kOwnerEstimate.find(owner)
+                                         == kOwnerEstimate.end() )
+                                            kOwnerEstimate[owner] =
+                                                kEstimateCell(owner);
+                                    }
+                                label kFlippedFaces = 0;
+                                forAll(kTouchedFaces, faceI)
+                                {
+                                    if( !kTouchedFaces[faceI] ) continue;
+                                    const face& f = kFaces[faceI];
+                                    point fc = point::zero;
+                                    forAll(f, fpI) fc += kPoints[f[fpI]];
+                                    fc /= f.size();
+                                    if( (f.normal(kPoints)
+                                       &(fc-kOwnerEstimate
+                                            [kTrialOwner0[faceI]])) < 0 )
+                                    {
+                                        kFaces[faceI] = f.reverseFace();
+                                        ++kFlippedFaces;
+                                    }
+                                }
+                                kMod.clearTopologyAddressing();
+                                kMod.renumberMesh();
+                                PtrList<boundaryPatch>& kPatches =
+                                    kMod.boundariesAccess();
+                                forAll(kPatches, patchI)
+                                    kPatches[patchI].patchStart() +=
+                                        kNRadial;
+                                kMod.clearTopologyAddressing();
+
+                                const bool kOrderError =
+                                    polyMeshGenChecks::checkUpperTriangular
+                                    (
+                                        mesh_, true
+                                    );
+                                const bool kZipError =
+                                    polyMeshGenChecks::checkCellsZipUp
+                                    (
+                                        mesh_, true
+                                    );
+                                const bool kFaceVertexError =
+                                    polyMeshGenChecks::checkFaceVertices
+                                    (
+                                        mesh_, true
+                                    );
+                                boolList kPointUsed
+                                (
+                                    mesh_.points().size(), false
+                                );
+                                const faceListPMG& kFinalFaces =
+                                    mesh_.faces();
+                                forAll(kFinalFaces, faceI)
+                                {
+                                    const face& f = kFinalFaces[faceI];
+                                    forAll(f, fpI)
+                                        kPointUsed[f[fpI]] = true;
+                                }
+                                bool kNewPointsUsed = true;
+                                for(label pointI=hOldNP;
+                                    pointI<label(kPointUsed.size()); ++pointI)
+                                    kNewPointsUsed = kNewPointsUsed
+                                     && kPointUsed[pointI];
+
+                                const cellListPMG& kFinalCells =
+                                    mesh_.cells();
+                                const labelList& kFinalOwner = mesh_.owner();
+                                const labelList& kFinalNeighbour =
+                                    mesh_.neighbour();
+                                const label kFinalNInternal =
+                                    mesh_.nInternalFaces();
+                                label kDuplicateMasterCells = 0;
+                                forAll(kFinalCells, cellI)
+                                {
+                                    const cell& c = kFinalCells[cellI];
+                                    bool hasDuplicate = false;
+                                    for(label a=0;
+                                        a<c.size() && !hasDuplicate; ++a)
+                                    {
+                                        const label faceA = c[a];
+                                        if( faceA >= kFinalNInternal )
+                                            continue;
+                                        const label otherA =
+                                            kFinalOwner[faceA] == cellI
+                                          ? kFinalNeighbour[faceA]
+                                          :
+                                            (
+                                                kFinalNeighbour[faceA] == cellI
+                                              ? kFinalOwner[faceA] : -1
+                                            );
+                                        for(label b=a+1; b<c.size(); ++b)
+                                        {
+                                            const label faceB = c[b];
+                                            if( faceB >= kFinalNInternal )
+                                                continue;
+                                            const label otherB =
+                                                kFinalOwner[faceB] == cellI
+                                              ? kFinalNeighbour[faceB]
+                                              :
+                                                (
+                                                    kFinalNeighbour[faceB]
+                                                 == cellI
+                                                  ? kFinalOwner[faceB] : -1
+                                                );
+                                            if( otherA >= 0
+                                             && otherA == otherB )
+                                            {
+                                                hasDuplicate = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if( hasDuplicate )
+                                        ++kDuplicateMasterCells;
+                                }
+
+                                const label kExpectedPoints =
+                                    hOldNP+kAllRings.size();
+                                const label kExpectedFaces =
+                                    hOldNF+3*kAllRings.size()+kNRadial;
+                                const label kExpectedCells =
+                                    hOldNC+3*kTotalParents;
+                                const bool kCountError =
+                                    mesh_.points().size()!=kExpectedPoints
+                                 || mesh_.faces().size()!=kExpectedFaces
+                                 || mesh_.cells().size()!=kExpectedCells;
+                                const bool kTopologyError =
+                                    kOrderError || kZipError
+                                 || kFaceVertexError || !kNewPointsUsed
+                                 || kDuplicateMasterCells != 0
+                                 || kCountError;
+
+                                CFMitchOFHardQuality kTrial;
+                                evaluateOpenFOAMHardQuality
+                                (
+                                    mesh_, kTrial, true, nullptr, true
+                                );
+                                printOpenFOAMCandidateQuality
+                                (
+                                    "V51k_MULTI_COLUMN_TRIAL", kTrial
+                                );
+
+                                // V5.1p: identify only severe faces whose
+                                // original severe-face vertex set did not
+                                // already exist. This remains diagnostic;
+                                // the V5.1k no-regression gate is unchanged.
+                                auto kSamePointSet =
+                                [&](const face& a, const face& b) -> bool
+                                {
+                                    if( a.size() != b.size() ) return false;
+                                    forAll(a, apI)
+                                        if( !hasPoint(b, a[apI]) )
+                                            return false;
+                                    return true;
+                                };
+
+                                const faceListPMG& kSevereFaces =
+                                    mesh_.faces();
+                                const labelList& kSevereOwner =
+                                    mesh_.owner();
+                                const labelList& kSevereNeighbour =
+                                    mesh_.neighbour();
+                                label kPersistedOldSevere = 0;
+                                label kNewAffectedSevere = 0;
+                                label kNewWallRingSevere = 0;
+                                label kNewLayerRingSevere = 0;
+                                label kNewTopRingSevere = 0;
+                                label kNewRadialSevere = 0;
+                                label kNewSelectedSideSevere = 0;
+                                label kNewOtherSevere = 0;
+
+                                forAllConstIter
+                                (
+                                    labelHashSet,
+                                    kTrial.fanSevereFaces,
+                                    severeIt
+                                )
+                                {
+                                    const label faceI = severeIt.key();
+                                    const face& severeFace =
+                                        kSevereFaces[faceI];
+                                    bool persisted = false;
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        before.fanSevereFaces,
+                                        oldSevereIt
+                                    )
+                                    {
+                                        const label oldFace =
+                                            oldSevereIt.key();
+                                        if
+                                        (
+                                            oldFace >= 0
+                                         && oldFace < saved.faces.size()
+                                         && kSamePointSet
+                                            (
+                                                severeFace,
+                                                saved.faces[oldFace]
+                                            )
+                                        )
+                                        {
+                                            persisted = true;
+                                            break;
+                                        }
+                                    }
+                                    if( persisted )
+                                    {
+                                        ++kPersistedOldSevere;
+                                        continue;
+                                    }
+
+                                    ++kNewAffectedSevere;
+                                    label centreCount = 0;
+                                    label firstCentre = -1;
+                                    forAll(severeFace, fpI)
+                                    {
+                                        const label pointI =
+                                            severeFace[fpI];
+                                        if
+                                        (
+                                            kCentreColumn.find(pointI)
+                                         != kCentreColumn.end()
+                                        )
+                                        {
+                                            if( firstCentre < 0 )
+                                                firstCentre = pointI;
+                                            ++centreCount;
+                                        }
+                                    }
+
+                                    label role = 6;
+                                    label column = -1;
+                                    label layer = -1;
+                                    label edge = -1;
+                                    if( centreCount == 1 )
+                                    {
+                                        column =
+                                            kCentreColumn[firstCentre];
+                                        layer = kCentreRing[firstCentre];
+                                        role = kCentreRole[firstCentre];
+                                    }
+                                    else if( centreCount == 2 )
+                                    {
+                                        role = 4;
+                                        column =
+                                            kCentreColumn[firstCentre];
+                                        layer = kCentreRing[firstCentre];
+                                    }
+                                    else if( centreCount == 0 )
+                                    {
+                                        bool foundSide = false;
+                                        for
+                                        (
+                                            label colI=0;
+                                            colI<kNColumns && !foundSide;
+                                            ++colI
+                                        )
+                                            for
+                                            (
+                                                label layerI=0;
+                                                layerI<
+                                                kColumnCells[colI].size()
+                                             && !foundSide;
+                                                ++layerI
+                                            )
+                                                for(label j=0; j<4; ++j)
+                                                {
+                                                    const label oldSide =
+                                                        kSideFaces[colI]
+                                                        [layerI][j];
+                                                    if
+                                                    (
+                                                        oldSide >= 0
+                                                     && oldSide <
+                                                        saved.faces.size()
+                                                     && kSamePointSet
+                                                        (
+                                                            severeFace,
+                                                            saved.faces
+                                                            [oldSide]
+                                                        )
+                                                    )
+                                                    {
+                                                        role = 5;
+                                                        column = colI;
+                                                        layer = layerI;
+                                                        edge = j;
+                                                        foundSide = true;
+                                                        break;
+                                                    }
+                                                }
+                                    }
+
+                                    if( role == 1 )
+                                        ++kNewWallRingSevere;
+                                    else if( role == 2 )
+                                        ++kNewLayerRingSevere;
+                                    else if( role == 3 )
+                                        ++kNewTopRingSevere;
+                                    else if( role == 4 )
+                                        ++kNewRadialSevere;
+                                    else if( role == 5 )
+                                        ++kNewSelectedSideSevere;
+                                    else
+                                        ++kNewOtherSevere;
+
+                                    scalar angle = -1.0;
+                                    const auto angleIt =
+                                        kTrial.fanNonOrthDegrees.find
+                                        (faceI);
+                                    if
+                                    (
+                                        angleIt !=
+                                        kTrial.fanNonOrthDegrees.end()
+                                    )
+                                        angle = angleIt->second;
+
+                                    Info << "CFMITCH V5.1p NEW NONORTH:"
+                                         << " face=" << faceI
+                                         << " angle=" << angle
+                                         << " role=" << role
+                                         << " column=" << column
+                                         << " layer=" << layer
+                                         << " edge=" << edge
+                                         << " nVerts="
+                                         << severeFace.size()
+                                         << " centrePoints="
+                                         << centreCount
+                                         << " owner="
+                                         << kSevereOwner[faceI]
+                                         << " neighbour="
+                                         << kSevereNeighbour[faceI]
+                                         << endl;
+                                }
+
+                                Info << "CFMITCH V5.1p NONORTH DELTA:"
+                                     << " before="
+                                     << before.severeNonOrthFaces
+                                     << " after="
+                                     << kTrial.severeNonOrthFaces
+                                     << " persistedOldGeometry="
+                                     << kPersistedOldSevere
+                                     << " resolvedOldGeometry="
+                                     << before.severeNonOrthFaces
+                                        -kPersistedOldSevere
+                                     << " newAffected="
+                                     << kNewAffectedSevere
+                                     << " wallRing="
+                                     << kNewWallRingSevere
+                                     << " layerRing="
+                                     << kNewLayerRingSevere
+                                     << " topRing="
+                                     << kNewTopRingSevere
+                                     << " radial="
+                                     << kNewRadialSevere
+                                     << " selectedSide="
+                                     << kNewSelectedSideSevere
+                                     << " other="
+                                     << kNewOtherSevere
+                                     << endl;
+
+                                labelHashSet kLegacyNeg, kLegacyPyr;
+                                polyMeshGenChecks::checkCellVolumes
+                                (
+                                    mesh_, false, &kLegacyNeg
+                                );
+                                polyMeshGenChecks::checkFacePyramids
+                                (
+                                    mesh_, false, -SMALL, &kLegacyPyr
+                                );
+
+                                labelHashSet kConcaveAfter;
+                                labelHashSet kFlatAfter;
+                                labelHashSet kAreaAfter;
+                                labelHashSet kClosedAfter;
+                                labelHashSet kStockConcaveCellsAfter;
+                                std::map
+                                <
+                                    label,
+                                    CFMitchConcaveCellWitness
+                                > kStockConcaveWitnessAfter;
+                                if( runV51sRequested )
+                                {
+                                    cfmitchStockConcaveCells
+                                    (
+                                        mesh_,
+                                        kStockConcaveCellsAfter,
+                                        &kStockConcaveWitnessAfter
+                                    );
+                                    polyMeshGenChecks::checkFaceAngles
+                                    (
+                                        mesh_, false, 10.0,
+                                        &kConcaveAfter
+                                    );
+                                    polyMeshGenChecks::checkFaceFlatness
+                                    (
+                                        mesh_, false, 0.8,
+                                        &kFlatAfter
+                                    );
+                                    polyMeshGenChecks::checkFaceAreas
+                                    (
+                                        mesh_, false, VSMALL,
+                                        &kAreaAfter
+                                    );
+                                    polyMeshGenChecks::checkClosedCells
+                                    (
+                                        mesh_, false, 1000.0,
+                                        &kClosedAfter
+                                    );
+                                }
+
+                                // V5.1t: classify only flat faces whose
+                                // vertex sets did not exist in the baseline.
+                                // This is bounded diagnostics; the V5.1s
+                                // retention gate below remains unchanged.
+                                label kPersistedOldFlat = 0;
+                                label kNewFlat = 0;
+                                label kNewWallRingFlat = 0;
+                                label kNewLayerRingFlat = 0;
+                                label kNewTopRingFlat = 0;
+                                label kNewRadialFlat = 0;
+                                label kNewSelectedSideFlat = 0;
+                                label kNewOtherFlat = 0;
+                                if( runV51sRequested )
+                                {
+                                    const pointFieldPMG& kFlatPoints =
+                                        mesh_.points();
+                                    const vectorField& kFlatCentres =
+                                        mesh_.addressingData().faceCentres();
+                                    const vectorField& kFlatAreas =
+                                        mesh_.addressingData().faceAreas();
+
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        kFlatAfter,
+                                        flatIt
+                                    )
+                                    {
+                                        const label faceI = flatIt.key();
+                                        const face& flatFace =
+                                            kSevereFaces[faceI];
+                                        bool persisted = false;
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            kFlatBefore,
+                                            oldFlatIt
+                                        )
+                                        {
+                                            const label oldFace =
+                                                oldFlatIt.key();
+                                            if
+                                            (
+                                                oldFace >= 0
+                                             && oldFace < saved.faces.size()
+                                             && kSamePointSet
+                                                (
+                                                    flatFace,
+                                                    saved.faces[oldFace]
+                                                )
+                                            )
+                                            {
+                                                persisted = true;
+                                                break;
+                                            }
+                                        }
+                                        if( persisted )
+                                        {
+                                            ++kPersistedOldFlat;
+                                            continue;
+                                        }
+
+                                        ++kNewFlat;
+                                        label centreCount = 0;
+                                        label firstCentre = -1;
+                                        forAll(flatFace, fpI)
+                                        {
+                                            const label pointI =
+                                                flatFace[fpI];
+                                            if
+                                            (
+                                                kCentreColumn.find(pointI)
+                                             != kCentreColumn.end()
+                                            )
+                                            {
+                                                if( firstCentre < 0 )
+                                                    firstCentre = pointI;
+                                                ++centreCount;
+                                            }
+                                        }
+
+                                        label role = 6;
+                                        label column = -1;
+                                        label layer = -1;
+                                        label edge = -1;
+                                        if( centreCount == 1 )
+                                        {
+                                            column =
+                                                kCentreColumn[firstCentre];
+                                            layer = kCentreRing[firstCentre];
+                                            role = kCentreRole[firstCentre];
+                                        }
+                                        else if( centreCount == 2 )
+                                        {
+                                            role = 4;
+                                            column =
+                                                kCentreColumn[firstCentre];
+                                            layer = kCentreRing[firstCentre];
+                                        }
+                                        else if( centreCount == 0 )
+                                        {
+                                            bool foundSide = false;
+                                            for
+                                            (
+                                                label colI=0;
+                                                colI<kNColumns && !foundSide;
+                                                ++colI
+                                            )
+                                                for
+                                                (
+                                                    label layerI=0;
+                                                    layerI<
+                                                    kColumnCells[colI].size()
+                                                 && !foundSide;
+                                                    ++layerI
+                                                )
+                                                    for(label j=0; j<4; ++j)
+                                                    {
+                                                        const label oldSide =
+                                                            kSideFaces[colI]
+                                                            [layerI][j];
+                                                        if
+                                                        (
+                                                            oldSide >= 0
+                                                         && oldSide <
+                                                            saved.faces.size()
+                                                         && kSamePointSet
+                                                            (
+                                                                flatFace,
+                                                                saved.faces
+                                                                [oldSide]
+                                                            )
+                                                        )
+                                                        {
+                                                            role = 5;
+                                                            column = colI;
+                                                            layer = layerI;
+                                                            edge = j;
+                                                            foundSide = true;
+                                                            break;
+                                                        }
+                                                    }
+                                        }
+
+                                        if( role == 1 )
+                                            ++kNewWallRingFlat;
+                                        else if( role == 2 )
+                                            ++kNewLayerRingFlat;
+                                        else if( role == 3 )
+                                            ++kNewTopRingFlat;
+                                        else if( role == 4 )
+                                            ++kNewRadialFlat;
+                                        else if( role == 5 )
+                                            ++kNewSelectedSideFlat;
+                                        else
+                                            ++kNewOtherFlat;
+
+                                        scalar sumA = 0.0;
+                                        const point& fc =
+                                            kFlatCentres[faceI];
+                                        forAll(flatFace, fpI)
+                                        {
+                                            const point& thisPoint =
+                                                kFlatPoints[flatFace[fpI]];
+                                            const point& nextPoint =
+                                                kFlatPoints
+                                                [flatFace.nextLabel(fpI)];
+                                            sumA += mag
+                                            (
+                                                0.5*
+                                                (
+                                                    (nextPoint-thisPoint)
+                                                  ^ (fc-thisPoint)
+                                                )
+                                            );
+                                        }
+                                        const scalar flatness =
+                                            mag(kFlatAreas[faceI])
+                                           /(sumA+VSMALL);
+
+                                        Info << "CFMITCH V5.1t NEW FLAT:"
+                                             << " face=" << faceI
+                                             << " flatness=" << flatness
+                                             << " role=" << role
+                                             << " column=" << column
+                                             << " layer=" << layer
+                                             << " edge=" << edge
+                                             << " nVerts="
+                                             << flatFace.size()
+                                             << " centrePoints="
+                                             << centreCount
+                                             << " owner="
+                                             << kSevereOwner[faceI]
+                                             << " neighbour="
+                                             <<
+                                                (
+                                                    faceI <
+                                                    mesh_.nInternalFaces()
+                                                  ? kSevereNeighbour[faceI]
+                                                  : -1
+                                                )
+                                             << " points=" << flatFace
+                                             << endl;
+                                    }
+                                }
+
+                                Info << "CFMITCH V5.1t FLAT DELTA:"
+                                     << " before=" << kFlatBefore.size()
+                                     << " after=" << kFlatAfter.size()
+                                     << " persistedOldGeometry="
+                                     << kPersistedOldFlat
+                                     << " resolvedOldGeometry="
+                                     << kFlatBefore.size()
+                                        -kPersistedOldFlat
+                                     << " newAffected=" << kNewFlat
+                                     << " wallRing="
+                                     << kNewWallRingFlat
+                                     << " layerRing="
+                                     << kNewLayerRingFlat
+                                     << " topRing="
+                                     << kNewTopRingFlat
+                                     << " radial=" << kNewRadialFlat
+                                     << " selectedSide="
+                                     << kNewSelectedSideFlat
+                                     << " other=" << kNewOtherFlat
+                                     << endl;
+
+                                // V5.1u: exact stock-OpenFOAM
+                                // concave-cell lineage.  Every converted
+                                // prism contains the two generated ring-
+                                // centre points for its column, allowing a
+                                // post-renumber cell to be mapped back to the
+                                // deterministic pre-exclusion column index.
+                                label kAffectedConcaveCells = 0;
+                                label kUnchangedConcaveCells = 0;
+                                label kMixedConcaveCells = 0;
+                                std::map<label, label>
+                                    kConcaveCountByColumn;
+                                std::map<label, scalar>
+                                    kWorstCosineByColumn;
+                                std::map<label, label>
+                                    kWorstLayerByColumn;
+
+                                if( runV51sRequested )
+                                {
+                                    forAllConstIter
+                                    (
+                                        labelHashSet,
+                                        kStockConcaveCellsAfter,
+                                        concaveCellIt
+                                    )
+                                    {
+                                        const label cellI =
+                                            concaveCellIt.key();
+                                        const cell& concaveCell =
+                                            kFinalCells[cellI];
+                                        labelHashSet centrePoints;
+                                        forAll(concaveCell, cfI)
+                                        {
+                                            const face& f = kFinalFaces
+                                            [concaveCell[cfI]];
+                                            forAll(f, fpI)
+                                                if
+                                                (
+                                                    kCentreColumn.find
+                                                    (f[fpI])
+                                                 != kCentreColumn.end()
+                                                )
+                                                    centrePoints.insert
+                                                    (f[fpI]);
+                                        }
+
+                                        label column = -1;
+                                        label minRing =
+                                            std::numeric_limits<label>::max();
+                                        bool mixed = false;
+                                        forAllConstIter
+                                        (
+                                            labelHashSet,
+                                            centrePoints,
+                                            centreIt
+                                        )
+                                        {
+                                            const label pointI =
+                                                centreIt.key();
+                                            const label thisColumn =
+                                                kCentreColumn[pointI];
+                                            if( column < 0 )
+                                                column = thisColumn;
+                                            else if( column != thisColumn )
+                                                mixed = true;
+                                            minRing = Foam::min
+                                            (
+                                                minRing,
+                                                kCentreRing[pointI]
+                                            );
+                                        }
+
+                                        if( mixed )
+                                        {
+                                            ++kMixedConcaveCells;
+                                            continue;
+                                        }
+                                        if( column < 0 )
+                                        {
+                                            ++kUnchangedConcaveCells;
+                                            continue;
+                                        }
+
+                                        ++kAffectedConcaveCells;
+                                        ++kConcaveCountByColumn[column];
+                                        const scalar cosine =
+                                            kStockConcaveWitnessAfter[cellI]
+                                            .cosine;
+                                        const auto worstIt =
+                                            kWorstCosineByColumn.find(column);
+                                        if
+                                        (
+                                            worstIt ==
+                                                kWorstCosineByColumn.end()
+                                         || cosine > worstIt->second
+                                        )
+                                        {
+                                            kWorstCosineByColumn[column] =
+                                                cosine;
+                                            kWorstLayerByColumn[column] =
+                                                minRing;
+                                        }
+                                    }
+                                }
+
+                                OFstream kConcaveCsv
+                                ("cfmitchV51u_concave_columns.csv");
+                                kConcaveCsv
+                                    << "postColumn,originalSelectionIndex,"
+                                    << "wallFace,concaveChildren,"
+                                    << "worstCosine,worstLayer\n";
+                                for(const auto& item :
+                                    kConcaveCountByColumn)
+                                {
+                                    const label column = item.first;
+                                    kConcaveCsv
+                                        << column << ','
+                                        << kOriginalSelectionIndices[column]
+                                        << ',' << kSelectedWalls[column]
+                                        << ',' << item.second
+                                        << ','
+                                        << kWorstCosineByColumn[column]
+                                        << ','
+                                        << kWorstLayerByColumn[column]
+                                        << '\n';
+                                }
+
+                                Info << "CFMITCH V5.1u CONCAVE CELL DELTA:"
+                                     << " before="
+                                     << kStockConcaveCellsBefore.size()
+                                     << " after="
+                                     << kStockConcaveCellsAfter.size()
+                                     << " affectedPrismCells="
+                                     << kAffectedConcaveCells
+                                     << " unaffectedCells="
+                                     << kUnchangedConcaveCells
+                                     << " mixedCells="
+                                     << kMixedConcaveCells
+                                     << " affectedColumns="
+                                     << kConcaveCountByColumn.size()
+                                     << " csvGood="
+                                     << kConcaveCsv.good()
+                                     << endl;
+
+                                const bool kExtendedSafe =
+                                    !runV51sRequested
+                                 ||
+                                    (
+                                        kStockConcaveCellsAfter.size()
+                                            <=
+                                        kStockConcaveCellsBefore.size()
+                                     && kConcaveAfter.size()
+                                            <= kConcaveBefore.size()
+                                     && kFlatAfter.size()
+                                            <= kFlatBefore.size()
+                                     && kAreaAfter.size()
+                                            <= kAreaBefore.size()
+                                     && kClosedAfter.size()
+                                            <= kClosedBefore.size()
+                                     && kConcaveCsv.good()
+                                    );
+
+                                Info << "CFMITCH V5.1s EXTENDED GATE:"
+                                     << " stockConcaveCells="
+                                     << kStockConcaveCellsBefore.size()
+                                     << "->"
+                                     << kStockConcaveCellsAfter.size()
+                                     << " concaveFaces="
+                                     << kConcaveBefore.size() << "->"
+                                     << kConcaveAfter.size()
+                                     << " flatFaces="
+                                     << kFlatBefore.size() << "->"
+                                     << kFlatAfter.size()
+                                     << " areaFaces="
+                                     << kAreaBefore.size() << "->"
+                                     << kAreaAfter.size()
+                                     << " closedCells="
+                                     << kClosedBefore.size() << "->"
+                                     << kClosedAfter.size()
+                                     << " safe=" << kExtendedSafe
+                                     << endl;
+
+                                const label kResolvedUnique =
+                                    before.badFaceTetFaceSet.size()
+                                  - kTrial.badFaceTetFaceSet.size();
+                                const bool kProbeSafe =
+                                    !kTopologyError
+                                 && kExtendedSafe
+                                 && kResolvedUnique >= kExpectedFailures
+                                 && kTrial.faceTetErrorEvents
+                                      < before.faceTetErrorEvents
+                                 && kTrial.fanNonFinite == 0
+                                 && kTrial.pyramidErrors
+                                      <= before.pyramidErrors
+                                 && kTrial.severeNonOrthFaces
+                                      <= before.severeNonOrthFaces
+                                 && kTrial.errorNonOrthFaces.size()
+                                      <= before.errorNonOrthFaces.size()
+                                 && kTrial.highSkewFaces
+                                      <= before.highSkewFaces
+                                 && kTrial.smallWeightFaces
+                                      <= before.smallWeightFaces
+                                 && kTrial.smallVolRatioFaces
+                                      <= before.smallVolRatioFaces
+                                 && kTrial.smallDeterminantCells
+                                      <= before.smallDeterminantCells
+                                 && kTrial.maxNonOrth
+                                      <= before.maxNonOrth+1e-8
+                                 && kTrial.maxSkew <= before.maxSkew+1e-8
+                                 && kTrial.minFaceWeight+1e-12
+                                      >= before.minFaceWeight
+                                 && kTrial.minVolRatio+1e-12
+                                      >= before.minVolRatio
+                                 && kTrial.minDeterminant+1e-12
+                                      >= before.minDeterminant
+                                 && kLegacyNeg.size()
+                                      <= oldLegacyNeg.size()
+                                 && kLegacyPyr.size()
+                                      <= oldLegacyPyr.size();
+
+                                Info << "CFMITCH V5.1k RESULT:"
+                                     << " points=" << hOldNP << "->"
+                                     << mesh_.points().size()
+                                     << " faces=" << hOldNF << "->"
+                                     << mesh_.faces().size()
+                                     << " cells=" << hOldNC << "->"
+                                     << mesh_.cells().size()
+                                     << " columns=" << kNColumns
+                                     << " parents=" << kTotalParents
+                                     << " rings=" << kAllRings.size()
+                                     << " sharedSideFaces=" << kSharedSides
+                                     << " flippedFaces=" << kFlippedFaces
+                                     << " duplicateMasterCells="
+                                     << kDuplicateMasterCells
+                                     << " topologyError=" << kTopologyError
+                                     << " newPointsUsed=" << kNewPointsUsed
+                                     << " expectedResolved="
+                                     << kExpectedFailures
+                                     << " resolvedUnique=" << kResolvedUnique
+                                     << " faceTetEvents="
+                                     << before.faceTetErrorEvents << "->"
+                                     << kTrial.faceTetErrorEvents
+                                     << " faceTetUnique="
+                                     << before.badFaceTetFaceSet.size() << "->"
+                                     << kTrial.badFaceTetFaceSet.size()
+                                     << " severeNonOrth="
+                                     << before.severeNonOrthFaces << "->"
+                                     << kTrial.severeNonOrthFaces
+                                     << " maxNonOrth=" << before.maxNonOrth
+                                     << "->" << kTrial.maxNonOrth
+                                     << " skew=" << before.highSkewFaces
+                                     << "->" << kTrial.highSkewFaces
+                                     << " smallDet="
+                                     << before.smallDeterminantCells << "->"
+                                     << kTrial.smallDeterminantCells
+                                     << " minDet=" << before.minDeterminant
+                                     << "->" << kTrial.minDeterminant
+                                     << " legacyNeg=" << oldLegacyNeg.size()
+                                     << "->" << kLegacyNeg.size()
+                                     << " legacyPyr=" << oldLegacyPyr.size()
+                                     << "->" << kLegacyPyr.size()
+                                     << " nonFinite=" << kTrial.fanNonFinite
+                                     << endl;
+                                Info << "CFMITCH V5.1k GATE:"
+                                     << " safe=" << kProbeSafe
+                                     << " countError=" << kCountError
+                                     << " orderError=" << kOrderError
+                                     << " zipError=" << kZipError
+                                     << " faceVertexError="
+                                     << kFaceVertexError
+                                     << " exactRollbackPending="
+                                     << !runV51sRequested
+                                     << " commitRequested="
+                                     << runV51sRequested
+                                     << endl;
+                                topologyOK = topologyOK && kProbeSafe;
+                            }
+                            else
+                            {
+                                topologyOK = false;
+                                Info << "CFMITCH V5.1k SKIP:"
+                                     << " mapped topology incomplete"
+                                     << endl;
+                            }
+                        }
+                        else if( !runV51v && !runV51w )
+                        {
+                            topologyOK = false;
+                            Info << "CFMITCH V5.1k SKIP:"
+                                 << " column discovery incomplete"
+                                 << endl;
+                        }
+
+                        if( runV51sRequested )
+                        {
+                            accept = topologyOK && !runV51x;
+                            Info << "CFMITCH V5.1s RETENTION DECISION:"
+                                 << " topologyAndQualityOK="
+                                 << topologyOK
+                                 << " retain=" << accept
+                                 << endl;
+                        }
+                        else
+                        {
+                            // All pre-V5.1s modes remain diagnostic-only.
+                            accept = false;
+                        }
+                    }
+                    bool discoveryOK =
+                        !runV51j && !runV51k && !runV51l
+                     && seedFace >= 0 && seedFace < hNInternal0
+                     && hFaces0[seedFace].size() == 4;
+                    labelLongList aCells, aRings, bCells, bRings;
+                    if( discoveryOK )
+                    {
+                        discoveryOK =
+                            walkColumn(hOwn0[seedFace], aCells, aRings)
+                         && walkColumn(hNei0[seedFace], bCells, bRings);
+                    }
+
+                    labelLongList columnCells, ringFaces;
+                    if( discoveryOK )
+                    {
+                        for(label i=aCells.size()-1; i>=0; --i)
+                            columnCells.append(aCells[i]);
+                        forAll(bCells, i) columnCells.append(bCells[i]);
+                        for(label i=aRings.size()-1; i>=0; --i)
+                            ringFaces.append(aRings[i]);
+                        for(label i=1; i<bRings.size(); ++i)
+                            ringFaces.append(bRings[i]);
+                        discoveryOK =
+                            ringFaces.size() == columnCells.size()+1
+                         && columnCells.size() > 0;
+                        labelHashSet uniqueCells;
+                        forAll(columnCells, i)
+                            discoveryOK = discoveryOK
+                             && uniqueCells.insert(columnCells[i]);
+                    }
+
+
+                    const label discoveredColumnCells = columnCells.size();
+                    if( discoveryOK && runV51i )
+                    {
+                        // Minimal topology-complete repair: fan the selected
+                        // transverse face and the opposite face of its owner
+                        // cell, then replace that one hexahedron with four
+                        // triangular prisms.
+                        const label chosenCell = hOwn0[seedFace];
+                        const label chosenOpposite =
+                            oppositeFace(chosenCell, seedFace);
+                        discoveryOK =
+                            chosenCell >= 0 && chosenOpposite >= 0
+                         && hCells0[chosenCell].size() == 6
+                         && hFaces0[chosenOpposite].size() == 4;
+                        if( discoveryOK )
+                        {
+                            columnCells.setSize(1);
+                            columnCells[0] = chosenCell;
+                            ringFaces.setSize(2);
+                            ringFaces[0] = seedFace;
+                            ringFaces[1] = chosenOpposite;
+                        }
+                        Info << "CFMITCH V5.1i SELECT: seedFace=" << seedFace
+                             << " chosenSide=owner chosenCell=" << chosenCell
+                             << " oppositeFace=" << chosenOpposite
+                             << " discoveredColumnCells="
+                             << discoveredColumnCells
+                             << " valid=" << discoveryOK << endl;
+                    }
+                    List<labelList> ringPoints(ringFaces.size());
+                    List<FixedList<label, 4>> sideFaces(columnCells.size());
+                    if( discoveryOK )
+                    {
+                        ringPoints[0].setSize(4);
+                        for(label j=0; j<4; ++j)
+                            ringPoints[0][j] = hFaces0[ringFaces[0]][j];
+
+                        forAll(columnCells, layerI)
+                        {
+                            const label lowFace = ringFaces[layerI];
+                            const label highFace = ringFaces[layerI+1];
+                            const face& high = hFaces0[highFace];
+                            ringPoints[layerI+1].setSize(4, -1);
+
+                            for(label j=0; j<4; ++j)
+                            {
+                                const label lowPoint = ringPoints[layerI][j];
+                                label count[4] = {0, 0, 0, 0};
+                                const cell& c = hCells0[columnCells[layerI]];
+                                forAll(c, cfI)
+                                {
+                                    const label faceI = c[cfI];
+                                    if( faceI == lowFace || faceI == highFace )
+                                        continue;
+                                    const face& sf = hFaces0[faceI];
+                                    if( !hasPoint(sf, lowPoint) ) continue;
+                                    for(label q=0; q<4; ++q)
+                                        if( hasPoint(sf, high[q]) ) ++count[q];
+                                }
+                                label best = -1, bestCount = 0, ties = 0;
+                                for(label q=0; q<4; ++q)
+                                {
+                                    if( count[q] > bestCount )
+                                    { best=q; bestCount=count[q]; ties=1; }
+                                    else if( count[q] == bestCount && count[q] > 0 )
+                                        ++ties;
+                                }
+                                if( bestCount < 2 || ties != 1 )
+                                { discoveryOK = false; break; }
+                                ringPoints[layerI+1][j] = high[best];
+                            }
+                            if( !discoveryOK ) break;
+
+                            labelHashSet uniqueHigh;
+                            for(label j=0; j<4; ++j)
+                                discoveryOK = discoveryOK
+                                 && uniqueHigh.insert(ringPoints[layerI+1][j]);
+                            if( !discoveryOK ) break;
+
+                            for(label j=0; j<4; ++j)
+                            {
+                                const label n = (j+1)%4;
+                                label found = -1, nFound = 0;
+                                const cell& c = hCells0[columnCells[layerI]];
+                                forAll(c, cfI)
+                                {
+                                    const label faceI = c[cfI];
+                                    if( faceI == lowFace || faceI == highFace )
+                                        continue;
+                                    const face& sf = hFaces0[faceI];
+                                    if( sf.size() == 4
+                                     && hasPoint(sf, ringPoints[layerI][j])
+                                     && hasPoint(sf, ringPoints[layerI][n])
+                                     && hasPoint(sf, ringPoints[layerI+1][j])
+                                     && hasPoint(sf, ringPoints[layerI+1][n]) )
+                                    { found = faceI; ++nFound; }
+                                }
+                                if( nFound != 1 )
+                                { discoveryOK = false; break; }
+                                sideFaces[layerI][j] = found;
+                            }
+                            if( !discoveryOK ) break;
+                        }
+                    }
+
+                    Info << "CFMITCH "
+                         << (runV51i ? "V5.1i" : "V5.1h")
+                         << " DISCOVERY: seedFace=" << seedFace
+                         << " cells=" << columnCells.size()
+                         << " rings=" << ringFaces.size()
+                         << " valid=" << discoveryOK << endl;
+
+                    if( discoveryOK )
+                    {
+                        auto foundationCentre =
+                        [&](const face& f) -> point
+                        {
+                            point pAvg = point::zero;
+                            forAll(f, fpI) pAvg += hPoints0[f[fpI]];
+                            pAvg /= f.size();
+                            vector sumA = vector::zero;
+                            forAll(f, fpI)
+                                sumA +=
+                                    (hPoints0[f.nextLabel(fpI)]-hPoints0[f[fpI]])
+                                  ^ (pAvg-hPoints0[f[fpI]]);
+                            const vector sumAHat = normalised(sumA);
+                            scalar sumAn = 0.0;
+                            vector sumAnc = vector::zero;
+                            forAll(f, fpI)
+                            {
+                                const point& p0 = hPoints0[f[fpI]];
+                                const point& p1 = hPoints0[f.nextLabel(fpI)];
+                                const vector a = (p1-p0)^(pAvg-p0);
+                                const scalar an = a & sumAHat;
+                                sumAn += an;
+                                sumAnc += an*(p0+p1+pAvg);
+                            }
+                            return sumAn > VSMALL
+                                ? point((1.0/3.0)*sumAnc/sumAn) : pAvg;
+                        };
+
+                        List<point> ringCentres(ringFaces.size());
+                        boolList fanRings(hOldNF, false);
+                        forAll(ringFaces, i)
+                        {
+                            fanRings[ringFaces[i]] = true;
+                            ringCentres[i] =
+                                foundationCentre(hFaces0[ringFaces[i]]);
+                        }
+
+                        labelList centrePoint(hOldNF, -1);
+                        label nextCentre = hOldNP;
+                        forAll(fanRings, faceI)
+                            if( fanRings[faceI] )
+                                centrePoint[faceI] = nextCentre++;
+
+                        decomposeFaces columnFan(mesh_);
+                        columnFan.decomposeMeshFaces(fanRings);
+                        const VRWGraph& hMap = columnFan.newFacesForFace();
+                        polyMeshGenModifier hMod(mesh_);
+                        pointFieldPMG& hPoints = hMod.pointsAccess();
+                        forAll(ringFaces, i)
+                            hPoints[centrePoint[ringFaces[i]]] = ringCentres[i];
+
+                        auto mappedSide =
+                        [&](const label oldFace) -> label
+                        {
+                            return hMap.sizeOfRow(oldFace) == 1
+                                ? hMap(oldFace, 0) : -1;
+                        };
+                        auto mappedTriangle =
+                        [&](const label oldFace, const label p0,
+                            const label p1) -> label
+                        {
+                            label found = -1, nFound = 0;
+                            const faceListPMG& fs = mesh_.faces();
+                            forAllRow(hMap, oldFace, r)
+                            {
+                                const label faceI = hMap(oldFace, r);
+                                if( fs[faceI].size() == 3
+                                 && hasPoint(fs[faceI], p0)
+                                 && hasPoint(fs[faceI], p1) )
+                                { found = faceI; ++nFound; }
+                            }
+                            return nFound == 1 ? found : -1;
+                        };
+
+                        List<FixedList<label, 4>> lowTriangles
+                        (
+                            columnCells.size()
+                        );
+                        List<FixedList<label, 4>> highTriangles
+                        (
+                            columnCells.size()
+                        );
+                        List<FixedList<label, 4>> mappedSides
+                        (
+                            columnCells.size()
+                        );
+                        forAll(columnCells, layerI)
+                        {
+                            for(label j=0; j<4; ++j)
+                            {
+                                const label n = (j+1)%4;
+                                lowTriangles[layerI][j] = mappedTriangle
+                                (
+                                    ringFaces[layerI],
+                                    ringPoints[layerI][j],
+                                    ringPoints[layerI][n]
+                                );
+                                highTriangles[layerI][j] = mappedTriangle
+                                (
+                                    ringFaces[layerI+1],
+                                    ringPoints[layerI+1][j],
+                                    ringPoints[layerI+1][n]
+                                );
+                                mappedSides[layerI][j] =
+                                    mappedSide(sideFaces[layerI][j]);
+                                discoveryOK = discoveryOK
+                                 && lowTriangles[layerI][j] >= 0
+                                 && highTriangles[layerI][j] >= 0
+                                 && mappedSides[layerI][j] >= 0;
+                            }
+                        }
+
+                        faceListPMG& hFaces = hMod.facesAccess();
+                        cellListPMG& hCells = hMod.cellsAccess();
+                        const label hRadialStart = hFaces.size();
+                        const label hNRadial = 4*columnCells.size();
+                        hFaces.setSize(hRadialStart+hNRadial);
+                        forAll(columnCells, layerI)
+                        {
+                            const label lowCentre =
+                                centrePoint[ringFaces[layerI]];
+                            const label highCentre =
+                                centrePoint[ringFaces[layerI+1]];
+                            for(label j=0; j<4; ++j)
+                            {
+                                face radial(4);
+                                radial[0] = ringPoints[layerI][j];
+                                radial[1] = ringPoints[layerI+1][j];
+                                radial[2] = highCentre;
+                                radial[3] = lowCentre;
+                                hFaces[hRadialStart+4*layerI+j].transfer(radial);
+                            }
+                        }
+
+                        List<FixedList<label, 4>> childCells
+                        (
+                            columnCells.size()
+                        );
+                        label nextCell = hOldNC;
+                        forAll(columnCells, layerI)
+                        {
+                            childCells[layerI][0] = columnCells[layerI];
+                            for(label j=1; j<4; ++j)
+                                childCells[layerI][j] = nextCell++;
+                        }
+                        hCells.setSize(nextCell);
+                        boolList touchedFaces(hFaces.size(), false);
+                        forAll(columnCells, layerI)
+                        {
+                            for(label j=0; j<4; ++j)
+                            {
+                                const label n = (j+1)%4;
+                                cell prism(5);
+                                prism[0] = lowTriangles[layerI][j];
+                                prism[1] = highTriangles[layerI][j];
+                                prism[2] = mappedSides[layerI][j];
+                                prism[3] = hRadialStart+4*layerI+j;
+                                prism[4] = hRadialStart+4*layerI+n;
+                                hCells[childCells[layerI][j]].transfer(prism);
+                                for(label q=0; q<5; ++q)
+                                    touchedFaces[hCells[childCells[layerI][j]][q]] = true;
+                            }
+                        }
+                        hMod.clearTopologyAddressing();
+
+                        // Reorient every face whose owner may have changed.
+                        // The point-average estimate is independent of the
+                        // current face orientation and is sufficient for the
+                        // convex prism children.
+                        const labelList& trialOwner0 = mesh_.owner();
+                        vectorField cellEstimate(hCells.size(), vector::zero);
+                        forAll(hCells, cellI)
+                        {
+                            labelHashSet vertices;
+                            const cell& c = hCells[cellI];
+                            forAll(c, cfI)
+                            {
+                                const face& f = hFaces[c[cfI]];
+                                forAll(f, fpI) vertices.insert(f[fpI]);
+                            }
+                            forAllConstIter(labelHashSet, vertices, it)
+                                cellEstimate[cellI] += hPoints[it.key()];
+                            if( vertices.size() )
+                                cellEstimate[cellI] /= vertices.size();
+                        }
+                        label nFlipped = 0;
+                        forAll(touchedFaces, faceI)
+                        {
+                            if( !touchedFaces[faceI] ) continue;
+                            const face& f = hFaces[faceI];
+                            point fc = point::zero;
+                            forAll(f, fpI) fc += hPoints[f[fpI]];
+                            fc /= f.size();
+                            if( (f.normal(hPoints)
+                                &(fc-cellEstimate[trialOwner0[faceI]])) < 0 )
+                            {
+                                hFaces[faceI] = f.reverseFace();
+                                ++nFlipped;
+                            }
+                        }
+                        hMod.clearTopologyAddressing();
+
+                        // The new radial faces were appended after the old
+                        // boundary.  Full renumbering places all internal
+                        // faces in OpenFOAM upper-triangular order.
+                        hMod.renumberMesh();
+                        PtrList<boundaryPatch>& hPatches =
+                            hMod.boundariesAccess();
+                        forAll(hPatches, patchI)
+                            hPatches[patchI].patchStart() += hNRadial;
+                        hMod.clearTopologyAddressing();
+
+                        // The pre-cleanup mesh intentionally contains a
+                        // large population of unused legacy points.  Validate
+                        // structural topology separately and verify only the
+                        // newly-created centre points for point usage.
+                        const bool hOrderError =
+                            polyMeshGenChecks::checkUpperTriangular(mesh_, true);
+                        const bool hZipError =
+                            polyMeshGenChecks::checkCellsZipUp(mesh_, true);
+                        const bool hFaceVertexError =
+                            polyMeshGenChecks::checkFaceVertices(mesh_, true);
+                        boolList hPointUsed(mesh_.points().size(), false);
+                        const faceListPMG& hFinalFaces = mesh_.faces();
+                        forAll(hFinalFaces, faceI)
+                        {
+                            const face& f = hFinalFaces[faceI];
+                            forAll(f, fpI) hPointUsed[f[fpI]] = true;
+                        }
+                        bool hNewPointsUsed = true;
+                        for(label pointI=hOldNP;
+                            pointI<label(hPointUsed.size()); ++pointI)
+                            hNewPointsUsed =
+                                hNewPointsUsed && hPointUsed[pointI];
+                        const bool hTopologyError =
+                            hOrderError || hZipError || hFaceVertexError
+                         || !hNewPointsUsed;
+                        CFMitchOFHardQuality hTrial;
+                        evaluateOpenFOAMHardQuality
+                        (
+                            mesh_, hTrial, true, nullptr, true
+                        );
+                        printOpenFOAMCandidateQuality
+                        (
+                            runV51i
+                          ? "V51i_SINGLE_CELL_TRIAL"
+                          : "V51h_COLUMN_TRIAL",
+                            hTrial
+                        );
+                        labelHashSet hLegacyNeg, hLegacyPyr;
+                        polyMeshGenChecks::checkCellVolumes
+                        (
+                            mesh_, false, &hLegacyNeg
+                        );
+                        polyMeshGenChecks::checkFacePyramids
+                        (
+                            mesh_, false, -SMALL, &hLegacyPyr
+                        );
+
+                        Info << "CFMITCH "
+                             << (runV51i ? "V5.1i" : "V5.1h")
+                             << " RESULT:"
+                             << " points=" << hOldNP << "->"
+                             << mesh_.points().size()
+                             << " faces=" << hOldNF << "->"
+                             << mesh_.faces().size()
+                             << " cells=" << hOldNC << "->"
+                             << mesh_.cells().size()
+                             << " columnCells=" << columnCells.size()
+                             << " radialFaces=" << hNRadial
+                             << " flippedFaces=" << nFlipped
+                             << " topologyError=" << hTopologyError
+                             << " newPointsUsed=" << hNewPointsUsed
+                             << " faceTetEvents=" << before.faceTetErrorEvents
+                             << "->" << hTrial.faceTetErrorEvents
+                             << " faceTetUnique="
+                             << before.badFaceTetFaceSet.size() << "->"
+                             << hTrial.badFaceTetFaceSet.size()
+                             << " severeNonOrth=" << before.severeNonOrthFaces
+                             << "->" << hTrial.severeNonOrthFaces
+                             << " maxNonOrth=" << before.maxNonOrth
+                             << "->" << hTrial.maxNonOrth
+                             << " skew=" << before.highSkewFaces
+                             << "->" << hTrial.highSkewFaces
+                             << " smallDet=" << before.smallDeterminantCells
+                             << "->" << hTrial.smallDeterminantCells
+                             << " minDet=" << before.minDeterminant
+                             << "->" << hTrial.minDeterminant
+                             << " legacyNeg=" << oldLegacyNeg.size()
+                             << "->" << hLegacyNeg.size()
+                             << " legacyPyr=" << oldLegacyPyr.size()
+                             << "->" << hLegacyPyr.size()
+                             << " nonFinite=" << hTrial.fanNonFinite
+                             << endl;
+                    }
+                    else if( !runV51j && !runV51k && !runV51l )
+                    {
+                        topologyOK = false;
+                        Info << "CFMITCH "
+                             << (runV51i ? "V5.1i" : "V5.1h")
+                             << " SKIP: topology discovery failed" << endl;
+                    }
+
+                    // Legacy V5.1h/i/j/k/l modes remain diagnostic-only.
+                    // V5.1s alone may carry forward the already-gated
+                    // multi-column topology selected above.
+                    if( !runV51sRequested )
+                        accept = false;
+                }
+                if( accept )
+                {
+                    if( runV51sRequested )
+                    {
+                        const label addedPoints =
+                            mesh_.points().size()-oldNP;
+                        const label addedFaces =
+                            mesh_.faces().size()-oldNF;
+                        const label addedCells =
+                            mesh_.cells().size()-saved.cells.size();
+
+                        blPoints_.setSize
+                        (
+                            savedBL.size()+addedPoints
+                        );
+                        forAll(savedBL, i)
+                            blPoints_[i] = savedBL[i];
+                        for(label i=0; i<addedPoints; ++i)
+                            blPoints_[savedBL.size()+i] = oldNP+i;
+
+                        Info << "CFMITCH V5.1s ACCEPT:"
+                             << " addedPoints=" << addedPoints
+                             << " addedFaces=" << addedFaces
+                             << " addedCells=" << addedCells
+                             << " trackedBLPoints="
+                             << blPoints_.size()
+                             << endl;
+                    }
+                    else
+                    {
+                        blPoints_.setSize(savedBL.size()+selected);
+                        forAll(savedBL, i) blPoints_[i] = savedBL[i];
+                        for(label i=0; i<selected; ++i)
+                            blPoints_[savedBL.size()+i] = oldNP+i;
+                        Info << "CFMITCH V5.1e ACCEPT: addedPoints="
+                             << selected
+                             << " addedFaces=" << 3*selected
+                             << " addedCells=0" << endl;
+                    }
+                }
+                else
+                {
+                    if( !restorePreRefBLSnapshot(saved) )
+                        FatalErrorIn("CFMitchV51e") << "Rollback failed" << exit(FatalError);
+                    blPoints_ = savedBL;
+                    CFMitchOFHardQuality restored;
+                    evaluateOpenFOAMHardQuality(mesh_, restored, true);
+                    printOpenFOAMCandidateQuality("V51e_RESTORED", restored);
+                    bool rollbackOK = mesh_.points().size() == oldNP
+                        && mesh_.faces().size() == oldNF
+                        && mesh_.cells().size() == saved.cells.size()
+                        && restored.badFaceTetFaceSet.size() == before.badFaceTetFaceSet.size()
+                        && restored.faceTetErrorEvents == before.faceTetErrorEvents;
+                    forAllConstIter(labelHashSet, before.badFaceTetFaceSet, it)
+                        rollbackOK = rollbackOK && restored.badFaceTetFaceSet.found(it.key());
+                    if( !rollbackOK )
+                        FatalErrorIn("CFMitchV51e") << "Rollback verification failed"
+                            << exit(FatalError);
+                    Info << "CFMITCH V5.1e ROLLBACK: topologyOK=" << topologyOK
+                         << " verified=" << rollbackOK << endl;
+                }
+            }
+            else Info << "CFMITCH V5.1e SKIP: no selection or non-finite baseline" << endl;
         }
 
         Info << "refBoundaryLayers: stored "
@@ -12120,7 +18527,17 @@ void cartesianMeshGenerator::generateMesh()
         if( controller_.runCurrentStep("boundaryLayerGeneration") )
         {
             writeLineageCSV("preBL");
+
+            CFMitchOFHardQuality preBLCreateOF;
+            evaluateOpenFOAMHardQuality(mesh_, preBLCreateOF);
+            printOpenFOAMCandidateQuality("PRE_BL_CREATE", preBLCreateOF);
+
             generateBoundaryLayers();
+
+            CFMitchOFHardQuality postBLCreateOF;
+            evaluateOpenFOAMHardQuality(mesh_, postBLCreateOF);
+            printOpenFOAMCandidateQuality("POST_BL_CREATE", postBLCreateOF);
+
             writeLineageCSV("postBLCreate");
         }
 
@@ -12136,9 +18553,32 @@ void cartesianMeshGenerator::generateMesh()
                  << meshOptBadBefore.size()
                  << " negVol=" << meshOptNegBefore.size()
                  << endl;
+            CFMitchOFHardQuality preFinalOptOF;
+            evaluateOpenFOAMHardQuality(mesh_, preFinalOptOF);
+            printOpenFOAMCandidateQuality("PRE_FINAL_OPT", preFinalOptOF);
+
             optimiseFinalMesh();
 
+            mesh_.clearAddressingData();
+            CFMitchOFHardQuality postFinalOptOF;
+            evaluateOpenFOAMHardQuality(mesh_, postFinalOptOF);
+            printOpenFOAMCandidateQuality("POST_FINAL_OPT", postFinalOptOF);
+
             projectSurfaceAfterBackScaling();
+
+            mesh_.clearAddressingData();
+            CFMitchOFHardQuality postBackScaleProjectOF;
+            evaluateOpenFOAMHardQuality
+            (
+                mesh_,
+                postBackScaleProjectOF
+            );
+            printOpenFOAMCandidateQuality
+            (
+                "POST_BACKSCALE_PROJECT",
+                postBackScaleProjectOF
+            );
+
             mesh_.clearAddressingData();
             labelHashSet meshOptBadAfter;
             polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &meshOptBadAfter);
@@ -12252,6 +18692,15 @@ void cartesianMeshGenerator::generateMesh()
         else
         {
             snapSurfaceBeforeBLRefinement();
+
+            mesh_.clearAddressingData();
+            CFMitchOFHardQuality postPreRefBLSnapOF;
+            evaluateOpenFOAMHardQuality(mesh_, postPreRefBLSnapOF);
+            printOpenFOAMCandidateQuality
+            (
+                "POST_PRE_REFBL_SNAP",
+                postPreRefBLSnapOF
+            );
         }
         if( controller_.runCurrentStep("boundaryLayerRefinement") )
         {
@@ -12266,6 +18715,12 @@ void cartesianMeshGenerator::generateMesh()
                          << "(reprojUnsafe -- provenance retraction disabled)" << endl;
 
                 refBoundaryLayers();
+
+                mesh_.clearAddressingData();
+                CFMitchOFHardQuality postRefBLOF;
+                evaluateOpenFOAMHardQuality(mesh_, postRefBLOF);
+                printOpenFOAMCandidateQuality("POST_REFBL", postRefBLOF);
+
                 writeLineageCSV("postRefBL");
             }
         }
@@ -12279,6 +18734,10 @@ void cartesianMeshGenerator::generateMesh()
             polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrBeforeRenumber);
             Info << "Pre-renumber validation: negVol=" << negBeforeRenumber.size()
                  << " badPyramids=" << pyrBeforeRenumber.size() << endl;
+
+            CFMitchOFHardQuality preRenumberOF;
+            evaluateOpenFOAMHardQuality(mesh_, preRenumberOF);
+            printOpenFOAMCandidateQuality("PRE_RENUMBER", preRenumberOF);
 
             // Print pre-renumber bad pyramid face/cell IDs so they can be
             // queried against postRefBL_cellProvenance.csv (also pre-renumber).
@@ -12488,6 +18947,15 @@ void cartesianMeshGenerator::generateMesh()
             polyMeshGenChecks::checkFacePyramids(mesh_, false, -SMALL, &pyrAfterRenumber);
             Info << "Post-renumber validation: negVol=" << negAfterRenumber.size()
                  << " badPyramids=" << pyrAfterRenumber.size() << endl;
+
+            CFMitchOFHardQuality postRenumberOF;
+            evaluateOpenFOAMHardQuality
+            (
+                mesh_, postRenumberOF,
+                meshDict_.found("cfmitchV51eFaceFan")
+             && readBool(meshDict_.lookup("cfmitchV51eFaceFan"))
+            );
+            printOpenFOAMCandidateQuality("POST_RENUMBER", postRenumberOF);
         }
 
         replaceBoundaries();

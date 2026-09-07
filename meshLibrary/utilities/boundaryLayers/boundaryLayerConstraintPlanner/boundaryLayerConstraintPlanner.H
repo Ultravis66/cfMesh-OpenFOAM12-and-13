@@ -10,6 +10,7 @@
 #include "boundaryLayerPlan.H"
 #include "LongList.H"
 #include "Map.H"
+#include "HashSet.H"
 #include "edge.H"
 #include "word.H"
 
@@ -89,6 +90,7 @@ public:
         const scalar globalThicknessRatio,
         const std::map<word, scalar>& thicknessRatioForPatch,
         const labelList& vtFaceRing,
+        const labelHashSet& directLayerCapFaces,
         const label maxLayerStep
     ) const;
 };

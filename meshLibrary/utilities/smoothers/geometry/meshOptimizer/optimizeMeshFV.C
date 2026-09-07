@@ -123,6 +123,111 @@ void meshOptimizer::untangleMeshFV
 
     labelHashSet badFaces;
 
+    // CFMitch V5.1f: preserve the actual best point state and stop when
+    // the global relaxed defect count clearly regresses. Other untangler
+    // callers retain the legacy logic.
+    pointField relaxedBestPoints;
+    label relaxedBestBadFaces = 10 * faces.size();
+    label relaxedRegressionStreak = 0;
+    bool relaxedBestValid = false;
+    bool relaxedStop = false;
+
+    auto relaxedRegressionStop =
+    [&](const label observed, const char* phase) -> bool
+    {
+        if( !relaxedCheck ) return false;
+
+        if( !relaxedBestValid || observed < relaxedBestBadFaces )
+        {
+            const pointFieldPMG& pts = mesh_.points();
+            relaxedBestPoints.setSize(pts.size());
+            forAll(pts, pointI)
+                relaxedBestPoints[pointI] = pts[pointI];
+
+            relaxedBestBadFaces = observed;
+            relaxedRegressionStreak = 0;
+            relaxedBestValid = true;
+
+            Info << "CFMITCH V5.1f UNTANGLE BEST: phase=" << phase
+                 << " badFaces=" << observed << endl;
+
+            return false;
+        }
+
+        if( observed <= relaxedBestBadFaces )
+        {
+            relaxedRegressionStreak = 0;
+            return false;
+        }
+
+        ++relaxedRegressionStreak;
+
+        const bool catastrophic =
+            scalar(observed)
+          > Foam::max
+            (
+                scalar(relaxedBestBadFaces) + scalar(32),
+                scalar(4)*scalar(relaxedBestBadFaces)
+            );
+
+        Info << "CFMITCH V5.1f UNTANGLE REGRESSION: phase=" << phase
+             << " observed=" << observed
+             << " best=" << relaxedBestBadFaces
+             << " streak=" << relaxedRegressionStreak
+             << " catastrophic=" << (catastrophic ? "yes" : "no")
+             << endl;
+
+        if( !catastrophic && relaxedRegressionStreak < 2 )
+            return false;
+
+        pointFieldPMG& pts = mesh_.points();
+
+        if( pts.size() != relaxedBestPoints.size() )
+            FatalErrorIn("meshOptimizer::untangleMeshFV")
+                << "Point count changed during a motion-only untangle"
+                << abort(FatalError);
+
+        forAll(pts, pointI)
+            pts[pointI] = relaxedBestPoints[pointI];
+
+        mesh_.clearAddressingData();
+
+        changedFace = true;
+
+        if( !relaxedCheck )
+            nBadFaces = polyMeshGenChecks::findBadFaces
+            (
+                mesh_,
+                badFaces,
+                false,
+                &changedFace
+            );
+        else
+            nBadFaces = polyMeshGenChecks::findBadFacesRelaxed
+            (
+                mesh_,
+                badFaces,
+                false,
+                &changedFace
+            );
+
+        Info << "CFMITCH V5.1f UNTANGLE EARLY STOP: phase=" << phase
+             << " observed=" << observed
+             << " restoredBadFaces=" << nBadFaces
+             << " expectedBest=" << relaxedBestBadFaces
+             << endl;
+
+        if( nBadFaces != relaxedBestBadFaces )
+            FatalErrorIn("meshOptimizer::untangleMeshFV")
+                << "Best-state restoration mismatch: expected "
+                << relaxedBestBadFaces
+                << " bad faces, found "
+                << nBadFaces
+                << abort(FatalError);
+
+        return true;
+    };
+
     do
     {
         nIter = 0;
@@ -155,6 +260,12 @@ void meshOptimizer::untangleMeshFV
 
             Info << "Iteration " << nIter
                 << ". Number of bad faces is " << nBadFaces << endl;
+
+            if( relaxedRegressionStop(nBadFaces, "volume") )
+            {
+                relaxedStop = true;
+                break;
+            }
 
             //- perform optimisation
             if( nBadFaces == 0 )
@@ -198,7 +309,13 @@ void meshOptimizer::untangleMeshFV
             //- update points in the mesh from the coordinates in the tet mesh
             tetMesh.updateOrigMesh(&changedFace);
 
+            if( relaxedCheck )
+                changedFace = true;
+
         } while( (nIter < minIter+5) && (++nIter < maxNumIterations) );
+
+        if( relaxedStop )
+            break;
 
         if( (nBadFaces == 0) || (++nGlobalIter >= maxNumGlobalIterations) )
             break;
@@ -235,6 +352,12 @@ void meshOptimizer::untangleMeshFV
 
             Info << "Iteration " << nIter
                 << ". Number of bad faces is " << nBadFaces << endl;
+
+            if( relaxedRegressionStop(nBadFaces, "surface") )
+            {
+                relaxedStop = true;
+                break;
+            }
 
             //- perform optimisation
             if( nBadFaces == 0 )
@@ -315,7 +438,13 @@ void meshOptimizer::untangleMeshFV
 
             tetMesh.updateOrigMesh(&changedFace);
 
+            if( relaxedCheck )
+                changedFace = true;
+
         }
+
+        if( relaxedStop )
+            break;
 
     } while( nBadFaces );
 

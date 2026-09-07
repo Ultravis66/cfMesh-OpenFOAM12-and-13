@@ -31,10 +31,13 @@ Description
 #include "helperFunctions.H"
 #include "demandDrivenData.H"
 #include "pyramidPointFaceRef.H"
+#include "tetPointRef.H"
+#include "OFstream.H"
 #include <map>
 #include <set>
 #include <utility>
 #include <cstring>
+#include <cmath>
 
 //#define DEBUGLayer
 
@@ -1644,6 +1647,15 @@ void refineBoundaryLayers::generateNewCells()
     labelList refType(mesh_.cells().size(), 0);
     labelList cellToBfI(mesh_.cells().size(), -1);
 
+    // CFMitch zero-layer accounting diagnostics.
+    //
+    // A zero-layer boundary face is an inactive/terminated BL direction.
+    // It must not delete the owning parent from the cell-count predictor.
+    boolList zeroLayerParent(mesh_.cells().size(), false);
+    label nZeroLayerOwnerHits = 0;
+    label nZeroLayerParentsTouched = 0;
+    label nZeroLayerFactorsClamped = 0;
+
     const meshSurfaceEngine& mse = surfaceEngine();
     const labelList& faceOwners = mse.faceOwners();
     const labelList& childSweepFacePatch =
@@ -1661,9 +1673,37 @@ void refineBoundaryLayers::generateNewCells()
     {
         const label cellI = faceOwners[bfI];
 
-        nCellsFromCell[cellI] *= nLayersAtBndFace_[bfI];
+        const label faceLayers =
+            nLayersAtBndFace_[bfI];
 
-        if( nLayersAtBndFace_[bfI] > 1 )
+        if( faceLayers == 0 )
+        {
+            ++nZeroLayerOwnerHits;
+
+            if( !zeroLayerParent[cellI] )
+            {
+                zeroLayerParent[cellI] = true;
+                ++nZeroLayerParentsTouched;
+            }
+        }
+
+        // nCellsFromCell is a multiplicative child-count predictor.
+        //
+        // A zero-layer face means "no BL subdivision in this direction";
+        // it does NOT mean that the owning parent cell disappears.
+        //
+        // Using zero here makes nNewCells subtract one from allocation while
+        // refType still preserves/refines the parent.  That under-allocates
+        // cells and lets appended children write beyond cells.size().
+        const label cellCountFactor =
+            Foam::max(faceLayers, label(1));
+
+        if( faceLayers == 0 )
+            ++nZeroLayerFactorsClamped;
+
+        nCellsFromCell[cellI] *= cellCountFactor;
+
+        if( faceLayers > 1 )
         {
             ++refType[cellI];
             if( cellToBfI[cellI] < 0 )
@@ -1687,10 +1727,60 @@ void refineBoundaryLayers::generateNewCells()
                 mesh_.addCellToSubset(subsetI, cI);
     }
 
+    label nZeroLayerParentType0 = 0;
+    label nZeroLayerParentType1 = 0;
+    label nZeroLayerParentType2 = 0;
+    label nZeroLayerParentType3Plus = 0;
+    label nCellCountBelowOne = 0;
+
+    forAll(zeroLayerParent, cellI)
+    {
+        if( zeroLayerParent[cellI] )
+        {
+            if( refType[cellI] == 0 )
+                ++nZeroLayerParentType0;
+            else if( refType[cellI] == 1 )
+                ++nZeroLayerParentType1;
+            else if( refType[cellI] == 2 )
+                ++nZeroLayerParentType2;
+            else
+                ++nZeroLayerParentType3Plus;
+        }
+
+        if( nCellsFromCell[cellI] < 1 )
+            ++nCellCountBelowOne;
+    }
+
     //- check the number of cells which will be generated
     label nNewCells(0);
     forAll(nCellsFromCell, cellI)
         nNewCells += (nCellsFromCell[cellI] - 1);
+
+    Info
+        << "CFMITCH ZERO-LAYER ACCOUNTING:"
+        << " ownerHits=" << nZeroLayerOwnerHits
+        << " parentCells=" << nZeroLayerParentsTouched
+        << " factorsClamped=" << nZeroLayerFactorsClamped
+        << " parentType0=" << nZeroLayerParentType0
+        << " parentType1=" << nZeroLayerParentType1
+        << " parentType2=" << nZeroLayerParentType2
+        << " parentType3Plus=" << nZeroLayerParentType3Plus
+        << " countBelowOne=" << nCellCountBelowOne
+        << " predictedNewCells=" << nNewCells
+        << " predictedTotalCells="
+        << label(mesh_.cells().size()+nNewCells)
+        << endl;
+
+    if( nCellCountBelowOne )
+    {
+        refinementValid_ = false;
+
+        FatalErrorIn("void refineBoundaryLayers::generateNewCells()")
+            << "CFMITCH zero-layer accounting failure: "
+            << nCellCountBelowOne
+            << " parent cells have predicted replacement count < 1"
+            << exit(FatalError);
+    }
 
     # ifdef DEBUGLayer
     forAll(nCellsFromCell, cellI)
@@ -3868,6 +3958,1131 @@ void refineBoundaryLayers::generateNewCells()
         };
 
 
+        // ==============================================================
+        // CFMITCH V5.2a -- PROSPECTIVE MARCHING CONTRACT CENSUS
+        //
+        // This is deliberately diagnostic-only.  It evaluates the exact
+        // type-1 children already staged by generateNewFaces(), before any
+        // child cell is committed.  Children are inspected from WALL to
+        // CORE, which is the order a prevention-first layer marcher will
+        // use.  The first unsafe interval defines the presently achievable
+        // prefix for the parent column.
+        //
+        // Hard prospective invariants:
+        //   * finite, positive child volume;
+        //   * non-negative face pyramids;
+        //   * exact OF13 face-plane concavity test;
+        //   * an admissible one-sided face-tet base on every child face;
+        //   * an admissible shared base on each completed layer interface;
+        //   * no >=90 degree completed layer interface.
+        //
+        // Severe non-orthogonality (>70 degrees) is measured but is NOT a
+        // hard validity failure.  It is an anisotropy-sensitive quality
+        // heuristic and belongs in the later bounded quality contract.
+        //
+        // A virtual backtrack moves only the proposed CORE row of the first
+        // failing interval toward its accepted WALL row.  Every point is
+        // restored immediately; V5.2a changes neither geometry nor topology.
+        // ==============================================================
+        if( cfmitchV52aFrontCensus_ )
+        {
+            if( Pstream::parRun() )
+            {
+                FatalErrorIn
+                (
+                    "refineBoundaryLayers::generateNewCells"
+                )
+                    << "CFMitch V5.2a currently requires a serial run"
+                    << exit(FatalError);
+            }
+
+            static label v52aInvocationCounter = 0;
+            const label v52aInvocation = ++v52aInvocationCounter;
+
+            Info
+                << "CFMITCH V5.2a MODE:"
+                << " invocation=" << v52aInvocation
+                << " stage=preV29Prospective"
+                << " marchOrder=wallToCore"
+                << " diagnosticOnly=true"
+                << " exactRollbackNotRequired=true"
+                << endl;
+
+            const scalar v52aTetTolerance = sqr(small);
+            const scalar v52aPlanarCosAngle = 1.0e-6;
+            const scalar v52aRootVSmall = Foam::sqrt(VSMALL);
+            const scalar v52aSevereCos =
+                Foam::cos(scalar(70.0)*M_PI/scalar(180.0));
+
+            enum V52aFailureBits
+            {
+                V52A_INVALID  = 1,
+                V52A_NEGATIVE = 2,
+                V52A_PYRAMID = 4,
+                V52A_CONCAVE = 8,
+                V52A_FACETET = 16,
+                V52A_NONORTH_ERROR = 32
+            };
+
+            // CFMitch V5.3 hard/soft prospective contract.
+            //
+            // Only truly inadmissible prospective geometry/topology may
+            // terminate a BL column. Concavity and tet-decomposition quality
+            // remain diagnostics and must not directly delete boundary layers.
+            const label v52aHardFailureBits =
+                V52A_INVALID
+              | V52A_NEGATIVE
+              | V52A_PYRAMID
+              | V52A_NONORTH_ERROR;
+
+            Info
+                << "CFMITCH V5.3 HARD-SOFT CONTRACT:"
+                << " hard=invalid|negative|pyramid|nonOrth90"
+                << " soft=concave|faceTet|sharedTet|severeNonOrth"
+                << " softCanTerminate=false"
+                << endl;
+
+            struct V52aChildMetrics
+            {
+                label invalid;
+                label negative;
+                label badPyramid;
+                label concave;
+                label badFaceTet;
+                scalar volume;
+                scalar minPyramid;
+                scalar minTetMargin;
+                point centre;
+
+                V52aChildMetrics()
+                :
+                    invalid(0),
+                    negative(0),
+                    badPyramid(0),
+                    concave(0),
+                    badFaceTet(0),
+                    volume(0),
+                    minPyramid(GREAT),
+                    minTetMargin(GREAT),
+                    centre(vector::zero)
+                {}
+            };
+
+            auto v52aMinFaceTetQuality =
+            [&]
+            (
+                const auto& f,
+                const point& cellCentre,
+                const bool ownerSide,
+                const label baseI
+            ) -> scalar
+            {
+                if( f.size() < 3 || baseI < 0 || baseI >= f.size() )
+                    return -GREAT;
+
+                const point& base = v29Points[f[baseI]];
+                scalar minQuality = GREAT;
+
+                for(label tetI=1; tetI<f.size()-1; ++tetI)
+                {
+                    const label facePtI = (tetI + baseI) % f.size();
+                    const label nextPtI = (facePtI + 1) % f.size();
+
+                    const label aI =
+                        ownerSide ? f[facePtI] : f[nextPtI];
+                    const label bI =
+                        ownerSide ? f[nextPtI] : f[facePtI];
+
+                    const scalar quality =
+                        tetPointRef
+                        (
+                            cellCentre,
+                            base,
+                            v29Points[aI],
+                            v29Points[bI]
+                        ).quality();
+
+                    if( !std::isfinite(quality) )
+                        return -GREAT;
+
+                    minQuality = Foam::min(minQuality, quality);
+                }
+
+                return minQuality;
+            };
+
+            auto v52aMeasureChild =
+            [&]
+            (
+                const auto& childFaces,
+                V52aChildMetrics& metrics
+            ) -> bool
+            {
+                metrics = V52aChildMetrics();
+
+                const label nChildFaces = childFaces.size();
+                if( nChildFaces < 4 )
+                {
+                    ++metrics.invalid;
+                    return false;
+                }
+
+                List<vector> faceCentres(nChildFaces);
+                List<vector> faceAreas(nChildFaces);
+                point centreEstimate(vector::zero);
+
+                for(label faceI=0; faceI<nChildFaces; ++faceI)
+                {
+                    if
+                    (
+                        !v29FaceCentreArea
+                        (
+                            childFaces[faceI],
+                            faceCentres[faceI],
+                            faceAreas[faceI]
+                        )
+                    )
+                    {
+                        ++metrics.invalid;
+                        return false;
+                    }
+                    centreEstimate += faceCentres[faceI];
+                }
+
+                centreEstimate /= scalar(nChildFaces);
+
+                vector weightedCentre(vector::zero);
+                scalar volume3 = scalar(0);
+
+                for(label faceI=0; faceI<nChildFaces; ++faceI)
+                {
+                    const scalar pyramid3 =
+                        faceAreas[faceI]
+                      & (faceCentres[faceI] - centreEstimate);
+
+                    weightedCentre +=
+                        pyramid3
+                       *(
+                            scalar(0.75)*faceCentres[faceI]
+                          + scalar(0.25)*centreEstimate
+                        );
+                    volume3 += pyramid3;
+                }
+
+                metrics.centre = centreEstimate;
+                if( Foam::mag(volume3) > VSMALL )
+                    metrics.centre = weightedCentre/volume3;
+
+                if
+                (
+                    help::isnan(metrics.centre)
+                 || help::isinf(metrics.centre)
+                )
+                {
+                    ++metrics.invalid;
+                    return false;
+                }
+
+                metrics.volume = volume3/scalar(3);
+                if( metrics.volume <= scalar(0) )
+                    ++metrics.negative;
+
+                // Exact OF13 face-pyramid and face-plane concavity tests.
+                for(label faceI=0; faceI<nChildFaces; ++faceI)
+                {
+                    const scalar pyramidMargin =
+                        (
+                            faceAreas[faceI]
+                          & (faceCentres[faceI] - metrics.centre)
+                        )/scalar(3);
+
+                    metrics.minPyramid =
+                        Foam::min(metrics.minPyramid, pyramidMargin);
+
+                    if( pyramidMargin < -SMALL )
+                        ++metrics.badPyramid;
+
+                    vector normal = faceAreas[faceI];
+                    normal /= Foam::max(mag(normal), scalar(VSMALL));
+
+                    for(label otherI=0; otherI<nChildFaces; ++otherI)
+                    {
+                        if( otherI == faceI )
+                            continue;
+
+                        vector displacement =
+                            faceCentres[otherI] - faceCentres[faceI];
+                        displacement /=
+                            Foam::max(mag(displacement), scalar(VSMALL));
+
+                        if
+                        (
+                            (displacement & normal)
+                          > -v52aPlanarCosAngle
+                        )
+                        {
+                            metrics.concave = 1;
+                            break;
+                        }
+                    }
+                }
+
+                // Necessary one-sided OF13 base-point condition for every
+                // prospective face of this child.
+                for(label faceI=0; faceI<nChildFaces; ++faceI)
+                {
+                    const auto& f = childFaces[faceI];
+                    scalar bestBase = -GREAT;
+                    bool badFaceTet = false;
+
+                    // Exact owner-side edge-tet branch from OF13
+                    // polyMeshTetDecomposition::checkFaceTets().  A face
+                    // stored outward from this prospective cell has the
+                    // owner-side sign convention (valid quality < -tol).
+                    forAll(f, facePointI)
+                    {
+                        const scalar edgeQuality =
+                            tetPointRef
+                            (
+                                v29Points[f[facePointI]],
+                                v29Points
+                                [
+                                    f[(facePointI + 1) % f.size()]
+                                ],
+                                faceCentres[faceI],
+                                metrics.centre
+                            ).quality();
+
+                        if
+                        (
+                            !std::isfinite(edgeQuality)
+                         || edgeQuality > -v52aTetTolerance
+                        )
+                        {
+                            badFaceTet = true;
+                            break;
+                        }
+                    }
+
+                    forAll(f, baseI)
+                    {
+                        bestBase = Foam::max
+                        (
+                            bestBase,
+                            v52aMinFaceTetQuality
+                            (
+                                f,
+                                metrics.centre,
+                                true,
+                                baseI
+                            )
+                        );
+                    }
+
+                    metrics.minTetMargin =
+                        Foam::min(metrics.minTetMargin, bestBase);
+
+                    if
+                    (
+                        badFaceTet
+                     || !(bestBase > v52aTetTolerance)
+                    )
+                        ++metrics.badFaceTet;
+                }
+
+                return metrics.invalid == 0;
+            };
+
+            auto v52aInterfaceMetrics =
+            [&]
+            (
+                const auto& coreChild,
+                const point& coreCentre,
+                const auto& wallChild,
+                const point& wallCentre,
+                label& invalid,
+                label& badSharedTet,
+                label& severeNonOrth,
+                label& nonOrthError,
+                scalar& angle,
+                scalar& bestShared
+            )
+            {
+                invalid = 0;
+                badSharedTet = 0;
+                severeNonOrth = 0;
+                nonOrthError = 0;
+                angle = scalar(0);
+                bestShared = -GREAT;
+
+                label coreFaceI = -1;
+                label matches = 0;
+
+                forAll(coreChild, cfI)
+                {
+                    forAll(wallChild, wfI)
+                    {
+                        if
+                        (
+                            help::areFacesEqual
+                            (
+                                coreChild[cfI],
+                                wallChild[wfI]
+                            )
+                        )
+                        {
+                            coreFaceI = cfI;
+                            ++matches;
+                        }
+                    }
+                }
+
+                if( matches != 1 || coreFaceI < 0 )
+                {
+                    invalid = 1;
+                    return;
+                }
+
+                const auto& f = coreChild[coreFaceI];
+                vector faceCentre(vector::zero);
+                vector faceArea(vector::zero);
+
+                if( !v29FaceCentreArea(f, faceCentre, faceArea) )
+                {
+                    invalid = 1;
+                    return;
+                }
+
+                forAll(f, baseI)
+                {
+                    const scalar commonQuality = Foam::min
+                    (
+                        v52aMinFaceTetQuality
+                        (
+                            f, coreCentre, true, baseI
+                        ),
+                        v52aMinFaceTetQuality
+                        (
+                            f, wallCentre, false, baseI
+                        )
+                    );
+
+                    bestShared = Foam::max(bestShared, commonQuality);
+                }
+
+                if( !(bestShared > v52aTetTolerance) )
+                    badSharedTet = 1;
+
+                const vector d = wallCentre - coreCentre;
+                const scalar orthogonality =
+                    (d & faceArea)
+                   /(mag(d)*mag(faceArea) + v52aRootVSmall);
+
+                const scalar clamped = Foam::min
+                (
+                    scalar(1),
+                    Foam::max(scalar(-1), orthogonality)
+                );
+                angle = Foam::acos(clamped)*scalar(180.0)/M_PI;
+
+                if( orthogonality <= SMALL )
+                    nonOrthError = 1;
+                else if( orthogonality < v52aSevereCos )
+                    severeNonOrth = 1;
+            };
+
+            auto v52aChildFailureMask =
+            [&](const V52aChildMetrics& metrics) -> label
+            {
+                label mask = 0;
+                if( metrics.invalid ) mask |= V52A_INVALID;
+                if( metrics.negative ) mask |= V52A_NEGATIVE;
+                if( metrics.badPyramid ) mask |= V52A_PYRAMID;
+                if( metrics.concave ) mask |= V52A_CONCAVE;
+                if( metrics.badFaceTet ) mask |= V52A_FACETET;
+                return mask;
+            };
+
+            auto v52aBaseContext =
+            [&]
+            (
+                const label bfI,
+                bool& touchesPeriodic,
+                bool& tripleJunction,
+                word& patchName,
+                word& patchType
+            )
+            {
+                touchesPeriodic = false;
+                tripleJunction = false;
+                patchName = word("unknown");
+                patchType = word("unknown");
+
+                const faceList::subList& boundaryFaces =
+                    mse.boundaryFaces();
+                const labelList& boundaryPointMap = mse.bp();
+                const VRWGraph& boundaryPointFaces = mse.pointFaces();
+                const labelList& boundaryFacePatch =
+                    mse.boundaryFacePatches();
+
+                if( bfI < 0 || bfI >= label(boundaryFaces.size()) )
+                    return;
+
+                const label basePatchI = boundaryFacePatch[bfI];
+                if
+                (
+                    basePatchI >= 0
+                 && basePatchI < label(childSweepBoundaries.size())
+                )
+                {
+                    patchName =
+                        childSweepBoundaries[basePatchI].patchName();
+                    patchType =
+                        childSweepBoundaries[basePatchI].patchType();
+                }
+
+                labelHashSet incidentPatches;
+                const face& bf = boundaryFaces[bfI];
+
+                forAll(bf, pointI)
+                {
+                    const label meshPointI = bf[pointI];
+                    if
+                    (
+                        meshPointI < 0
+                     || meshPointI >= label(boundaryPointMap.size())
+                    )
+                        continue;
+
+                    const label boundaryPointI =
+                        boundaryPointMap[meshPointI];
+                    if
+                    (
+                        boundaryPointI < 0
+                     || boundaryPointI >= label(boundaryPointFaces.size())
+                    )
+                        continue;
+
+                    forAllRow
+                    (
+                        boundaryPointFaces,
+                        boundaryPointI,
+                        pointFaceI
+                    )
+                    {
+                        const label incidentBfI =
+                            boundaryPointFaces
+                            (
+                                boundaryPointI,
+                                pointFaceI
+                            );
+                        if
+                        (
+                            incidentBfI < 0
+                         || incidentBfI >=
+                            label(boundaryFacePatch.size())
+                        )
+                            continue;
+
+                        const label patchI =
+                            boundaryFacePatch[incidentBfI];
+                        if
+                        (
+                            patchI < 0
+                         || patchI >= label(childSweepBoundaries.size())
+                        )
+                            continue;
+
+                        incidentPatches.insert(patchI);
+                        const word& name =
+                            childSweepBoundaries[patchI].patchName();
+                        const word& type =
+                            childSweepBoundaries[patchI].patchType();
+
+                        if
+                        (
+                            name.find("periodic") != std::string::npos
+                         || name.find("cyclic") != std::string::npos
+                         || type.find("periodic") != std::string::npos
+                         || type.find("cyclic") != std::string::npos
+                        )
+                            touchesPeriodic = true;
+                    }
+                }
+
+                tripleJunction = incidentPatches.size() >= 3;
+            };
+
+            const fileName v52aCsvName
+            (
+                "cfmitchV52a_front_contract_"
+              + Foam::name(v52aInvocation)
+              + ".csv"
+            );
+            OFstream v52aCsv(v52aCsvName);
+            v52aCsv
+                << "parentCell,baseFace,patch,patchType,requestedLayers,"
+                << "safeLayers,firstUnsafeLayer,failureMask,invalid,negative,"
+                << "badPyramid,concave,badFaceTet,badSharedTet,"
+                << "nonOrthError,severeNonOrth,interfaceAngle,bestSharedTet,"
+                << "childVolume,minPyramid,minChildTet,backtrackRecoverable,"
+                << "backtrackFactor,touchesPeriodic,tripleJunction" << nl;
+
+            label requestedColumns = 0;
+            label supportedColumns = 0;
+            label unsupportedColumns = 0;
+            label safeFullDepth = 0;
+            label terminatedEarly = 0;
+            label noValidFirstLayer = 0;
+            label backtracked = 0;
+            label backtrackAttempts = 0;
+            label periodicColumns = 0;
+            label tripleJunctionColumns = 0;
+            label evaluatedChildren = 0;
+            label evaluatedInterfaces = 0;
+            label severeInterfaces = 0;
+            label nonOrthErrorInterfaces = 0;
+            label invalidColumns = 0;
+            label negativeColumns = 0;
+            label pyramidColumns = 0;
+            label concaveColumns = 0;
+            label faceTetColumns = 0;
+            label nonOrthColumns = 0;
+            label safe0 = 0;
+            label safe1to3 = 0;
+            label safe4to7 = 0;
+            label safe8to14 = 0;
+            label safe15plus = 0;
+
+            Map<label> v52bDirectCaps;
+
+            // CFMitch V5.2b diagnostic isolation controls.
+            //
+            // These are intentionally local to this experiment.  They do not
+            // change the public meshDict contract.
+            //
+            // skipZero=true:
+            //   preserve every positive prospective safe-depth cap while
+            //   withholding explicit zero-layer/dropout caps.
+            //
+            // maxDirectCaps=-1:
+            //   no population limit.  A non-negative value deterministically
+            //   limits the number of newly admitted direct-cap faces.
+            const bool v52bDiagnosticSkipZeroCaps = false;
+            const label v52bDiagnosticMaxDirectCaps = -1;
+
+            label v52bDiagnosticSkippedZero = 0;
+            label v52bDiagnosticSkippedLimit = 0;
+            label v53UnsupportedNoCap = 0;
+
+            auto v52bRecordCap =
+            [&](const label bfI, const label cap)
+            {
+                if
+                (
+                    !cfmitchV52bApplyFrontCaps_
+                 || bfI < 0
+                 || cap < 0
+                )
+                    return;
+
+                if( v52bDiagnosticSkipZeroCaps && cap == 0 )
+                {
+                    ++v52bDiagnosticSkippedZero;
+                    return;
+                }
+
+                if
+                (
+                    v52bDiagnosticMaxDirectCaps >= 0
+                 && !v52bDirectCaps.found(bfI)
+                 && label(v52bDirectCaps.size())
+                    >= v52bDiagnosticMaxDirectCaps
+                )
+                {
+                    ++v52bDiagnosticSkippedLimit;
+                    return;
+                }
+
+                if( v52bDirectCaps.found(bfI) )
+                {
+                    v52bDirectCaps[bfI] =
+                        Foam::min(v52bDirectCaps[bfI], cap);
+                }
+                else
+                {
+                    v52bDirectCaps.insert(bfI, cap);
+                }
+            };
+
+            const scalar v52aBacktrackFactors[] =
+            {
+                scalar(0.75), scalar(0.50), scalar(0.25)
+            };
+            const label nV52aBacktrackFactors =
+                sizeof(v52aBacktrackFactors)
+               /sizeof(v52aBacktrackFactors[0]);
+
+            for(label parentCellI=0; parentCellI<nCells; ++parentCellI)
+            {
+                if( refType[parentCellI] != 1 )
+                    continue;
+
+                ++requestedColumns;
+
+                DynList
+                <
+                    DynList<DynList<label,8>,10>,
+                    64
+                > children;
+                DynList<label,16> parentEdges;
+
+                const bool topologyValid =
+                    v29Type1Edges(parentCellI, parentEdges)
+                 && v29BuildOrientedType1Children(parentCellI, children);
+
+                const label bfI = cellToBfI[parentCellI];
+                bool touchesPeriodic = false;
+                bool tripleJunction = false;
+                word patchName;
+                word patchType;
+                v52aBaseContext
+                (
+                    bfI,
+                    touchesPeriodic,
+                    tripleJunction,
+                    patchName,
+                    patchType
+                );
+
+                if( touchesPeriodic ) ++periodicColumns;
+                if( tripleJunction ) ++tripleJunctionColumns;
+
+                if( !topologyValid || children.size() == 0 )
+                {
+                    ++unsupportedColumns;
+                    ++terminatedEarly;
+                    ++noValidFirstLayer;
+                    ++invalidColumns;
+                    ++safe0;
+                    v52aCsv
+                        << parentCellI << ',' << bfI << ','
+                        << patchName << ',' << patchType << ','
+                        << children.size() << ",0,0,"
+                        << V52A_INVALID
+                        << ",1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
+                        << label(touchesPeriodic) << ','
+                        << label(tripleJunction) << nl;
+
+                    // CFMitch V5.3b:
+                    // Unsupported prospective reconstruction is not evidence
+                    // that the requested physical BL depth is zero.  Preserve
+                    // the existing requested/planned layer count and leave
+                    // this face unresolved for a later local topology repair.
+                    ++v53UnsupportedNoCap;
+                    continue;
+                }
+
+                ++supportedColumns;
+                const label requestedLayers = children.size();
+                label safeLayers = 0;
+                label firstUnsafeLayer = -1;
+                label firstFailureMask = 0;
+                V52aChildMetrics firstFailureMetrics;
+                label firstBadSharedTet = 0;
+                label firstSevere = 0;
+                label firstNonOrthError = 0;
+                scalar firstAngle = scalar(0);
+                scalar firstBestShared = GREAT;
+                bool backtrackRecoverable = false;
+                scalar backtrackFactor = scalar(0);
+
+                List<V52aChildMetrics> childMetrics(requestedLayers);
+                forAll(children, childI)
+                {
+                    if
+                    (
+                        !v52aMeasureChild
+                        (
+                            children[childI],
+                            childMetrics[childI]
+                        )
+                    )
+                        childMetrics[childI].invalid = 1;
+                    ++evaluatedChildren;
+                }
+
+                for(label wallStep=0; wallStep<requestedLayers; ++wallStep)
+                {
+                    const label childI =
+                        requestedLayers - 1 - wallStep;
+                    // Preserve the complete observed state for diagnostics,
+                    // but use only hard failures to control BL depth.
+                    label observedMask =
+                        v52aChildFailureMask(childMetrics[childI]);
+
+                    label failureMask =
+                        observedMask & v52aHardFailureBits;
+
+                    label interfaceInvalid = 0;
+                    label badSharedTet = 0;
+                    label severeNonOrth = 0;
+                    label nonOrthError = 0;
+                    scalar interfaceAngle = scalar(0);
+                    scalar bestSharedTet = GREAT;
+
+                    if( wallStep > 0 )
+                    {
+                        const label wallChildI = childI + 1;
+                        v52aInterfaceMetrics
+                        (
+                            children[childI],
+                            childMetrics[childI].centre,
+                            children[wallChildI],
+                            childMetrics[wallChildI].centre,
+                            interfaceInvalid,
+                            badSharedTet,
+                            severeNonOrth,
+                            nonOrthError,
+                            interfaceAngle,
+                            bestSharedTet
+                        );
+                        ++evaluatedInterfaces;
+                        severeInterfaces += severeNonOrth;
+                        nonOrthErrorInterfaces += nonOrthError;
+
+                        if( interfaceInvalid )
+                        {
+                            observedMask |= V52A_INVALID;
+                            failureMask |= V52A_INVALID;
+                        }
+
+                        // Shared-tet quality is soft in V5.3.
+                        if( badSharedTet )
+                            observedMask |= V52A_FACETET;
+
+                        // A completed >=90-degree interface remains hard.
+                        if( nonOrthError )
+                        {
+                            observedMask |= V52A_NONORTH_ERROR;
+                            failureMask |= V52A_NONORTH_ERROR;
+                        }
+                    }
+
+                    if( failureMask == 0 )
+                    {
+                        ++safeLayers;
+                        continue;
+                    }
+
+                    firstUnsafeLayer = wallStep;
+                    firstFailureMask = observedMask;
+                    firstFailureMetrics = childMetrics[childI];
+                    firstBadSharedTet = badSharedTet;
+                    firstSevere = severeNonOrth;
+                    firstNonOrthError = nonOrthError;
+                    firstAngle = interfaceAngle;
+                    firstBestShared = bestSharedTet;
+
+                    // Virtual local line search.  The fixed core endpoint is
+                    // never moved.  This reports recoverability only.
+                    const label coreRow = wallStep + 1;
+                    const label wallRow = wallStep;
+
+                    if( coreRow < requestedLayers )
+                    {
+                        std::map<label,point> originalCoreRow;
+                        bool rowValid = true;
+
+                        forAll(parentEdges, edgeI)
+                        {
+                            const label seI = parentEdges[edgeI];
+                            if
+                            (
+                                seI < 0
+                             || seI >=
+                                label(newVerticesForSplitEdge_.size())
+                             || newVerticesForSplitEdge_.sizeOfRow(seI)
+                                <= coreRow
+                            )
+                            {
+                                rowValid = false;
+                                break;
+                            }
+
+                            const label pointI =
+                                newVerticesForSplitEdge_(seI, coreRow);
+                            if
+                            (
+                                pointI == splitEdges_[seI].start()
+                             || pointI == splitEdges_[seI].end()
+                            )
+                            {
+                                rowValid = false;
+                                break;
+                            }
+                            originalCoreRow[pointI] = v29Points[pointI];
+                        }
+
+                        if( rowValid && !originalCoreRow.empty() )
+                        {
+                            for
+                            (
+                                label factorI=0;
+                                factorI<nV52aBacktrackFactors;
+                                ++factorI
+                            )
+                            {
+                                ++backtrackAttempts;
+                                const scalar factor =
+                                    v52aBacktrackFactors[factorI];
+
+                                forAll(parentEdges, edgeI)
+                                {
+                                    const label seI = parentEdges[edgeI];
+                                    const label wallPointI =
+                                        newVerticesForSplitEdge_(seI, wallRow);
+                                    const label corePointI =
+                                        newVerticesForSplitEdge_(seI, coreRow);
+                                    v29Points[corePointI] =
+                                        v29Points[wallPointI]
+                                      + factor
+                                       *(
+                                            originalCoreRow.at(corePointI)
+                                          - v29Points[wallPointI]
+                                        );
+                                }
+
+                                V52aChildMetrics trialMetrics;
+                                label trialMask = 0;
+                                if
+                                (
+                                    !v52aMeasureChild
+                                    (
+                                        children[childI],
+                                        trialMetrics
+                                    )
+                                )
+                                    trialMask |= V52A_INVALID;
+
+                                trialMask |=
+                                (
+                                    v52aChildFailureMask(trialMetrics)
+                                  & v52aHardFailureBits
+                                );
+
+                                if( wallStep > 0 )
+                                {
+                                    label trialInvalid = 0;
+                                    label trialBadTet = 0;
+                                    label trialSevere = 0;
+                                    label trialNonOrth = 0;
+                                    scalar trialAngle = scalar(0);
+                                    scalar trialBest = -GREAT;
+                                    const label wallChildI = childI + 1;
+                                    v52aInterfaceMetrics
+                                    (
+                                        children[childI],
+                                        trialMetrics.centre,
+                                        children[wallChildI],
+                                        childMetrics[wallChildI].centre,
+                                        trialInvalid,
+                                        trialBadTet,
+                                        trialSevere,
+                                        trialNonOrth,
+                                        trialAngle,
+                                        trialBest
+                                    );
+                                    if( trialInvalid )
+                                        trialMask |= V52A_INVALID;
+
+                                    // trialBadTet is deliberately soft in V5.3.
+
+                                    if( trialNonOrth )
+                                        trialMask |= V52A_NONORTH_ERROR;
+                                }
+
+                                for
+                                (
+                                    std::map<label,point>::const_iterator
+                                        pointIt=originalCoreRow.begin();
+                                    pointIt!=originalCoreRow.end();
+                                    ++pointIt
+                                )
+                                    v29Points[pointIt->first] = pointIt->second;
+
+                                if( trialMask == 0 )
+                                {
+                                    backtrackRecoverable = true;
+                                    backtrackFactor = factor;
+                                    ++backtracked;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    break;
+                }
+
+                if( safeLayers == requestedLayers )
+                    ++safeFullDepth;
+                else
+                {
+                    ++terminatedEarly;
+                    if( safeLayers == 0 ) ++noValidFirstLayer;
+                    if( firstFailureMask & V52A_INVALID ) ++invalidColumns;
+                    if( firstFailureMask & V52A_NEGATIVE ) ++negativeColumns;
+                    if( firstFailureMask & V52A_PYRAMID ) ++pyramidColumns;
+                    if( firstFailureMask & V52A_CONCAVE ) ++concaveColumns;
+                    if( firstFailureMask & V52A_FACETET ) ++faceTetColumns;
+                    if( firstFailureMask & V52A_NONORTH_ERROR )
+                        ++nonOrthColumns;
+                }
+
+                if( safeLayers == 0 ) ++safe0;
+                else if( safeLayers <= 3 ) ++safe1to3;
+                else if( safeLayers <= 7 ) ++safe4to7;
+                else if( safeLayers <= 14 ) ++safe8to14;
+                else ++safe15plus;
+
+                if( safeLayers < requestedLayers )
+                    v52bRecordCap(bfI, safeLayers);
+
+                v52aCsv
+                    << parentCellI << ',' << bfI << ','
+                    << patchName << ',' << patchType << ','
+                    << requestedLayers << ',' << safeLayers << ','
+                    << firstUnsafeLayer << ',' << firstFailureMask << ','
+                    << firstFailureMetrics.invalid << ','
+                    << firstFailureMetrics.negative << ','
+                    << firstFailureMetrics.badPyramid << ','
+                    << firstFailureMetrics.concave << ','
+                    << firstFailureMetrics.badFaceTet << ','
+                    << firstBadSharedTet << ','
+                    << firstNonOrthError << ',' << firstSevere << ','
+                    << firstAngle << ',' << firstBestShared << ','
+                    << firstFailureMetrics.volume << ','
+                    << firstFailureMetrics.minPyramid << ','
+                    << firstFailureMetrics.minTetMargin << ','
+                    << label(backtrackRecoverable) << ','
+                    << backtrackFactor << ','
+                    << label(touchesPeriodic) << ','
+                    << label(tripleJunction) << nl;
+            }
+
+            if( cfmitchV52bApplyFrontCaps_ )
+            {
+                label zeroCaps = 0;
+                label minCap = labelMax;
+                label maxCap = -1;
+
+                forAllConstIter
+                (
+                    Map<label>,
+                    v52bDirectCaps,
+                    capIt
+                )
+                {
+                    const label cap = capIt();
+
+                    if( cap == 0 )
+                        ++zeroCaps;
+
+                    minCap = Foam::min(minCap, cap);
+                    maxCap = Foam::max(maxCap, cap);
+                }
+
+                if( v52bDirectCaps.size() == 0 )
+                    minCap = -1;
+
+                setQualityMaxLayersAtFaces(v52bDirectCaps);
+
+                Info
+                    << "CFMITCH V5.2b DIRECT CAPS:"
+                    << " invocation=" << v52aInvocation
+                    << " faces=" << v52bDirectCaps.size()
+                    << " zero=" << zeroCaps
+                    << " min=" << minCap
+                    << " max=" << maxCap
+                    << " exported="
+                    << qualityMaxLayersAtFace_.size()
+                    << " diagnosticSkipZero="
+                    << v52bDiagnosticSkipZeroCaps
+                    << " diagnosticMaxDirectCaps="
+                    << v52bDiagnosticMaxDirectCaps
+                    << " skippedZero="
+                    << v52bDiagnosticSkippedZero
+                    << " skippedLimit="
+                    << v52bDiagnosticSkippedLimit
+                    << " unsupportedNoCap="
+                    << v53UnsupportedNoCap
+                    << " appliesOnNextFreshBuild=true"
+                    << endl;
+            }
+
+            Info
+                << "CFMITCH V5.2a FRONT CONTRACT:"
+                << " invocation=" << v52aInvocation
+                << " stage=preV29Prospective"
+                << " requestedColumns=" << requestedColumns
+                << " supported=" << supportedColumns
+                << " unsupported=" << unsupportedColumns
+                << " safeFullDepth=" << safeFullDepth
+                << " terminatedEarly=" << terminatedEarly
+                << " noValidFirstLayer=" << noValidFirstLayer
+                << " backtrackRecoverable=" << backtracked
+                << " backtrackAttempts=" << backtrackAttempts
+                << " periodicColumns=" << periodicColumns
+                << " tripleJunctionColumns=" << tripleJunctionColumns
+                << " evaluatedChildren=" << evaluatedChildren
+                << " evaluatedInterfaces=" << evaluatedInterfaces
+                << " csvGood=" << v52aCsv.good()
+                << " csv=" << v52aCsvName
+                << endl;
+
+            Info
+                << "CFMITCH V5.2a TERMINATION HISTOGRAM:"
+                << " invocation=" << v52aInvocation
+                << " invalid=" << invalidColumns
+                << " negativeVolume=" << negativeColumns
+                << " badPyramid=" << pyramidColumns
+                << " concaveCell=" << concaveColumns
+                << " faceTetFailure=" << faceTetColumns
+                << " nonOrthError=" << nonOrthColumns
+                << " safe0=" << safe0
+                << " safe1to3=" << safe1to3
+                << " safe4to7=" << safe4to7
+                << " safe8to14=" << safe8to14
+                << " safe15plus=" << safe15plus
+                << endl;
+
+            Info
+                << "CFMITCH V5.2a QUALITY HEURISTICS:"
+                << " invocation=" << v52aInvocation
+                << " severeNonOrthInterfaces=" << severeInterfaces
+                << " nonOrthErrorInterfaces=" << nonOrthErrorInterfaces
+                << " severeIsHardFailure=false"
+                << " exactConcavity=true"
+                << " exactFaceTet=true"
+                << " topologyChanged=false"
+                << " pointsChanged=false"
+                << endl;
+
+            Info
+                << "CFMITCH V5.2a NEXT PLAN:"
+                << " invocation=" << v52aInvocation
+                << " consumeSafeDepths="
+                << cfmitchV52bApplyFrontCaps_
+                << " propagateCapsOnNextFreshBuild="
+                << cfmitchV52bApplyFrontCaps_
+                << " commitCurrentTopology=false"
+                << " diagnosticOnly="
+                << !cfmitchV52bApplyFrontCaps_
+                << endl;
+        }
+
+
         // --------------------------------------------------------------
         // Quality comparison.
         //
@@ -4528,6 +5743,39 @@ void refineBoundaryLayers::generateNewCells()
     VRWGraph pointNewFaces;
     pointNewFaces.reverseAddressing(newFaces_);
 
+    auto checkedNewCellLabel =
+    [&]
+    (
+        const label parentCellI,
+        const label localChildI,
+        const label parentRefType
+    ) -> label
+    {
+        const label newCellI =
+            localChildI == 0 ? parentCellI : nCells++;
+
+        if
+        (
+            newCellI < 0
+         || newCellI >= label(cells.size())
+        )
+        {
+            refinementValid_ = false;
+
+            FatalErrorIn("void refineBoundaryLayers::generateNewCells()")
+                << "CFMITCH CHILD CELL ALLOCATION OVERFLOW:"
+                << " newCellI=" << newCellI
+                << " allocated=" << cells.size()
+                << " parent=" << parentCellI
+                << " localChild=" << localChildI
+                << " refType=" << parentRefType
+                << " runningNextCell=" << nCells
+                << exit(FatalError);
+        }
+
+        return newCellI;
+    };
+
     forAll(nCellsFromCell, cellI)
     {
         if( refType[cellI] == 0 )
@@ -4872,7 +6120,8 @@ void refineBoundaryLayers::generateNewCells()
 
                 auditGeneratedChild(nc, cellI, cI, refType[cellI]);
 
-                const label newCellI = cI==0?cellI:nCells++;
+                const label newCellI =
+                    checkedNewCellLabel(cellI, cI, refType[cellI]);
                 cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 exactVolumeParent[newCellI] = cellI;
@@ -5608,7 +6857,8 @@ void refineBoundaryLayers::generateNewCells()
                      << " originating from cell " << cellI << endl;
                 # endif
 
-                const label newCellI = cI==0?cellI:nCells++;
+                const label newCellI =
+                    checkedNewCellLabel(cellI, cI, refType[cellI]);
                 cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 newCellsFromCell.append(cellI, newCellI);
@@ -5663,7 +6913,8 @@ void refineBoundaryLayers::generateNewCells()
 
                 auditGeneratedChild(nc, cellI, cI, refType[cellI]);
 
-                const label newCellI = cI==0?cellI:nCells++;
+                const label newCellI =
+                    checkedNewCellLabel(cellI, cI, refType[cellI]);
                 cellToBaseBndFace_[newCellI] = cellToBfI[cellI];
 
                 newCellsFromCell.append(cellI, newCellI);

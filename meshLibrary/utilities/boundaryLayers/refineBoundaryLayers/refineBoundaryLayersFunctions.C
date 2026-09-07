@@ -866,6 +866,7 @@ void refineBoundaryLayers::generateNewVertices()
                 globalThicknessRatio_,
                 thicknessRatioForPatch_,
                 vtFaceRing_,
+                actuallyCappedFaces_,
                 constraintPlannerMaxLayerStep_
             );
 
@@ -1269,6 +1270,7 @@ void refineBoundaryLayers::generateNewVertices()
                         globalThicknessRatio_,
                         thicknessRatioForPatch_,
                         vtFaceRing_,
+                        structuralAllSeeds,
                         constraintPlannerMaxLayerStep_
                     );
 
