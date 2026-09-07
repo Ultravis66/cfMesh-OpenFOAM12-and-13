@@ -2,7 +2,7 @@
 
 An actively developed fork of cfMesh for OpenFOAM Foundation v13.
 
-**NOTE:** This release candidate replaces the earlier rc1 development state. The previous build contained boundary-layer quality-recovery behavior that could generate meshes which completed meshing checks but were not sufficiently robust for practical CFD execution. The current rc1 corrects those issues and has now been validated through actual OpenFOAM CFD execution.
+NOTE: This release candidate replaces the earlier rc1 development state. The previous build contained boundary-layer quality-recovery behavior that could generate meshes which completed meshing checks but were not sufficiently robust for practical CFD execution. The current rc1 corrects those issues and has now been validated through actual OpenFOAM CFD execution.
 
 This fork focuses on:
 
@@ -30,7 +30,7 @@ This fork contains three selectable boundary-layer generation paths. The archite
 | `legacyEnhanced` | Heavily modified continuation of the original boundary-layer implementation, including robustness, projection, OpenMP, and transition-handling improvements. | Existing cases developed with earlier versions of this fork. |
 | `constraintPlanner` | New CFMitch constraint-planning architecture. It computes explicit per-face layer plans, enforces neighboring-layer compatibility, tracks repair provenance, and supports transactional refinement and rollback. | Current development path and recommended architecture for difficult boundary-layer topology. |
 
-> **Validation status:** The Rotor37 and propeller results documented below were generated using `constraintPlanner`. In a four-layer `singleOrifice` regression test, `legacyEnhanced` produced a stock-`checkMesh`-clean mesh. The preserved `classicCfMesh` path completed successfully with valid topology and positive cell volumes, but stock `checkMesh` reported one incorrectly oriented face pyramid.
+> **Validation status:** The current propeller CFD-execution case and Rotor37 regression documented below were generated using `constraintPlanner`. The propeller case has been successfully advanced in OpenFOAM Foundation 13. Rotor37 currently serves as a difficult-topology meshing and CFD-runnability regression case. In a four-layer `singleOrifice` regression test, `legacyEnhanced` produced a stock-`checkMesh`-clean mesh. The preserved `classicCfMesh` path completed successfully with valid topology and positive cell volumes, but stock `checkMesh` reported one incorrectly oriented face pyramid.
 
 ### CFMitch constraint-planner architecture
 
@@ -95,8 +95,11 @@ The CFMitch pipeline includes:
 
 - Explicit boundary-layer constraint planning
 - Neighboring-face layer-count compatibility
+- Prospective hard/soft boundary-layer quality classification
+- Unsupported prospective-column handling that does not convert diagnostic coverage gaps into physical zero-layer requests
+- Zero-layer child-allocation guards that preserve parent-cell accounting
 - Topology and face-incidence validation
-- OpenFOAM-equivalent candidate-quality gates for signed volume, face pyramids, non-orthogonality, and skewness
+- OpenFOAM-aligned candidate-quality evaluation for signed volume, face pyramids, non-orthogonality, skewness, concavity, and tet decomposition, with hard validity failures kept separate from soft quality diagnostics
 - Transactional repair with acceptance or rollback
 - Boundary-layer provenance tracking
 - Provenance-guided adaptive local layer retreat, including post-Q3 hard-quality recovery
@@ -108,15 +111,15 @@ The original cfMesh implementation remains available both as a compatibility ref
 
 ## Development scope
 
-This is a substantial engineering fork rather than a minimal OpenFOAM compatibility patch. The repository contains approximately 180,000 lines of source code, with heavily modified or added codebase during the OpenFOAM 13 port and robustness-development effort.
+This is a substantial engineering fork rather than a minimal OpenFOAM compatibility patch. The repository contains a substantial body of modified and newly added code developed during the OpenFOAM 13 port and robustness effort.
+
+The work spans boundary-layer planning and refinement, mesh topology generation, surface projection, geometry optimization, OpenMP race hardening, mesh addressing, diagnostic infrastructure, transactional repair, and mesh serialization.
 
 The modifications span boundary-layer planning and refinement, mesh topology generation, surface projection, geometry optimization, OpenMP race hardening, mesh addressing, diagnostic infrastructure, transactional repair, and mesh serialization.
 
-These figures describe the scale of the development effort; mesh quality is evaluated independently using stock OpenFOAM utilities and reproducible validation cases.
-
 ## What this fork can generate
 
-### Large 16-layer propeller validation mesh
+### Large 16-layer propeller stress-test mesh
 
 <p align="center">
   <img src="Propeller_1.png" alt="Large cfMesh propeller boundary-layer mesh overview" width="32%">
@@ -125,7 +128,7 @@ These figures describe the scale of the development effort; mesh quality is eval
 </p>
 
 <p align="center">
-  <em>Large propeller stress-test mesh: 13.14 million cells, 16 boundary layers, zero negative-volume cells, zero incorrect face pyramids, and a clean stock OpenFOAM 13 checkMesh result.</em>
+  <em>Historical 16-layer propeller stress-test mesh from this development line. The current rc1 CFD-execution validation case is the approximately 8-million-cell, 15-layer propeller mesh documented below.</em>
 </p>
 
 ### NASA Rotor 37 turbomachinery stress test
@@ -141,7 +144,7 @@ These figures describe the scale of the development effort; mesh quality is eval
 </p>
 
 <p align="center">
-  <em>NASA Rotor 37 two-passage sector used to expose difficult blade/endwall junctions, periodic boundaries, acute trailing edges, and boundary-layer transition topology. The current result has zero negative-volume cells, correctly oriented face pyramids, and no non-orthogonality errors; localized skewness remains the primary mesh-quality target.</em>
+  <em>NASA Rotor37 two-passage sector used to expose difficult blade/endwall junctions, periodic boundaries, acute trailing edges, and boundary-layer transition topology. The current rc1 regression has zero internally detected negative-volume cells, zero bad face pyramids, and no faces above 90° non-orthogonality. Advanced OpenFOAM geometry checks still identify skewness, low-determinant cells, concavity, low interpolation weights, low volume ratios, and face-tet decomposition quality as remaining development targets.</em>
 
 </p>
 
@@ -149,32 +152,46 @@ These figures describe the scale of the development effort; mesh quality is eval
 
 ## Current release candidate
 
-The `v1.0.0-rc1` development candidate introduces a new boundary-layer planning and repair architecture together with several important fixes to core mesh handling.
+The current `v1.0.0-rc1` introduces a new boundary-layer planning and repair architecture together with several important fixes to core mesh handling. This is the first rc1 state in this development line demonstrated to generate a complex propeller mesh that can be successfully advanced in OpenFOAM Foundation 13 CFD.
 
-### Large propeller validation case
+### Propeller CFD-execution validation
 
-The current release candidate produced a clean OpenFOAM mesh for a large propeller geometry using a 16-layer boundary-layer configuration with a nominal first-layer height of approximately 40 μm.
+The current rc1 generated and successfully ran an approximately 8-million-cell propeller case using the `constraintPlanner` boundary-layer architecture.
 
-| Metric                          |      Result |
-| ------------------------------- | ----------: |
-| Points                          |  13,408,984 |
-| Faces                           |  39,692,917 |
-| Internal faces                  |  39,498,813 |
-| Cells                           |  13,141,866 |
-| Hexahedra                       |  13,018,764 |
-| Negative-volume cells           |           0 |
-| Incorrect face pyramids         |           0 |
-| Maximum non-orthogonality       |      82.35° |
-| Severely non-orthogonal faces   |          13 |
-| Maximum skewness                |        3.72 |
-| Propeller BL effective coverage |      96.66% |
-| Stock OpenFOAM `checkMesh`      | **Mesh OK** |
+The CFD-execution validation mesh used:
 
-The written mesh was independently read and validated by the stock OpenFOAM Foundation v13 `checkMesh` utility.
+* 15 requested boundary layers
+* Thickness ratio 1.2
+* Nominal maximum first-layer thickness 56 μm
+* Approximately 4.03 mm nominal total BL thickness
+* Deterministic `OMP_NUM_THREADS=1` meshing
 
-### NASA Rotor 37 stress test
+| Metric                               |         Result |
+| ------------------------------------ | -------------: |
+| Points                               |      8,184,048 |
+| Faces                                |     24,175,994 |
+| Internal faces                       |     24,040,844 |
+| Cells                                |      7,995,952 |
+| Hexahedra                            |      7,907,374 |
+| Prisms                               |          3,851 |
+| Polyhedra                            |         84,727 |
+| Negative-volume cells                |              0 |
+| Incorrect face pyramids              |              0 |
+| Maximum non-orthogonality            |         78.59° |
+| Severely non-orthogonal faces (>70°) |              6 |
+| Maximum skewness                     |           3.75 |
+| Propeller BL effective face coverage |         96.10% |
+| Mesh history                         | `CleanNatural` |
 
-NASA Rotor 37 remains the primary difficult-topology development case. It combines:
+The mesh was successfully advanced in OpenFOAM Foundation 13 using an incompressible k-ω SST MRF setup, and reconstructed `U`, `p`, `k`, `omega`, `nut`, and `yPlus` fields were produced successfully.
+
+A reconstructed y+ evaluation gave a propeller-area average of approximately 7.74. Most of the intact layered blade surface was in the approximate 6–20 range, with a localized high-y+ region at a blade tip where boundary-layer coverage was lost.
+
+This demonstrates practical CFD executability of the current rc1. Quantitative thrust and torque agreement remain under investigation and are not yet claimed as validation accuracy.
+
+### NASA Rotor37 regression stress test
+
+NASA Rotor37 remains the primary difficult-topology regression geometry. It combines:
 
 * Blade/hub/shroud junctions
 * Periodic sector boundaries
@@ -183,28 +200,41 @@ NASA Rotor 37 remains the primary difficult-topology development case. It combin
 * Strong refinement transitions
 * Multiple interacting boundary-layer patches
 
-The current high-resolution Rotor37 run produced a valid, connected OpenFOAM mesh with zero negative-volume cells, correctly oriented face pyramids, and no non-orthogonality errors. Stock OpenFOAM `checkMesh` reports one remaining failed quality check for localized skewness.
+Using the same current rc1 source and the unchanged Rotor37 `meshDict`, the regression run completed successfully with zero internally detected negative volumes, zero bad pyramids, and `meshHistory=CleanNatural`.
 
-| Metric                             |                   Current result |
-| ---------------------------------- | -------------------------------: |
-| Points                             |                        5,552,053 |
-| Faces                              |                       15,557,523 |
-| Internal faces                     |                       14,957,239 |
-| Cells                              |                        5,002,615 |
-| Number of regions                  |                           1 (OK) |
-| Negative-volume cells              |                                0 |
-| Interface-audit failures           |                                0 |
-| Invalid owner/neighbour addressing |                                0 |
-| Incorrect face pyramids            |                                0 |
-| Non-orthogonality errors           |                                0 |
-| Maximum non-orthogonality          |                           89.46° |
-| Severely non-orthogonal faces      |                            1,306 |
-| Maximum skewness                   |                            16.85 |
-| Highly skew faces                  |                              636 |
-| Stock OpenFOAM `checkMesh`         | 1 failed quality check: skewness |
+| Metric                               | Current rc1 regression |
+| ------------------------------------ | ---------------------: |
+| Points                               |              5,507,094 |
+| Faces                                |             15,415,998 |
+| Internal faces                       |             14,822,027 |
+| Cells                                |              4,954,515 |
+| Hexahedra                            |              4,649,868 |
+| Prisms                               |                 64,313 |
+| Polyhedra                            |                240,334 |
+| Negative-volume cells                |                      0 |
+| Incorrect face pyramids              |                      0 |
+| Maximum non-orthogonality            |                 89.46° |
+| Severely non-orthogonal faces (>70°) |                  1,118 |
+| Maximum skewness                     |                  18.83 |
+| Highly skew faces                    |                    518 |
+| Low-quality face-tet error count     |                 87,576 |
+| Small-determinant cells (<0.001)     |              1,626,965 |
+| Concave cells                        |                 45,548 |
+| Small interpolation-weight faces     |                  3,037 |
+| Small volume-ratio faces             |                  1,194 |
+| Mesh history                         |         `CleanNatural` |
 
-Rotor37 is therefore a valid mesh-generation result and is runnable in OpenFOAM. It is not yet a CFD-performance validation claim: 1,306 faces remain severely non-orthogonal above 70°—although none exceed 90°—and 636 faces exceed the stock skewness threshold. Pressure ratio, efficiency, mass flow, and convergence validation remain pending.
+Boundary-layer effective coverage remained high on the primary blade and endwall surfaces:
 
+* Hub: 99.63%
+* Blade 1: 98.78%
+* Blade 2: 99.02%
+* Blade 3: 99.46%
+* Blade 4: 99.78%
+* Shroud: 89.49%
+* Periodic patches: approximately 79.35%
+
+The advanced `checkMesh -allTopology -allGeometry` regression reports six failed geometry-quality checks. Rotor37 is therefore retained as a demanding CFD-runnability and mesh-quality regression case, not yet as a compressor-performance validation result. Pressure ratio, efficiency, mass flow, and convergence validation remain pending.
 
 ---
 
@@ -222,10 +252,35 @@ It supports:
 * Maximum layer-step constraints
 * Height-first repair planning
 * Local layer compression
-* Local hard retreat where valid layered topology cannot be generated
+* Local hard retreat only when an explicit hard geometric or topological constraint requires it; unsupported prospective diagnostics do not automatically delete boundary layers
 * Preservation of classic cfMesh behavior as a selectable path
 
 The planner is geometry-driven and does not depend on Rotor37-specific patch names.
+
+### Prospective hard/soft boundary-layer contract
+
+The current rc1 separates prospective conditions that are physically inadmissible from quality diagnostics that should not automatically delete boundary layers.
+
+Hard prospective failures include:
+
+* Invalid prospective topology
+* Negative child-cell volume
+* Incorrect face-pyramid orientation
+* Completed layer interfaces reaching or exceeding 90° non-orthogonality
+
+These conditions may prevent or constrain boundary-layer construction.
+
+Soft prospective diagnostics include:
+
+* Face-tet and shared-tet decomposition quality
+* Face/cell concavity diagnostics
+* Severe but sub-90° non-orthogonality
+
+Soft diagnostics remain visible in telemetry and stock OpenFOAM validation, but they do not directly terminate otherwise valid boundary-layer columns.
+
+Prospective topology reconstruction is also treated separately from physical layer termination. If the prospective evaluator cannot construct a supported column, the condition is recorded as `unsupportedNoCap`; it is not converted into a zero-layer cap and propagated through the neighboring-face constraint planner.
+
+This distinction prevents diagnostic limitations from causing large, artificial boundary-layer retreat.
 
 ### Transactional boundary-layer repair
 
@@ -251,23 +306,26 @@ Quality comparisons include:
 * Skewness
 * Open-cell detection
 * Unused-point checks
+* Preservation of hard-valid geometry even when soft advanced-quality diagnostics remain
+
 
 ### Adaptive local BL retreat
 
-When compression cannot produce a valid layered configuration, the mesher can locally suppress boundary-layer refinement on selected faces.
+When an explicitly sourced hard constraint requires local layer reduction, the constraint planner can apply local maximum-layer caps and propagate compatible layer-count ramps to neighboring faces.
 
-The current implementation includes:
+The current rc1 deliberately distinguishes this from unsupported prospective evaluation. Unsupported prospective reconstruction does not itself request physical BL deletion.
+
+The retained retreat infrastructure includes:
 
 * Failed-face provenance
-* Cumulative retreat seeds
-* Co-parent closure of related boundary faces
-* Local maximum-layer overrides
+* Explicit local maximum-layer overrides
+* Neighboring-face compatibility propagation
 * Compression context retained during retreat
-* Acceptance against the best valid baseline
-* Complete rollback of rejected candidates
+* Acceptance against valid baselines
+* Rollback of rejected repair candidates
 
-On the propeller validation case, co-parent closure expanded 16 retreat seeds to 18 faces and produced a clean accepted mesh.
-The final Rotor37 repair eliminated all incorrectly oriented face pyramids and all non-orthogonality errors while preserving zero negative-volume cells. It also reduced maximum skewness from 41.10 to 16.85, leaving skewness as the only remaining stock `checkMesh` failure.
+This allows genuinely constrained geometry to retreat locally without turning soft quality warnings or prospective-model coverage gaps into broad zero-layer regions.
+
 ### Generated-child topology audits
 
 New diagnostic gates validate refined cell shells before and after face relabeling.
@@ -310,6 +368,21 @@ The current implementation:
 * Audits addressing after boundary replacement
 * Aborts instead of writing a corrupted mesh if final addressing is invalid
 
+### Zero-layer allocation safety
+
+A zero-layer boundary direction means that no boundary-layer subdivision is performed in that direction; it does not mean that the parent cell disappears.
+
+Earlier child-count prediction multiplied the expected replacement-cell count directly by the requested face-layer count. A zero-layer face could therefore drive the predicted replacement count to zero while later refinement logic still preserved or appended children. This under-allocated cell storage and could produce invalid memory writes.
+
+The current rc1 clamps the allocation factor to at least one for zero-layer directions:
+
+```cpp
+const label cellCountFactor =
+    Foam::max(faceLayers, label(1));
+```
+
+Additional diagnostics and append-bound guards verify that predicted child allocation cannot silently fall below the required storage.
+
 ### `replaceBoundary` wide-counter fix
 
 The original boundary replacement implementation used:
@@ -341,6 +414,8 @@ std::numeric_limits<scalar>::max_digits10
 ```
 
 For a double-precision OpenFOAM build, this results in 17 significant digits. The requested output format—ASCII or binary—is preserved.
+
+The current rc1 propeller CFD-execution case and Rotor37 regression mesh were both written with this lossless serialization path enabled.
 
 This provides numerical round-trip consistency between:
 
@@ -495,6 +570,16 @@ grep -E \
 log.checkMesh
 ```
 
+For full advanced geometry regression testing during development, use:
+
+```bash
+checkMesh -constant -allTopology -allGeometry -writeSets 2>&1 |
+tee log.checkMesh.allGeometry
+```
+
+The advanced geometry checks are intentionally retained even when they report quality populations in difficult anisotropic boundary-layer or transition regions.
+
+
 For development comparisons, use:
 
 ```bash
@@ -560,12 +645,16 @@ Not every control is appropriate for every geometry. Validate each configuration
 
 ## Current limitations
 
-* Rotor37 now passes the topology, cell-volume, face-pyramid, and non-orthogonality-error checks, remains one connected region, and contains zero negative-volume cells.
-* The current high-resolution Rotor37 mesh still contains 1,306 severely non-orthogonal faces above 70° and 636 highly skew faces. Skewness is its only remaining failed stock `checkMesh` criterion.
-* CFD performance validation—including pressure ratio, efficiency, mass flow, and convergence behavior—is still pending.
+* The current rc1 has been demonstrated to generate a propeller mesh that can be consumed and advanced successfully by OpenFOAM Foundation 13. This is a CFD-execution validation result, not yet a quantitative thrust/torque accuracy claim.
+* Localized boundary-layer loss can still occur at exceptionally difficult blade-tip geometry. The current propeller case retains approximately 96% effective BL face coverage, with the visually significant loss concentrated in a small tip region.
+* OpenFOAM advanced `checkMesh -allTopology -allGeometry` diagnostics can still report low-quality face-tet decompositions, small determinant cells, concavity, small interpolation weights, and small volume ratios. These diagnostics remain enabled and visible.
+* The current Rotor37 regression has zero internally detected negative-volume cells and zero bad pyramids, but advanced OpenFOAM geometry checks still report six failed quality criteria.
+* Rotor37 currently contains 1,118 severely non-orthogonal faces above 70° (none above 90°), 518 highly skew faces, and a large low-determinant-cell population. CFD performance validation is still pending.
 * Very small first-layer heights and large layer counts require case-specific validation.
+* Feature-thickness / medial-axis awareness for opposing BL fronts remains a planned robustness improvement.
+* Bounded topology-neutral geometry repair for soft BL-quality failures remains a planned development area.
 * Surface-constrained optimization can significantly increase runtime.
-* OMP=1 remains the reference mode for deterministic regression testing.
+* `OMP_NUM_THREADS=1` remains the reference mode for deterministic regression testing.
 * High-thread-count OpenMP repeatability remains under investigation.
 * `tetMesh` and `pMesh` are not validated to the same level as `cartesianMesh`.
 * This project is not production-certified.
@@ -602,7 +691,7 @@ checkMesh -constant 2>&1 |
 tee log.checkMesh.Rotor37
 ```
 
-Rotor37 results are sensitive to geometry preparation, refinement settings, first-layer height, layer count, and active repair controls. Historical metric ranges should not be treated as universal acceptance thresholds.
+Rotor37 results are sensitive to geometry preparation, refinement settings, first-layer height, layer count, active repair controls, and solver numerics. The current rc1 Rotor37 result should be treated as a regression and CFD-runnability case rather than a validated compressor-performance solution. Historical metric ranges should not be treated as universal acceptance thresholds.
 
 ---
 
@@ -625,8 +714,8 @@ Rotor37 results are sensitive to geometry preparation, refinement settings, firs
 
 | Version      | Summary                                                                                                                                                                                                                            |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v1.0.0-rc1` | Constraint-planned BL refinement, transactional repair, OpenFOAM-equivalent quality gating, post-Q3 adaptive retreat, generated-child closure audits, face-incidence and addressing validation, wide cell-face counters, and lossless mesh serialization.
-                                            |
+| `v1.0.0-rc1` | CFD-runnable release candidate: constraint-planned boundary layers, prospective hard/soft quality classification, zero-layer allocation safety, `unsupportedNoCap` semantics, transactional repair, generated-child closure and addressing audits, lossless serialization, successful propeller CFD execution, and Rotor37 regression meshing. |
+
 | `v0.10`      | Surface-constrained optimizer and limited-displacement boundary reprojection                                                                                                                                                       |
 | `v0.9`       | Expanded parallel hardening and optimizer/untangler fixes                                                                                                                                                                          |
 | `v0.8.x`     | BL/BL and BL/neutral transition infrastructure, geometry preprocessing, and broad codebase safety audit                                                                                                                            |
@@ -634,7 +723,7 @@ Rotor37 results are sensitive to geometry preparation, refinement settings, firs
 | `v0.6`       | Initial deterministic optimizer hardening                                                                                                                                                                                          |
 | `v0.1–v0.5`  | OpenFOAM 13 port, surface mapping fixes, quality evaluation, and targeted repair                                                                                                                                                   |
 
-`v1.0.0` will remain reserved for a final release after the release candidate has completed broader regression and documentation review.
+`v1.0.0` will remain reserved for a final release after broader CFD validation, additional regression testing, and further work on difficult boundary-layer tip and feature-thickness handling.
 
 ---
 
@@ -674,3 +763,6 @@ If this fork is useful in academic research, engineering evaluation, commercial 
 This is an unofficial community fork. It is not affiliated with Creative Fields or the OpenFOAM Foundation.
 
 The software is provided without warranty. Users are responsible for validating mesh topology, geometry, numerical quality, and solver suitability for every application.
+
+Successful CFD execution demonstrates solver compatibility and mesh usability, but does not by itself establish quantitative physical accuracy. Users should independently validate forces, moments, pressure ratios, efficiencies, mass flow, and convergence behavior against appropriate reference data.
+
