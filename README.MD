@@ -2,8 +2,7 @@
 
 An actively developed fork of cfMesh for OpenFOAM Foundation v13.
 
-NOTE: This release candidate replaces the earlier rc1 development state. The previous build contained boundary-layer quality-recovery behavior that could generate meshes which completed meshing checks but were not sufficiently robust for practical CFD execution. The current rc1 corrects those issues and has now been validated through actual OpenFOAM CFD execution.
-NOTE: This mesher is now good enough to produce a mesh that will run CFD, but still fails a few mesh checks that I am currently working on fixing.  More updates to come.
+NOTE: This release candidate replaces the earlier rc1 development state. The previous build contained boundary-layer quality-recovery behavior that could generate meshes which completed meshing checks but were not sufficiently robust for practical CFD execution. The current rc1 corrects those issues and has now been validated through actual OpenFOAM CFD execution. This mesher is now good enough to produce a mesh that will run CFD, but still fails a few mesh checks that I am currently working on fixing.  More updates to come.
 
 
 This fork focuses on:
